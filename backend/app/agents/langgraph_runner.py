@@ -376,13 +376,13 @@ class LangGraphWorkflowRunner:
                 task_id=task.task_id,
                 run_id=state.get("run_id"),
                 status="manual_review" if final_status == "manual_review" else "failed",
-                hard_errors=[f"Missing relevant public evidence for competitors: {', '.join(missing)}."],
+                hard_errors=[f"以下竞品缺少相关公开证据：{', '.join(missing)}。"],
                 rework_instructions=[
                     ReworkInstruction(
                         target_agent="CollectorAgent",
                         error_type="missing_relevant_evidence",
-                        reason=f"Missing relevant public evidence for competitors: {', '.join(missing)}.",
-                        suggested_action="Collect high/medium relevance Evidence before AnalystAgent and ReportWriterAgent run.",
+                        reason=f"以下竞品缺少相关公开证据：{', '.join(missing)}。",
+                        suggested_action="请先补齐 high/medium relevance Evidence，再进入 AnalystAgent 和 ReportWriterAgent。",
                         failed_schema="Evidence.relevance",
                     )
                 ],

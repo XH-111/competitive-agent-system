@@ -1,6 +1,7 @@
 import { Activity } from "lucide-react";
 import type { Dag, TraceRecord } from "../types";
 import { Pill } from "../types";
+import { dagDescriptions } from "../i18n/zh";
 
 const schemaByAgent: Record<string, { input: string; output: string }> = {
   PlannerAgent: { input: "PlannerInput", output: "PlannerOutput" },
@@ -24,18 +25,9 @@ export function DagView({ dag, traces, qaRouteTo }: { dag?: Dag; traces: TraceRe
         label: agent,
         status: "pending"
       }));
-  const dagNotes = ((dag as Dag & { metadata?: { notes?: string[] } })?.metadata?.notes ?? []);
-
   return (
     <section className="bg-white p-4">
       <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold"><Activity size={18} /> DAG 执行状态</h2>
-      {dagNotes.length > 0 && (
-        <div className="mb-4 rounded border border-line bg-panel p-3 text-sm text-slate-700">
-          {dagNotes.map((note) => (
-            <div key={note}>- {note}</div>
-          ))}
-        </div>
-      )}
       <div className="grid gap-3 lg:grid-cols-8">
         {nodes.map((node, index) => {
           const agentTraces = traces.filter((trace) => trace.agent_name === node.id);
@@ -49,7 +41,7 @@ export function DagView({ dag, traces, qaRouteTo }: { dag?: Dag; traces: TraceRe
           return (
             <div key={node.id} className="relative min-h-44 rounded border border-line bg-panel p-3">
               <div className="text-sm font-semibold">{node.id === "FinalReport" ? "FinalReportAgent" : node.id}</div>
-              <p className="mt-1 min-h-8 text-xs text-slate-600">{node.label}</p>
+              <p className="mt-1 min-h-8 text-xs text-slate-600">{dagDescriptions[node.id] ?? node.label}</p>
               <div className="mt-2"><Pill value={inferredStatus} /></div>
               <div className="mt-3 space-y-1 text-xs text-slate-600">
                 <div>输入：{schemas.input}</div>

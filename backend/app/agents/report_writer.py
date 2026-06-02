@@ -38,7 +38,7 @@ class ReportWriterAgent:
                 if exc.fallback_to_mock:
                     return self._run_mock(input_data, fallback_reason=str(exc), previous_diagnostics=exc.output)
                 return ReportWriterOutput(
-                    draft_report={"claims": [], "markdown": "LLM ReportWriter output failed validation."},
+                    draft_report={"claims": [], "markdown": "LLM ReportWriter 输出校验失败。"},
                     writer_mode="llm",
                     diagnostics=exc.output.get("diagnostics", {}) if isinstance(exc.output, dict) else {},
                 )
@@ -93,7 +93,7 @@ class ReportWriterAgent:
             diagnostics.update(self._coverage_diagnostics(task.competitors, raw_claims))
             if input_data.simulate_missing_evidence:
                 return ReportWriterOutput(
-                    draft_report={"claims": raw_claims, "markdown": "# Draft\n\nInvalid claim missing evidence."},
+                    draft_report={"claims": raw_claims, "markdown": "# 草稿\n\n存在缺少证据绑定的无效 Claim。"},
                     writer_mode="mock",
                     llm_fallback_reason=fallback_reason,
                     diagnostics=diagnostics,
@@ -102,7 +102,7 @@ class ReportWriterAgent:
             claims = [Claim(**item) for item in raw_claims]
             markdown = self._mock_markdown(input_data, claims)
             if input_data.force_bad_format:
-                markdown = "Competitor report without a level-1 heading\n\nThis content demonstrates QA report-format routing."
+                markdown = "缺少一级标题的竞品分析报告\n\n这段内容用于演示 QA 对报告格式问题的路由。"
 
             report = Report(
                 task_id=task.task_id,
@@ -183,19 +183,23 @@ class ReportWriterAgent:
                     fallback_to_mock=True,
                 ) from exc
 
-            claims_payload = payload.get("claims")
-            if not isinstance(claims_payload, list):
+            contract_error = self._llm_output_contract_error(payload, input_data)
+            if contract_error:
                 diagnostics.update(
                     {
-                        "llm_error_message": "LLM output missing claims list.",
+                        "llm_error_message": contract_error,
                         "llm_schema_validation_success": False,
-                        "llm_schema_validation_errors": ["LLM output missing claims list."],
+                        "llm_schema_validation_errors": [contract_error],
+                        "fallback_used": True,
+                        "llm_fallback_reason": contract_error,
                     }
                 )
                 raise AgentOutputValidationError(
-                    "LLM output missing claims list.",
-                    output={"claims": [], "markdown": payload.get("markdown_report", ""), "diagnostics": diagnostics},
+                    contract_error,
+                    output=diagnostics,
+                    fallback_to_mock=True,
                 )
+            claims_payload = payload["claims"]
 
             if any(not claim.get("evidence_ids") for claim in claims_payload):
                 diagnostics.update(
@@ -348,7 +352,7 @@ class ReportWriterAgent:
                 {
                     "claim_id": "claim_001",
                     "competitor": None,
-                    "text": "Current public evidence is insufficient, so the report avoids strong competitor claims.",
+                    "text": "当前公开证据不足，暂不做强结论。",
                     "category": "risk",
                     "evidence_ids": [] if input_data.simulate_missing_evidence else ids,
                     "confidence": 0.55,
@@ -368,6 +372,27 @@ class ReportWriterAgent:
             "missing_claim_competitors": [competitor for competitor, count in claim_count_by_competitor.items() if count == 0],
         }
 
+    def _llm_output_contract_error(self, payload: dict[str, Any], input_data: ReportWriterInput) -> str | None:
+        required_keys = ("markdown_report", "json_report", "claims")
+        missing = [key for key in required_keys if key not in payload]
+        if missing:
+            return f"LLM output missing required top-level keys: {', '.join(missing)}."
+        if not isinstance(payload.get("markdown_report"), str):
+            return "LLM output markdown_report must be a string."
+        if not isinstance(payload.get("json_report"), dict):
+            return "LLM output json_report must be an object."
+        json_report = payload["json_report"]
+        if "claims" in json_report:
+            return "LLM output must keep claims as a top-level array, not inside json_report."
+        claims_payload = payload.get("claims")
+        if not isinstance(claims_payload, list):
+            return "LLM output claims must be a top-level array."
+        if claims_payload and any(not isinstance(claim, dict) for claim in claims_payload):
+            return "LLM output claims items must be objects."
+        if not claims_payload and any(is_relevant_evidence(item) for item in input_data.evidence):
+            return "LLM output has empty claims despite available relevant evidence."
+        return None
+
     def _messages(self, input_data: ReportWriterInput) -> list[dict[str, str]]:
         prompt_data: dict[str, Any] = {
             "task": input_data.task.model_dump(mode="json"),
@@ -376,23 +401,31 @@ class ReportWriterAgent:
             "planner": self._planner_report_payload(input_data),
         }
         system = (
-            "You are ReportWriterAgent. Write only from supplied Evidence and Knowledge. "
-            "Do not invent sources. Every key claim must bind evidence_ids. "
-            "Use planner intent, selected dimensions, writer guidance, and SWOT to frame the report. "
-            "The report must include a SWOT section grounded in supplied evidence. "
-            "Only use high or medium relevance evidence for concrete claims. "
-            "Do not use unrelated Evidence. Low relevance Evidence may only support cautious risk notes. "
-            "You must cover every input competitor. Each competitor needs its own subsection and at least one claim when its own evidence exists. "
-            "Never use one competitor's evidence_ids to support another competitor's claim. "
-            "If a competitor lacks evidence, clearly state that public evidence is insufficient and avoid fabrication. "
-            "Return strict JSON only with keys markdown_report, json_report, claims. "
-            "For claims[].category, use only one of: positioning, feature, pricing, persona, risk, recommendation."
+            "你是 ReportWriterAgent，面向中文企业竞品分析场景撰写报告。只能基于输入的 Evidence 和 Knowledge 写作，不能编造来源。"
+            "所有关键结论必须绑定 evidence_ids，JSON 字段名必须保持英文，不要翻译 markdown_report、json_report、claims、claim_id、competitor、text、evidence_ids、category、confidence 等 key。"
+            "请结合 Planner intent、selected_dimensions、writer_guidance 和 SWOT 组织报告。报告正文、章节标题和解释性内容必须使用中文。"
+            "你必须只返回合法 JSON object，不要输出任何 JSON 外的解释文字，不要使用 Markdown 代码块包裹 JSON。"
+            "顶层字段必须至少包含 markdown_report、json_report、claims，且这三个 key 必须位于顶层。"
+            "不要只返回 markdown_report；不要把 claims 放入 json_report；不要翻译 JSON key。"
+            "markdown_report 是中文 Markdown 报告正文；json_report 是结构化报告摘要对象；claims 必须是顶层数组。"
+            "如果证据不足，也必须返回 claims: []；如果 Evidence 足够，必须生成 claims，且每条 Claim 必须绑定 evidence_ids。"
+            "报告必须包含基于证据的 SWOT 章节。具体强结论只能使用 high 或 medium relevance Evidence 支撑。"
+            "不要使用 unrelated Evidence；low relevance Evidence 只能作为谨慎风险提示。"
+            "必须覆盖每个输入 competitor。每个竞品在有自身证据时都需要独立小节和至少一条 Claim。"
+            "严禁用一个竞品的 evidence_ids 支撑另一个竞品的 Claim。"
+            "如果某个竞品证据不足，必须写“当前公开证据不足，暂不做强结论。”，不要补全或编造。"
+            "引用证据时使用中文表达，例如“根据公开来源……”；如果只有 snippet-only evidence，应使用“公开摘要显示……”或“有公开报道提到……”，避免强断言。"
+            "claims[].category 只能使用以下英文枚举之一：positioning, feature, pricing, persona, risk, recommendation。"
         )
         user = (
-            "markdown_report must be a complete competitor analysis report with sections for executive summary, evidence scope, competitor analysis, SWOT, risks, and next steps. "
-            "Each claim must include claim_id, competitor, text, evidence_ids, category, confidence. "
-            "Use 2-4 claims per competitor when evidence allows; otherwise keep claims cautious. "
-            "Input:\n"
+            "markdown_report 必须是一份完整中文竞品分析报告，章节建议包括：执行摘要、证据范围、竞品逐项分析、SWOT 分析、风险与不确定性、综合建议。"
+            "不要输出英文 section title，除非是产品名、技术名或来源标题。"
+            "每条 Claim 必须包含 claim_id、competitor、text、evidence_ids、category、confidence。"
+            "证据允许时每个竞品生成 2-4 条 Claim；证据不足时保持保守表达，只写“当前公开证据不足，暂不做强结论。”"
+            "输出示例必须保持如下 Schema 形状："
+            '{"markdown_report":"# 竞品分析报告\\n\\n## 执行摘要\\n...","json_report":{"summary":"中文摘要","sections":[{"title":"产品定位","content":"中文内容","competitors":["竞品A"],"evidence_ids":["ev_xxx"]}]},"claims":[{"claim_id":"claim_001","competitor":"竞品A","category":"feature","text":"根据公开来源，竞品A具备某项能力。","evidence_ids":["ev_xxx"],"confidence":0.8}]}'
+            "注意 claims 是顶层数组，不允许嵌套在 json_report 内部。"
+            "输入如下：\n"
             f"{prompt_data}"
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -404,27 +437,27 @@ class ReportWriterAgent:
         swot = input_data.knowledge.swot
         return "\n".join(
             [
-                f"# Competitor Analysis Report: {task.product_name}",
+                f"# 竞品分析报告：{task.product_name}",
                 "",
-                "## Executive Summary",
+                "## 执行摘要",
                 self._executive_summary(input_data),
                 "",
-                "## Planner Focus",
-                f"Intent: {(input_data.intent_classification or 'competitive_analysis').replace('_', ' ')}.",
-                f"Selected dimensions: {', '.join(dimensions) if dimensions else 'positioning, feature, pricing, persona'}.",
+                "## Planner 分析重点",
+                f"意图 intent：{input_data.intent_classification or 'competitive_analysis'}。",
+                f"已选分析维度 selected_dimensions：{', '.join(dimensions) if dimensions else 'positioning, feature, pricing, persona'}。",
                 *(f"- {line}" for line in guidance[:4]),
                 "",
-                "## Key Claims",
+                "## 关键结论",
                 *[
-                    f"- **{claim.competitor or 'overall'} / {claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}"
+                    f"- **{claim.competitor or '整体'} / {claim.claim_id}** {claim.text} 证据 evidence_ids：{', '.join(claim.evidence_ids)}"
                     for claim in claims
                 ],
                 "",
-                "## SWOT Analysis",
+                "## SWOT 分析",
                 *self._swot_markdown(swot),
                 "",
-                "## Evidence Gaps And Next Steps",
-                "Public conclusions remain constrained by competitor-specific evidence coverage, so any recommendation should be revalidated against official product, pricing, and customer-facing sources.",
+                "## 证据缺口与下一步",
+                "当前结论仍受各竞品公开证据覆盖度限制。任何正式建议都应继续用官网、定价页、产品文档和客户侧来源复核。",
             ]
         )
 
@@ -531,25 +564,25 @@ class ReportWriterAgent:
 
     @staticmethod
     def _claim_text(competitor: str, dimensions: list[str]) -> str:
-        dimension_label = ", ".join(dimensions[:3]) if dimensions else "feature, positioning, and pricing"
+        dimension_label = ", ".join(dimensions[:3]) if dimensions else "feature, positioning, pricing"
         return (
-            f"{competitor} is described conservatively using only its own relevant evidence, with report emphasis on {dimension_label}."
+            f"根据公开来源，{competitor} 仅基于其自身相关证据进行保守描述，报告重点关注 {dimension_label}。"
         )
 
     def _executive_summary(self, input_data: ReportWriterInput) -> str:
         intent = (input_data.intent_classification or "competitive_analysis").replace("_", " ")
         dimensions = self._selected_dimensions(input_data)
-        dimension_label = ", ".join(dimensions[:4]) if dimensions else "positioning, feature, pricing, and persona"
+        dimension_label = ", ".join(dimensions[:4]) if dimensions else "positioning, feature, pricing, persona"
         return (
-            f"This report frames the comparison as {intent} and prioritizes {dimension_label}, so downstream conclusions stay aligned with the planner rather than defaulting to a generic summary."
+            f"本报告将分析意图识别为 {intent}，优先关注 {dimension_label}，以保证后续结论贴合 Planner 规划，而不是生成泛化摘要。"
         )
 
     def _swot_markdown(self, swot: SwotAnalysis) -> list[str]:
         sections = [
-            ("Strengths", swot.strengths),
-            ("Weaknesses", swot.weaknesses),
-            ("Opportunities", swot.opportunities),
-            ("Threats", swot.threats),
+            ("优势 Strengths", swot.strengths),
+            ("劣势 Weaknesses", swot.weaknesses),
+            ("机会 Opportunities", swot.opportunities),
+            ("威胁 Threats", swot.threats),
         ]
         lines: list[str] = []
         for title, items in sections:
@@ -560,8 +593,8 @@ class ReportWriterAgent:
     @staticmethod
     def _swot_item_lines(items: list[SwotItem]) -> list[str]:
         if not items:
-            return ["- No evidence-backed items available."]
+            return ["- 当前公开证据不足，暂不做强结论。"]
         return [
-            f"- **{item.competitor or 'overall'}** {item.summary} Evidence: {', '.join(item.evidence_ids)}"
+            f"- **{item.competitor or '整体'}** {item.summary} 证据 evidence_ids：{', '.join(item.evidence_ids)}"
             for item in items
         ]

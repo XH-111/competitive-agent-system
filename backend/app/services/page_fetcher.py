@@ -13,6 +13,7 @@ from app.schemas import Evidence
 
 
 DEFAULT_USER_AGENT = "cis-agent-demo-page-fetcher/0.1 (+public evidence validation)"
+REPLACEMENT_CHAR = "\ufffd"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -180,7 +181,7 @@ class PageFetcher:
                         chunks.extend(chunk)
                         if len(chunks) > self.max_bytes:
                             return PageFetchResult(success=False, status_code=status_code, error="content_too_large", fetched_at=fetched_at)
-                    html = bytes(chunks).decode(response.encoding or "utf-8", errors="replace")
+                    html = self._decode_html(bytes(chunks), response.encoding, content_type)
         except httpx.TimeoutException:
             return PageFetchResult(success=False, error="timeout", fetched_at=fetched_at)
         except httpx.HTTPError as exc:
@@ -235,6 +236,54 @@ class PageFetcher:
         parser.set_url(robots_url)
         parser.parse(response.text.splitlines())
         return parser.can_fetch(DEFAULT_USER_AGENT, url), "robots_disallowed"
+
+    @staticmethod
+    def _decode_html(raw: bytes, response_encoding: str | None, content_type: str) -> str:
+        candidates: list[str] = []
+        for encoding in (
+            response_encoding,
+            PageFetcher._charset_from_content_type(content_type),
+            PageFetcher._charset_from_meta(raw),
+            "utf-8",
+            "gb18030",
+            "gbk",
+            "big5",
+        ):
+            if encoding and encoding.lower() not in {item.lower() for item in candidates}:
+                candidates.append(encoding)
+
+        best_text = raw.decode("utf-8", errors="replace")
+        best_score = PageFetcher._decode_quality_score(best_text)
+        for encoding in candidates:
+            try:
+                text = raw.decode(encoding, errors="replace")
+            except LookupError:
+                continue
+            score = PageFetcher._decode_quality_score(text)
+            if score < best_score:
+                best_text = text
+                best_score = score
+        return best_text
+
+    @staticmethod
+    def _charset_from_content_type(content_type: str) -> str | None:
+        match = re.search(r"charset\s*=\s*['\"]?([^;'\"]+)", content_type, flags=re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
+    @staticmethod
+    def _charset_from_meta(raw: bytes) -> str | None:
+        head = raw[:4096].decode("ascii", errors="ignore")
+        match = re.search(r"<meta[^>]+charset\s*=\s*['\"]?\s*([a-zA-Z0-9_\-]+)", head, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"content\s*=\s*['\"][^'\"]*charset\s*=\s*([a-zA-Z0-9_\-]+)", head, flags=re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
+    @staticmethod
+    def _decode_quality_score(text: str) -> int:
+        replacement_penalty = text.count(REPLACEMENT_CHAR) * 10
+        mojibake_penalty = sum(text.count(marker) * 3 for marker in ("�", "锟", "Ã", "Â"))
+        return replacement_penalty + mojibake_penalty
 
     @staticmethod
     def _extract_text(html: str) -> tuple[str | None, str]:

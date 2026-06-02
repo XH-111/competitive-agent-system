@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from app.config.survey_llm_config import get_survey_llm_config
+from app.services.llm_client import parse_llm_json
 
 
 class SurveyLLMConfigurationError(RuntimeError):
@@ -63,7 +64,7 @@ class SurveyLLMClient:
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             return SurveyLLMResult(
-                data=json.loads(content),
+                data=parse_llm_json(content),
                 elapsed_time_ms=int((perf_counter() - start) * 1000),
                 model=self.config.model,
             )

@@ -1,6 +1,7 @@
 import { SearchCheck } from "lucide-react";
 import type { QaResult, WorkflowSummary } from "../types";
 import { Pill } from "../types";
+import { errorTypeLabel, labelFor } from "../i18n/zh";
 
 type RouteHistoryItem = {
   from: string;
@@ -24,57 +25,57 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
   return (
     <section className={`rounded border p-4 ${statusClass}`}>
       <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
-        <SearchCheck size={18} /> QA Result
+        <SearchCheck size={18} /> 质检结果 QA Result
       </h2>
 
       <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
-        <span>final_status:</span>
+        <span>最终状态 final_status：</span>
         <Pill value={qa.status} />
-        <span>rework_count: {qa.rework_count}</span>
-        <span>max_rework: 3</span>
-        {swotValidation && <span>swot_validation: {swotValidation.status ?? "-"}</span>}
+        <span>返工次数 rework_count：{qa.rework_count}</span>
+        <span>最大返工次数 max_rework：3</span>
+        {swotValidation && <span>SWOT 校验 swot_validation：{swotValidation.status ?? "-"}</span>}
       </div>
 
       <div className="grid gap-3 lg:grid-cols-3">
-        <InfoBlock title="hard_errors" items={qa.hard_errors} emptyText="None" />
-        <InfoBlock title="soft_suggestions" items={qa.soft_suggestions} emptyText="None" />
+        <InfoBlock title={labelFor("hard_errors")} items={qa.hard_errors} emptyText="暂无严重问题" />
+        <InfoBlock title={labelFor("soft_suggestions")} items={qa.soft_suggestions} emptyText="暂无优化建议" />
         <InfoBlock
-          title="rework_instructions"
+          title={labelFor("rework_instructions")}
           items={(qa.rework_instructions ?? []).map((item) => [
-            `error_type: ${item.error_type}`,
-            item.failed_claim ? `failed_claim: ${item.failed_claim}` : undefined,
-            item.failed_schema ? `failed_schema: ${item.failed_schema}` : undefined,
-            typeof item.metadata?.competitor === "string" ? `competitor: ${item.metadata.competitor}` : undefined,
-            typeof item.metadata?.quadrant === "string" ? `quadrant: ${item.metadata.quadrant}` : undefined,
-            typeof item.metadata?.fix_type === "string" ? `fix_type: ${item.metadata.fix_type}` : undefined,
-            `reason: ${item.reason}`,
-            `route_to: ${item.target_agent ?? qa.route_to ?? "-"}`,
-            `suggested_action: ${item.suggested_action}`,
+            `问题类型 error_type: ${errorTypeLabel(item.error_type)}`,
+            item.failed_claim ? `失败结论 failed_claim: ${item.failed_claim}` : undefined,
+            item.failed_schema ? `失败 Schema failed_schema: ${item.failed_schema}` : undefined,
+            typeof item.metadata?.competitor === "string" ? `竞品 competitor: ${item.metadata.competitor}` : undefined,
+            typeof item.metadata?.quadrant === "string" ? `SWOT 象限 quadrant: ${item.metadata.quadrant}` : undefined,
+            typeof item.metadata?.fix_type === "string" ? `修复类型 fix_type: ${item.metadata.fix_type}` : undefined,
+            `原因 reason: ${item.reason}`,
+            `返工目标 route_to: ${item.target_agent ?? qa.route_to ?? "-"}`,
+            `建议动作 suggested_action: ${item.suggested_action}`,
             Array.isArray(item.metadata?.query_focus) && item.metadata.query_focus.length
-              ? `query_focus: ${item.metadata.query_focus.join(", ")}`
+              ? `搜索重点 query_focus: ${item.metadata.query_focus.join(", ")}`
               : undefined,
-            `rework_count: ${qa.rework_count}`,
-            `final_status: ${qa.status}`,
+            `返工次数 rework_count: ${qa.rework_count}`,
+            `最终状态 final_status: ${qa.status}`,
           ].filter(Boolean).join(" | "))}
-          emptyText="None"
+          emptyText="暂无返工指令"
         />
       </div>
 
       {swotIssues.length > 0 && (
         <div className="mt-3 rounded border border-line bg-white p-3 text-sm">
-          <h3 className="mb-2 font-semibold">SWOT QA Issues</h3>
+          <h3 className="mb-2 font-semibold">SWOT 质检问题</h3>
           <div className="space-y-2">
             {swotIssues.map((issue, index) => (
               <div key={`${issue.error_type ?? "swot"}-${index}`} className="rounded border border-line bg-panel p-3">
                 <div className="font-semibold">
-                  {issue.error_type ?? "swot_issue"}
+                  {errorTypeLabel(issue.error_type ?? "swot_issue")}
                   {issue.competitor ? ` | ${issue.competitor}` : ""}
                   {issue.quadrant ? ` | ${issue.quadrant}` : ""}
                 </div>
                 {issue.reason && <div className="mt-1">{issue.reason}</div>}
                 <div className="mt-1 text-xs text-slate-600">
-                  {issue.fix_type ? `fix_type: ${issue.fix_type}` : ""}
-                  {issue.target_agent ? ` | route_to: ${issue.target_agent}` : ""}
+                  {issue.fix_type ? `修复类型 fix_type: ${issue.fix_type}` : ""}
+                  {issue.target_agent ? ` | 返工目标 route_to: ${issue.target_agent}` : ""}
                 </div>
                 {Array.isArray(issue.query_focus) && issue.query_focus.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-2">
@@ -92,19 +93,19 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
       )}
 
       <div className="mt-3 rounded border border-line bg-white p-3 text-sm">
-        <h3 className="mb-2 font-semibold">rework_history</h3>
+        <h3 className="mb-2 font-semibold">{labelFor("rework_history")}</h3>
         {reworkHistory.length ? (
           <div className="space-y-1">
             {reworkHistory.map((item, index) => (
               <div key={`${item.from}-${item.to}-${index}`}>
-                round {index + 1}: {item.from} -&gt; {item.to}
-                {item.reason ? `, reason: ${item.reason}` : ""}
-                {item.resultStatus ? `, result: ${item.resultStatus}` : ""}
+                第 {index + 1} 轮：{item.from} -&gt; {item.to}
+                {item.reason ? `，原因 reason: ${errorTypeLabel(item.reason)}` : ""}
+                {item.resultStatus ? `，结果 result: ${item.resultStatus}` : ""}
               </div>
             ))}
           </div>
         ) : (
-          <p className="text-slate-500">No automatic rework history.</p>
+          <p className="text-slate-500">暂无自动返工历史。</p>
         )}
       </div>
     </section>

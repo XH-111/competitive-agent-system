@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api/client";
 import type { Report, Survey, SurveyAnalysis, SurveyMetricRole, SurveyPlannerContext, SurveyQuestion, SurveyUploadResponse, Task } from "../../api/types";
 import { Pill } from "../../types";
+import { metricRoleLabels, questionTypeLabels } from "../../i18n/zh";
 
 type SurveyPanelProps = {
   task?: Task;
@@ -354,7 +355,7 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
     <section className="rounded border border-line bg-white p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold">Survey Panel</h2>
+          <h2 className="text-base font-semibold">问卷面板 Survey Panel</h2>
           <p className="text-sm text-slate-600">竞品分析验证问卷，独立于主工作流运行。</p>
         </div>
         <div className="flex items-center gap-2">
@@ -608,11 +609,11 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
                     onChange={(event) => updateQuestionDraft(question.question_id, { question_type: event.target.value as SurveyQuestion["question_type"] })}
                     className="h-10 rounded border border-line px-3 py-2 text-sm"
                   >
-                    <option value="single_choice">single_choice</option>
-                    <option value="multiple_choice">multiple_choice</option>
-                    <option value="rating">rating</option>
-                    <option value="text">text</option>
-                    <option value="number">number</option>
+                    <option value="single_choice">{questionTypeLabels.single_choice}</option>
+                    <option value="multiple_choice">{questionTypeLabels.multiple_choice}</option>
+                    <option value="rating">{questionTypeLabels.rating}</option>
+                    <option value="text">{questionTypeLabels.text}</option>
+                    <option value="number">{questionTypeLabels.number}</option>
                   </select>
                 </div>
                 {(question.question_type === "single_choice" || question.question_type === "multiple_choice" || question.question_type === "rating") && (
@@ -643,7 +644,7 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
                   >
                     <option value="">指标角色</option>
                     {metricRoleOptions.map((role) => (
-                      <option key={role} value={role}>{role}</option>
+                      <option key={role} value={role}>{metricRoleLabels[role] ?? role}</option>
                     ))}
                   </select>
                   <input

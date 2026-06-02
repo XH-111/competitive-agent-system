@@ -8,6 +8,11 @@ SURVEY_ANALYSIS_SYSTEM_PROMPT = """你是竞品分析系统中的 SurveyAnalysis
 问卷数据不是绝对事实，只能代表当前样本。你必须说明样本量、样本偏差、置信度和不可过度推断的地方。
 输出必须是合法 JSON。"""
 
+SURVEY_ANALYSIS_SYSTEM_PROMPT += (
+    "\n输出约束：只返回合法 JSON object，不要输出 JSON 外的解释文字，不要使用 Markdown 代码块包裹 JSON。"
+    "用户可见文本可以使用中文，但 JSON key、Schema 字段名和枚举值必须保持英文。"
+)
+
 
 class SurveyAnalysisAgent:
     def __init__(self, llm_client: SurveyLLMClient | None = None):

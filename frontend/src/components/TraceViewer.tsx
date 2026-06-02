@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { TraceRecord } from "../types";
 import { Pill } from "../types";
+import { labelFor } from "../i18n/zh";
 
 export function TraceViewer({ traces }: { traces: TraceRecord[] }) {
   const [agent, setAgent] = useState("全部");
@@ -16,15 +17,15 @@ export function TraceViewer({ traces }: { traces: TraceRecord[] }) {
   return (
     <section className="bg-white p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">Trace Viewer</h2>
+        <h2 className="text-lg font-semibold">执行追踪 Trace Viewer</h2>
         <div className="flex gap-2">
           <select className="rounded border border-line px-3 py-2 text-sm" value={agent} onChange={(event) => setAgent(event.target.value)}>
             {agents.map((item) => <option key={item}>{item}</option>)}
           </select>
           <select className="rounded border border-line px-3 py-2 text-sm" value={schemaResult} onChange={(event) => setSchemaResult(event.target.value)}>
             <option>全部</option>
-            <option value="passed">passed</option>
-            <option value="failed">failed</option>
+            <option value="passed">通过 passed</option>
+            <option value="failed">失败 failed</option>
           </select>
         </div>
       </div>
@@ -32,15 +33,15 @@ export function TraceViewer({ traces }: { traces: TraceRecord[] }) {
         <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
           <thead className="bg-panel">
             <tr>
-              <th className="p-2">agent_name</th>
-              <th className="p-2">trace_id</th>
-              <th className="p-2">task_id</th>
+              <th className="p-2">Agent agent_name</th>
+              <th className="p-2">Trace ID trace_id</th>
+              <th className="p-2">任务 ID task_id</th>
               <th className="p-2">Schema 校验</th>
-              <th className="p-2">elapsed_time_ms</th>
-              <th className="p-2">retry_count</th>
-              <th className="p-2">model_name</th>
-              <th className="p-2">token_usage</th>
-              <th className="p-2">error_message</th>
+              <th className="p-2">{labelFor("elapsed_time_ms")}</th>
+              <th className="p-2">{labelFor("retry_count")}</th>
+              <th className="p-2">{labelFor("model_name")}</th>
+              <th className="p-2">{labelFor("token_usage")}</th>
+              <th className="p-2">{labelFor("error_message")}</th>
             </tr>
           </thead>
           <tbody>
@@ -66,11 +67,11 @@ export function TraceViewer({ traces }: { traces: TraceRecord[] }) {
                     <td className="p-3 text-sm" colSpan={9}>
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
-                          <div className="mb-1 font-semibold">input_summary</div>
+                          <div className="mb-1 font-semibold">{labelFor("input_summary")}</div>
                           <pre className="whitespace-pre-wrap rounded border border-line bg-white p-3">{trace.input_summary}</pre>
                         </div>
                         <div>
-                          <div className="mb-1 font-semibold">output_summary</div>
+                          <div className="mb-1 font-semibold">{labelFor("output_summary")}</div>
                           <pre className="whitespace-pre-wrap rounded border border-line bg-white p-3">{trace.output_summary}</pre>
                         </div>
                       </div>

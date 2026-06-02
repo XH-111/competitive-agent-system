@@ -806,7 +806,7 @@ class SurveyService:
                 "hypotheses": list(survey_inputs.hypotheses),
                 "guidance": ["Use the questionnaire as a follow-up validation workflow, not as an always-on main DAG node."],
                 "selected_dimensions": ["positioning", "feature", "pricing", "persona", "risk"],
-                "rationale": "Public evidence alone is insufficient to validate user-side pain points and preferences.",
+                "rationale": "仅依赖公开证据不足以验证用户侧痛点和偏好。",
                 "metadata": {"source": "survey_fallback_planner_context"},
             },
             "extracted_context": {

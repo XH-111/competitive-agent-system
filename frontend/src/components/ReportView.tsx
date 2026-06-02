@@ -4,6 +4,7 @@ import type { Claim, Evidence, Report } from "../types";
 import { reportContractSource } from "../lib/contractSelectors";
 import { categoryLabel } from "../types";
 import { EvidencePanel } from "./EvidencePanel";
+import { labelFor } from "../i18n/zh";
 
 export function ReportView({
   report,
@@ -57,12 +58,12 @@ export function ReportView({
       <div className="space-y-3">
         {planner && (
           <section className="rounded border border-line bg-white p-4">
-            <h3 className="mb-3 text-sm font-semibold">Planner Framing</h3>
+            <h3 className="mb-3 text-sm font-semibold">Planner 分析框架</h3>
             <div className="space-y-2 text-sm">
-              <div>intent: {planner.intent_classification ?? "-"}</div>
-              <div>dimensions: {(planner.selected_dimensions ?? []).join(", ") || "-"}</div>
-              <div>contract: {reportContract}</div>
-              <div>domain pack: {domainPack?.display_name ?? "-"}</div>
+              <div>意图 intent：{planner.intent_classification ?? "-"}</div>
+              <div>已选分析维度 selected_dimensions：{(planner.selected_dimensions ?? []).join(", ") || "-"}</div>
+              <div>前端契约 contract：{reportContract}</div>
+              <div>领域配置 domain pack：{domainPack?.display_name ?? "-"}</div>
               {!!planner.writer_guidance?.length && (
                 <div className="rounded border border-line bg-panel p-3 text-xs leading-5">
                   {planner.writer_guidance.slice(0, 4).map((item) => (
@@ -72,15 +73,15 @@ export function ReportView({
               )}
               {survey && (
                 <div className="rounded border border-line bg-panel p-3 text-xs leading-5">
-                  <div>survey recommended: {survey.survey_recommended ? "yes" : "no"}</div>
-                  <div>survey objective: {survey.survey_objective ?? "-"}</div>
+                  <div>是否建议问卷 survey_recommended：{survey.survey_recommended ? "是" : "否"}</div>
+                  <div>问卷目标 survey_objective：{survey.survey_objective ?? "-"}</div>
                 </div>
               )}
               {questionnaireFollowUp && (
                 <div className="rounded border border-line bg-panel p-3 text-xs leading-5">
-                  <div>questionnaire launch: {questionnaireFollowUp.launch_mode ?? "follow_up_sidecar"}</div>
-                  <div>required: {questionnaireFollowUp.required ? "yes" : "no"}</div>
-                  <div>respondents: {questionnaireFollowUp.respondent_type ?? "-"}</div>
+                  <div>问卷启动方式 launch_mode：{questionnaireFollowUp.launch_mode ?? "follow_up_sidecar"}</div>
+                  <div>是否必需 required：{questionnaireFollowUp.required ? "是" : "否"}</div>
+                  <div>受访者 respondents：{questionnaireFollowUp.respondent_type ?? "-"}</div>
                 </div>
               )}
             </div>
@@ -102,7 +103,7 @@ export function ReportView({
                 >
                   <span className="font-semibold">{item.competitor}</span>
                   <span className="ml-2">
-                    Evidence {item.evidenceCount} / Relevant {item.relevantEvidenceCount} / Unrelated {item.unrelatedEvidenceCount} / Claim {item.claimCount}
+                    证据 Evidence {item.evidenceCount} / 相关证据 Relevant {item.relevantEvidenceCount} / 无关证据 Unrelated {item.unrelatedEvidenceCount} / 结论 Claim {item.claimCount}
                   </span>
                 </div>
               ))}
@@ -111,7 +112,7 @@ export function ReportView({
         )}
 
         <section className="rounded border border-line bg-white p-4">
-          <h3 className="mb-3 text-sm font-semibold">Claim 列表</h3>
+          <h3 className="mb-3 text-sm font-semibold">结论列表 Claim</h3>
           <div className="space-y-2">
             {report.claims.map((claim) => (
               <button
@@ -122,7 +123,7 @@ export function ReportView({
                 <div className="font-semibold">{claim.competitor ? `${claim.competitor} · ` : ""}{categoryLabel[claim.category] ?? claim.category} · 置信度 {Math.round(claim.confidence * 100)}%</div>
                 <div className="mt-1">{claim.text}</div>
                 <div className={`mt-2 text-xs ${claim.evidence_ids.length ? "text-slate-600" : "font-semibold text-danger"}`}>
-                  {claim.evidence_ids.length ? `证据：${claim.evidence_ids.join(", ")}` : "缺少 evidence_ids"}
+                  {claim.evidence_ids.length ? `${labelFor("evidence_ids")}：${claim.evidence_ids.join(", ")}` : "缺少 evidence_ids"}
                 </div>
               </button>
             ))}

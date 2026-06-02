@@ -47,7 +47,7 @@ from app.schemas import (
     SurveyEvidence,
     WorkflowState,
 )
-from app.services.llm_client import LlmResponse
+from app.services.llm_client import LlmResponse, parse_llm_json
 from app.services.page_fetcher import PageFetchResult, PageFetcher
 from app.services.report_service import ReportService
 from app.services.task_service import TaskService
@@ -661,6 +661,23 @@ def test_page_fetcher_excerpt_limit_and_skips_unrelated():
     assert diagnostics["page_fetch_skipped_count"] == 1
 
 
+def test_page_fetcher_decodes_gb18030_html_without_mojibake():
+    html = "<html><head><meta charset=\"gb18030\"><title>和平精英官网</title></head><body><p>腾讯游戏和平精英公开页面。</p></body></html>"
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=html.encode("gb18030"))
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler), respect_robots=False)
+    evidence = [
+        Evidence(source_type="public_web", url="https://gp.qq.com", competitor="和平精英", snippet="和平精英 snippet", confidence=0.9, relevance_level="high")
+    ]
+    enriched, diagnostics = fetcher.enrich(evidence, run_id="run_1")
+    assert diagnostics["page_fetch_success_count"] == 1
+    assert enriched[0].page_title == "和平精英官网"
+    assert "腾讯游戏和平精英公开页面" in (enriched[0].content_excerpt or "")
+    assert "\ufffd" not in (enriched[0].content_excerpt or "")
+
+
 def test_page_fetcher_respects_competitor_and_run_limits():
     class CountingFetcher(PageFetcher):
         def __init__(self):
@@ -719,6 +736,143 @@ def test_llm_writer_success_records_diagnostics_and_elapsed_time(db_session):
     assert traces[-1].elapsed_time_ms > 0
     trace_diagnostics = json.loads(traces[-1].output_summary)
     assert trace_diagnostics["llm_schema_validation_success"] is True
+
+
+def test_report_writer_prompt_declares_top_level_schema_contract(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    messages = ReportWriterAgent(trace_service)._messages(
+        ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm")
+    )
+    prompt_text = "\n".join(message["content"] for message in messages)
+    for key in ("markdown_report", "json_report", "claims"):
+        assert key in prompt_text
+    assert "claims 必须是顶层数组" in prompt_text
+    assert "不要把 claims 放入 json_report" in prompt_text
+    assert "不要使用 Markdown 代码块包裹 JSON" in prompt_text
+    assert "不要翻译 JSON key" in prompt_text
+
+
+def test_parse_llm_json_accepts_full_code_fence_and_rejects_extra_text():
+    assert parse_llm_json('```json\n{"ok": true}\n```') == {"ok": True}
+    with pytest.raises(ValueError):
+        parse_llm_json('说明文字\n{"ok": true}')
+
+
+def test_llm_writer_chinese_markdown_with_english_json_keys_passes(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    payload = {
+        "markdown_report": "# 竞品分析报告\n\n## 执行摘要\n根据公开来源，AlphaCI 具备自动化能力。",
+        "json_report": {
+            "summary": "中文摘要",
+            "sections": [
+                {
+                    "title": "功能能力分析",
+                    "content": "中文内容",
+                    "competitors": ["AlphaCI"],
+                    "evidence_ids": [evidence[0].evidence_id],
+                }
+            ],
+        },
+        "claims": [
+            {
+                "claim_id": "claim_001",
+                "competitor": evidence[0].competitor,
+                "category": "feature",
+                "text": "根据公开来源，AlphaCI 具备自动化能力。",
+                "evidence_ids": [evidence[0].evidence_id],
+                "confidence": 0.8,
+            }
+        ],
+    }
+    writer = ReportWriterAgent(trace_service, llm_client=FakeLlmClient(json.dumps(payload, ensure_ascii=False)))
+    writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    assert writer_output.report is not None
+    assert writer_output.report.markdown.startswith("# 竞品分析报告")
+    diagnostics = writer_output.report.json_report["writer_diagnostics"]
+    assert diagnostics["writer_mode_used"] == "llm"
+    assert diagnostics["llm_schema_validation_success"] is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_error"),
+    [
+        (
+            {"markdown_report": "# 报告"},
+            "missing required top-level keys: json_report, claims",
+        ),
+        (
+            {"markdown_report": "# 报告", "json_report": {"claims": []}},
+            "missing required top-level keys: claims",
+        ),
+        (
+            {"markdown_report": "# 报告", "json_report": {"claims": []}, "claims": [{"claim_id": "claim_001"}]},
+            "claims as a top-level array",
+        ),
+        (
+            {"markdown_report": "# 报告", "json_report": {}, "claims": []},
+            "empty claims despite available relevant evidence",
+        ),
+        (
+            {"markdown报告": "# 报告", "json报告": {}, "结论": []},
+            "missing required top-level keys",
+        ),
+    ],
+)
+def test_llm_writer_contract_failures_fall_back_to_mock(db_session, payload, expected_error):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer = ReportWriterAgent(trace_service, llm_client=FakeLlmClient(json.dumps(payload, ensure_ascii=False)))
+    writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    assert writer_output.report is not None
+    assert writer_output.report.json_report["writer_mode"] == "mock"
+    diagnostics = writer_output.report.json_report["writer_diagnostics"]
+    assert diagnostics["writer_mode_requested"] == "llm"
+    assert diagnostics["writer_mode_used"] == "mock"
+    assert diagnostics["llm_schema_validation_success"] is False
+    assert expected_error in diagnostics["llm_schema_validation_errors"][0]
+    assert diagnostics["fallback_used"] is True
+
+
+def test_llm_writer_json_with_external_explanation_falls_back_to_mock(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    payload = (
+        "下面是 JSON：\n"
+        + json.dumps(
+            {
+                "markdown_report": "# 报告",
+                "json_report": {},
+                "claims": [
+                    {
+                        "claim_id": "claim_001",
+                        "competitor": evidence[0].competitor,
+                        "category": "feature",
+                        "text": "根据公开来源，AlphaCI 具备自动化能力。",
+                        "evidence_ids": [evidence[0].evidence_id],
+                        "confidence": 0.8,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+    writer = ReportWriterAgent(trace_service, llm_client=FakeLlmClient(payload))
+    writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    assert writer_output.report is not None
+    assert writer_output.report.json_report["writer_mode"] == "mock"
+    diagnostics = writer_output.report.json_report["writer_diagnostics"]
+    assert diagnostics["llm_schema_validation_success"] is False
+    assert "LLM returned invalid JSON" in diagnostics["llm_fallback_reason"]
 
 
 def test_collector_mode_mock_workflow_still_passes(db_session):

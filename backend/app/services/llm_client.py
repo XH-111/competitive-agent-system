@@ -152,4 +152,12 @@ class LlmClient:
 
 
 def parse_llm_json(content: str) -> dict[str, Any]:
-    return json.loads(content)
+    stripped = content.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 3 and lines[0].strip().lower() in {"```", "```json"} and lines[-1].strip() == "```":
+            stripped = "\n".join(lines[1:-1]).strip()
+    payload = json.loads(stripped)
+    if not isinstance(payload, dict):
+        raise ValueError("LLM output must be a JSON object.")
+    return payload

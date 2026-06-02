@@ -17,13 +17,13 @@ export function TaskList({
         <table className="w-full min-w-[980px] border-collapse text-left text-sm">
           <thead className="bg-panel">
             <tr>
-              <th className="p-2">task_id</th>
+              <th className="p-2">任务 ID task_id</th>
               <th className="p-2">任务名称</th>
               <th className="p-2">竞品</th>
               <th className="p-2">区域</th>
               <th className="p-2">行业</th>
               <th className="p-2">状态</th>
-              <th className="p-2">created_at</th>
+              <th className="p-2">创建时间 created_at</th>
             </tr>
           </thead>
           <tbody>

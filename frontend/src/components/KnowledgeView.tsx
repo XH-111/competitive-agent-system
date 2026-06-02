@@ -19,16 +19,16 @@ export function KnowledgeView({
 
   return (
     <section className="bg-white p-4">
-      <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold"><Database size={18} /> Knowledge</h2>
+      <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold"><Database size={18} /> 竞品知识 Knowledge</h2>
       {swot && (
         <div className="mb-3">
-          <div className="mb-2 text-sm font-semibold text-slate-700">Structured SWOT Summary</div>
+          <div className="mb-2 text-sm font-semibold text-slate-700">结构化 SWOT 摘要</div>
           <SwotPanel swot={swot} evidenceById={evidenceById} onEvidenceIdsSelect={onEvidenceIdsSelect} />
         </div>
       )}
       {capabilityMap && (
         <div className="mb-3">
-          <div className="mb-2 text-sm font-semibold text-slate-700">Normalized Capability Map</div>
+          <div className="mb-2 text-sm font-semibold text-slate-700">标准化能力地图 Capability Map</div>
           <CapabilityMapPanel capabilityMap={capabilityMap} evidenceById={evidenceById} onEvidenceIdsSelect={onEvidenceIdsSelect} />
         </div>
       )}
@@ -39,7 +39,7 @@ export function KnowledgeView({
           return (
             <div key={key} className={`rounded border p-3 ${insufficient ? "border-amber-300 bg-amber-50" : "border-line bg-panel"}`}>
               <div className="mb-2 text-sm font-semibold">{key}</div>
-              {insufficient && <div className="mb-2 rounded border border-amber-300 bg-white px-2 py-1 text-xs text-warning">Evidence is still insufficient for a strong conclusion.</div>}
+              {insufficient && <div className="mb-2 rounded border border-amber-300 bg-white px-2 py-1 text-xs text-warning">当前公开证据不足，暂不做强结论。</div>}
               {evidenceIds.length > 0 && (
                 <div className="mb-2 flex flex-wrap gap-1 text-xs">
                   {evidenceIds.map((id) => (
@@ -77,7 +77,7 @@ function CapabilityMapPanel({
   return (
     <div className="space-y-3">
       <div className="rounded border border-line bg-panel p-3 text-xs text-slate-700">
-        domain pack: {capabilityMap.domain_pack?.display_name ?? "-"}
+        领域配置 domain pack: {capabilityMap.domain_pack?.display_name ?? "-"}
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         {entries.map(([competitor, buckets]) => (
@@ -152,10 +152,10 @@ function SwotPanel({
   onEvidenceIdsSelect?: (ids: string[]) => void;
 }) {
   const sections: Array<{ key: keyof SwotAnalysis; label: string }> = [
-    { key: "strengths", label: "SWOT Strengths" },
-    { key: "weaknesses", label: "SWOT Weaknesses" },
-    { key: "opportunities", label: "SWOT Opportunities" },
-    { key: "threats", label: "SWOT Threats" },
+    { key: "strengths", label: "优势 Strengths" },
+    { key: "weaknesses", label: "劣势 Weaknesses" },
+    { key: "opportunities", label: "机会 Opportunities" },
+    { key: "threats", label: "威胁 Threats" },
   ];
 
   return (
@@ -190,7 +190,7 @@ function SwotCard({
 }) {
   return (
     <div className="rounded border border-line bg-white p-3 text-xs leading-5">
-      <div className="font-semibold">{item.competitor ?? "overall"} · {Math.round(item.confidence * 100)}%</div>
+      <div className="font-semibold">{item.competitor ?? "整体 overall"} · {Math.round(item.confidence * 100)}%</div>
       <div className="mt-1">{item.summary}</div>
       <div className="mt-2 flex flex-wrap gap-1">
         {item.evidence_ids.map((id) => (

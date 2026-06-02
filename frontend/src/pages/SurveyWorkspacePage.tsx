@@ -72,7 +72,7 @@ export function SurveyWorkspacePage() {
           <div>
             <h2 className="text-lg font-semibold">问卷分析工作台</h2>
             <p className="mt-1 text-sm text-slate-600">
-              Follow-up sidecar workflow for questionnaire generation, CSV upload, and survey feedback analysis. It does not run as an always-on node in the primary competitive-analysis DAG, and it does not automatically rewrite the main report or QA result.
+              这是主竞品分析后的后续侧边流程，用于生成问卷、上传反馈文件并分析用户侧证据。它不是主 DAG 的常驻节点，也不会自动改写主报告或 QA 结果。
             </p>
           </div>
           <button
@@ -115,7 +115,7 @@ export function SurveyWorkspacePage() {
                   <span>{run.analyst_mode}</span>
                   <span>{run.writer_mode}</span>
                 </div>
-                <div className="mt-1">final_status: {run.final_status ?? run.status}</div>
+                <div className="mt-1">最终状态 final_status: {run.final_status ?? run.status}</div>
               </button>
             ))}
             {!runs.length && (
@@ -140,19 +140,19 @@ export function SurveyWorkspacePage() {
           </div>
           {surveyContext?.launch_contract?.recommendation && (
             <div className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
-              <div>launch mode: {surveyContext.launch_contract.launch_mode ?? "follow_up_sidecar"}</div>
-              <div>recommendation: {formatRecommendation(surveyContext.launch_contract.recommendation)}</div>
-              <div>contract source: {String(surveyContext.launch_contract.diagnostics?.source ?? plannerContext.diagnostics?.source ?? "-")}</div>
-              <div>load path: {readStringList(surveyContext.launch_contract.diagnostics?.load_path).join(" -> ") || "-"}</div>
+              <div>启动方式 launch mode: {surveyContext.launch_contract.launch_mode ?? "follow_up_sidecar"}</div>
+              <div>建议 recommendation: {formatRecommendation(surveyContext.launch_contract.recommendation)}</div>
+              <div>契约来源 contract source: {String(surveyContext.launch_contract.diagnostics?.source ?? plannerContext.diagnostics?.source ?? "-")}</div>
+              <div>加载路径 load path: {readStringList(surveyContext.launch_contract.diagnostics?.load_path).join(" -> ") || "-"}</div>
             </div>
           )}
           <div className="mt-3 grid gap-2 text-sm text-slate-700">
-            <div><span className="font-semibold">Objective：</span>{plannerContext.survey_inputs.objective ?? plannerContext.survey_objective ?? "暂无明确目标"}</div>
-            <div><span className="font-semibold">Respondent type：</span>{plannerContext.survey_inputs.respondent_type ?? "暂无明确受访者"}</div>
-            <div><span className="font-semibold">Question themes：</span>{readStringList(plannerContext.survey_inputs.question_themes).join("、") || "暂无主题"}</div>
-            <div><span className="font-semibold">Hypotheses：</span>{readStringList(plannerContext.survey_inputs.hypotheses).join("；") || "暂无假设"}</div>
+            <div><span className="font-semibold">目标 Objective：</span>{plannerContext.survey_inputs.objective ?? plannerContext.survey_objective ?? "暂无明确目标"}</div>
+            <div><span className="font-semibold">受访者类型 Respondent type：</span>{plannerContext.survey_inputs.respondent_type ?? "暂无明确受访者"}</div>
+            <div><span className="font-semibold">问题主题 Question themes：</span>{readStringList(plannerContext.survey_inputs.question_themes).join("、") || "暂无主题"}</div>
+            <div><span className="font-semibold">待验证假设 Hypotheses：</span>{readStringList(plannerContext.survey_inputs.hypotheses).join("；") || "暂无假设"}</div>
             {plannerContext.downstream_guidance?.survey && (
-              <div><span className="font-semibold">Guidance：</span>{plannerContext.downstream_guidance.survey.join("；")}</div>
+              <div><span className="font-semibold">执行建议 Guidance：</span>{plannerContext.downstream_guidance.survey.join("；")}</div>
             )}
           </div>
         </section>
@@ -168,7 +168,7 @@ function readStringList(value: unknown): string[] {
 }
 
 function formatRecommendation(recommendation: QuestionnaireFollowUpRecommendation): string {
-  if (recommendation.required) return "required follow-up";
-  if (recommendation.recommended) return "recommended follow-up";
-  return "optional";
+  if (recommendation.required) return "必需后续跟进 required follow-up";
+  if (recommendation.recommended) return "建议后续跟进 recommended follow-up";
+  return "可选 optional";
 }

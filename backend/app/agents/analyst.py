@@ -107,10 +107,10 @@ class AnalystAgent:
         )
         competitor_analysis = {
             competitor: {
-                "positioning": f"{competitor} is represented by mock competitor knowledge.",
+                "positioning": f"{competitor} 当前由 mock 竞品知识表示。",
                 "features": ["collaboration", "workflow"],
-                "pricing": ["paid/enterprise signal"],
-                "persona": ["enterprise team"],
+                "pricing": ["付费或企业版信号"],
+                "persona": ["企业团队"],
                 "evidence_ids": [item.evidence_id for item in input_data.evidence if item.competitor == competitor] or ids[:1],
                 "insufficient_evidence": False,
             }
@@ -120,12 +120,12 @@ class AnalystAgent:
             product_name=task.product_name,
             positioning=""
             if input_data.force_invalid_extraction
-            else f"{task.product_name} is a structured competitor analysis workspace.",
+            else f"{task.product_name} 是一个结构化竞品分析工作台。",
             target_segments=[]
             if input_data.force_invalid_extraction
-            else ["product marketing team", "strategy team", "sales enablement team"],
-            strengths=["traceable evidence", "structured schema", "QA feedback loop"],
-            weaknesses=["current demo still uses simplified extraction rules"],
+            else ["产品市场团队", "战略团队", "销售赋能团队"],
+            strengths=["证据可追溯", "结构化 Schema", "QA 反馈闭环"],
+            weaknesses=["当前 Demo 仍使用简化抽取规则"],
             evidence_ids=ids[:2],
             extensions={
                 "domain": {
@@ -153,21 +153,21 @@ class AnalystAgent:
             },
         )
         feature_tree = FeatureTree(
-            core_features=self._legacy_feature_tree_projection(capability_map) or {competitor: ["collaboration", "workflow", "pricing"] for competitor in task.competitors},
-            differentiators=self._legacy_differentiators(capability_map) or ["claim-to-evidence traceability", "manual review fallback"],
+            core_features=self._legacy_feature_tree_projection(capability_map) or {competitor: ["协作", "工作流", "定价"] for competitor in task.competitors},
+            differentiators=self._legacy_differentiators(capability_map) or ["Claim 到 Evidence 的可追溯性", "人工复核兜底"],
             evidence_ids=ids,
         )
         pricing = PricingModel(
-            model="tiered SaaS benchmark",
-            tiers=[f"{competitor}: starter/team/enterprise signals" for competitor in task.competitors],
-            pricing_notes="Competitors usually package collaboration and integration capability into higher tiers.",
+            model="分层 SaaS 对标模型",
+            tiers=[f"{competitor}: starter/team/enterprise 信号" for competitor in task.competitors],
+            pricing_notes="竞品通常会把协作和集成能力打包到更高阶套餐中。",
             evidence_ids=ids[1:3] or ids[:1],
         )
         persona = UserPersona(
-            persona_name="competitor intelligence owner",
-            goals=["reduce manual research time", "keep conclusions source-backed", "standardize report format"],
-            pain_points=["sources are scattered", "evidence quality is opaque", "QA takes time"],
-            buying_triggers=["new market entry", "quarterly planning", "sales battlecard refresh"],
+            persona_name="竞品情报负责人",
+            goals=["减少人工调研时间", "保持结论有来源支撑", "标准化报告格式"],
+            pain_points=["来源分散", "证据质量不透明", "QA 耗时"],
+            buying_triggers=["进入新市场", "季度规划", "销售 battlecard 更新"],
             evidence_ids=ids[2:4] or ids[:1],
         )
         swot = self._build_mock_swot(task.competitors, ids, selected_dimensions)
@@ -218,12 +218,12 @@ class AnalystAgent:
 
             feature_names = list(feature_hits.keys()) or ["insufficient evidence"]
             pricing_labels = self._pricing_tiers(pricing_evidence)
-            persona_labels = list(persona_hits.keys()) or ["Evidence-insufficient persona"]
-            aggregate_persona_labels.extend([item for item in persona_labels if item != "Evidence-insufficient persona"])
+            persona_labels = list(persona_hits.keys()) or ["证据不足，暂不判断用户画像"]
+            aggregate_persona_labels.extend([item for item in persona_labels if item != "证据不足，暂不判断用户画像"])
             positioning = (
-                "Evidence is insufficient for a confident conclusion."
+                "当前公开证据不足，暂不做强结论。Evidence is insufficient."
                 if insufficient
-                else f"{competitor} positioning is inferred only from its own public evidence: {self._compact(self._evidence_text(competitor_evidence[0]))}"
+                else f"{competitor} 的定位仅根据其自身公开证据保守推断：{self._compact(self._evidence_text(competitor_evidence[0]))}"
             )
 
             competitor_analysis[competitor] = {
@@ -245,15 +245,15 @@ class AnalystAgent:
                 aggregate_feature_hits[feature].extend(values)
             pricing_tiers.append(f"{competitor}: {', '.join(pricing_labels)}")
             persona_goals.append(f"{competitor}: evaluate fit for {', '.join(persona_labels[:2])}")
-            persona_pain_points.append(f"{competitor}: needs more official, pricing, and user-feedback evidence cross-checks")
-            persona_triggers.append(f"{competitor}: product selection and competitor replacement")
+            persona_pain_points.append(f"{competitor}: 需要更多官网、定价和用户反馈证据交叉验证")
+            persona_triggers.append(f"{competitor}: 产品选型和竞品替换场景")
         missing_competitors = [competitor for competitor, records in evidence_by_competitor.items() if not records]
         insufficient = bool(missing_competitors) or any(item["insufficient_evidence"] for item in competitor_analysis.values())
         diagnostics = self._diagnostics(
             input_data,
             "evidence",
             ids,
-            fallback_reason=fallback_reason or ("Evidence is insufficient for one or more competitors." if insufficient else None),
+            fallback_reason=fallback_reason or ("一个或多个竞品的公开证据不足。" if insufficient else None),
             insufficient=insufficient,
             feature_count=sum(item["feature"] for item in extracted_fields_by_competitor.values()),
             pricing_count=sum(item["pricing"] for item in extracted_fields_by_competitor.values()),
@@ -283,15 +283,15 @@ class AnalystAgent:
             positioning=""
             if input_data.force_invalid_extraction
             else (
-                "Evidence is insufficient for a confident conclusion."
+                "当前公开证据不足，暂不做强结论。Evidence is insufficient."
                 if insufficient
-                else f"{task.product_name} compares {', '.join(task.competitors)} using competitor-specific public evidence."
+                else f"{task.product_name} 基于各竞品专属公开证据对比 {', '.join(task.competitors)}。"
             ),
             target_segments=[]
             if input_data.force_invalid_extraction
-            else (["Evidence is insufficient for a confident conclusion."] if insufficient else ["enterprise team", "product team"]),
-            strengths=self._strengths_from_features(dict(aggregate_feature_hits)) or ["Evidence is insufficient for a confident conclusion."],
-            weaknesses=["Conclusions remain limited by available public evidence coverage per competitor."],
+            else (["当前公开证据不足，暂不做强结论。Evidence is insufficient."] if insufficient else ["企业团队", "产品团队"]),
+            strengths=self._strengths_from_features(dict(aggregate_feature_hits)) or ["当前公开证据不足，暂不做强结论。Evidence is insufficient."],
+            weaknesses=["当前结论仍受各竞品公开证据覆盖度限制。"],
             evidence_ids=ids[: min(5, len(ids))],
             extensions={
                 "domain": {
@@ -323,13 +323,13 @@ class AnalystAgent:
             },
         )
         feature_tree = FeatureTree(
-            core_features=self._legacy_feature_tree_projection(capability_map) or {"insufficient evidence": ["Evidence is insufficient for a confident conclusion."]},
-            differentiators=self._legacy_differentiators(capability_map) or self._strengths_from_features(dict(aggregate_feature_hits)) or ["Evidence is insufficient for a confident conclusion."],
+            core_features=self._feature_tree_from_hits(dict(aggregate_feature_hits)) or self._legacy_feature_tree_projection(capability_map) or {"insufficient evidence": ["当前公开证据不足，暂不做强结论。Evidence is insufficient."]},
+            differentiators=self._legacy_differentiators(capability_map) or self._strengths_from_features(dict(aggregate_feature_hits)) or ["当前公开证据不足，暂不做强结论。Evidence is insufficient."],
             evidence_ids=ids,
         )
         pricing = PricingModel(
-            model="Evidence-based competitor pricing summary" if not insufficient else "Evidence insufficient",
-            tiers=pricing_tiers or ["Evidence is insufficient"],
+            model="基于证据的竞品定价摘要" if not insufficient else "证据不足",
+            tiers=pricing_tiers or ["当前公开证据不足"],
             pricing_notes=self._pricing_notes([item for records in evidence_by_competitor.values() for item in records]),
             evidence_ids=[
                 item.evidence_id
@@ -339,10 +339,10 @@ class AnalystAgent:
             or ids[:1],
         )
         persona = UserPersona(
-            persona_name=aggregate_persona_labels[0] if aggregate_persona_labels else "competitor evaluation team",
-            goals=persona_goals or ["Evidence is insufficient for a confident conclusion."],
-            pain_points=persona_pain_points or ["Need more competitor-specific evidence."],
-            buying_triggers=persona_triggers or ["Evidence is insufficient for a confident conclusion."],
+            persona_name=aggregate_persona_labels[0] if aggregate_persona_labels else "竞品评估团队",
+            goals=persona_goals or ["当前公开证据不足，暂不做强结论。Evidence is insufficient."],
+            pain_points=persona_pain_points or ["需要更多竞品专属证据。"],
+            buying_triggers=persona_triggers or ["当前公开证据不足，暂不做强结论。Evidence is insufficient."],
             evidence_ids=ids[: min(5, len(ids))],
         )
         swot = self._build_evidence_swot(
@@ -508,7 +508,7 @@ class AnalystAgent:
                     ),
                     confidence=round(sum(bucket.confidence for bucket in buckets) / max(len(buckets), 1), 2),
                     insufficient_evidence=all(bucket.insufficient_evidence for bucket in buckets),
-                    summary=f"Observed across {len(buckets)} competitor capability buckets.",
+                    summary=f"该能力信号出现在 {len(buckets)} 个竞品能力桶中。",
                     signals=[
                         signal
                         for bucket in buckets
@@ -594,7 +594,7 @@ class AnalystAgent:
                         evidence_ids=["insufficient_evidence"],
                         confidence=0.25,
                         insufficient_evidence=True,
-                        summary="Relevant public evidence is insufficient for capability extraction.",
+                        summary="当前相关公开证据不足，暂不抽取能力结论。",
                         signals=[],
                     )
                 ],
@@ -615,7 +615,7 @@ class AnalystAgent:
                     evidence_ids=evidence_ids,
                     confidence=round(sum(signal.confidence for signal in signals) / max(len(signals), 1), 2),
                     insufficient_evidence=False,
-                    summary=f"{competitor} shows evidence-backed signals for {area}.",
+                    summary=f"{competitor} 在 {area} 方向存在由证据支撑的信号。",
                     signals=signals[:8],
                 )
             )
@@ -636,13 +636,21 @@ class AnalystAgent:
                 projected[area_bucket.capability_area] = labels[:4]
         return projected
 
+    @staticmethod
+    def _feature_tree_from_hits(feature_hits: dict[str, list[Evidence]]) -> dict[str, list[str]]:
+        return {
+            feature: [f"{feature} 相关证据：{', '.join(item.evidence_id for item in records[:3])}"]
+            for feature, records in feature_hits.items()
+            if records
+        }
+
     def _legacy_differentiators(self, capability_map: CapabilityMap) -> list[str]:
         differentiators = []
         for bucket in capability_map.aggregate_capabilities[:4]:
             if bucket.insufficient_evidence:
                 continue
             differentiators.append(
-                f"Evidence-backed capability area: {bucket.capability_area}"
+                f"由证据支撑的能力方向：{bucket.capability_area}"
             )
         return differentiators
 
@@ -690,21 +698,21 @@ class AnalystAgent:
 
     @staticmethod
     def _strengths_from_features(feature_hits: dict[str, list[Evidence]]) -> list[str]:
-        return [f"Public evidence mentions {feature} capability" for feature in list(feature_hits.keys())[:4]]
+        return [f"公开来源提到 {feature} 能力" for feature in list(feature_hits.keys())[:4]]
 
     @staticmethod
     def _pricing_notes(evidence: list[Evidence]) -> str:
         if not evidence:
-            return "Evidence is insufficient for a confident pricing conclusion."
-        return "Public evidence includes pricing or packaging signals; official pages should be used for final validation."
+            return "当前公开证据不足，暂不做强定价结论。Evidence is insufficient for pricing."
+        return "公开来源包含定价或套餐信号 pricing signals；正式结论仍应以官网页面做最终校验。"
 
     def _pricing_tiers(self, evidence: list[Evidence]) -> list[str]:
         if not evidence:
-            return ["Evidence is insufficient"]
+            return ["当前公开证据不足"]
         return [
-            "free/trial signal"
+            "免费或试用信号"
             if any(word in self._evidence_text(item).lower() for word in ["free", "trial", "免费", "试用"])
-            else "paid/enterprise signal"
+            else "付费或企业版信号"
             for item in evidence[:3]
         ]
 
@@ -722,7 +730,7 @@ class AnalystAgent:
         return SwotAnalysis(
             strengths=[
                 SwotItem(
-                    summary=f"Mock analysis highlights evidence traceability across {dimensions}.",
+                    summary=f"Mock 分析突出 {dimensions} 维度下的证据可追溯性。",
                     competitor=competitor_label,
                     evidence_ids=ids[:1],
                     confidence=0.55,
@@ -730,7 +738,7 @@ class AnalystAgent:
             ],
             weaknesses=[
                 SwotItem(
-                    summary="Mock extraction still relies on simplified rules and should be validated with richer evidence.",
+                    summary="Mock 抽取仍依赖简化规则，应使用更丰富证据进一步验证。",
                     competitor=competitor_label,
                     evidence_ids=ids[:1],
                     confidence=0.45,
@@ -738,7 +746,7 @@ class AnalystAgent:
             ],
             opportunities=[
                 SwotItem(
-                    summary=f"Planner-selected dimensions suggest deeper comparison opportunities around {dimensions}.",
+                    summary=f"Planner 选择的维度提示可围绕 {dimensions} 做更深入对比。",
                     competitor=competitor_label,
                     evidence_ids=ids[:1],
                     confidence=0.5,
@@ -746,7 +754,7 @@ class AnalystAgent:
             ],
             threats=[
                 SwotItem(
-                    summary="Public-evidence gaps can still limit confident competitor differentiation.",
+                    summary="公开证据缺口仍会限制竞品差异化判断的置信度。",
                     competitor=competitor_label,
                     evidence_ids=ids[:1],
                     confidence=0.45,
@@ -774,7 +782,7 @@ class AnalystAgent:
             competitor = next(iter(feature_competitors)) if len(feature_competitors) == 1 else None
             strengths.append(
                 SwotItem(
-                    summary=f"Public evidence repeatedly mentions {feature} capability, making it a visible competitive strength.",
+                    summary=f"公开来源多次提到 {feature} 能力，可作为可见的竞争优势信号。",
                     competitor=competitor,
                     evidence_ids=[item.evidence_id for item in feature_evidence[:3]] or ["insufficient_evidence"],
                     confidence=min(0.9, 0.55 + 0.08 * len(feature_evidence)),
@@ -788,7 +796,7 @@ class AnalystAgent:
             if not records or analysis.get("insufficient_evidence"):
                 weaknesses.append(
                     SwotItem(
-                        summary="Relevant public evidence is still too thin for a strong competitor-specific conclusion.",
+                        summary="相关公开证据仍然不足，暂不对该竞品做强结论。",
                         competitor=competitor,
                         evidence_ids=record_ids,
                         confidence=0.35,
@@ -796,7 +804,7 @@ class AnalystAgent:
                 )
                 threats.append(
                     SwotItem(
-                        summary="Thin evidence coverage increases the risk of over-indexing on a small set of public signals.",
+                        summary="证据覆盖较薄会增加过度依赖少量公开信号的风险。",
                         competitor=competitor,
                         evidence_ids=record_ids,
                         confidence=0.35,
@@ -809,7 +817,7 @@ class AnalystAgent:
             if pricing_records and {"pricing", "positioning"} & dimension_focus:
                 opportunities.append(
                     SwotItem(
-                        summary="Pricing and packaging signals are visible enough to support a sharper positioning comparison in the next step.",
+                        summary="定价与套餐信号已有一定可见度，可在下一步支持更细的定位对比。",
                         competitor=competitor,
                         evidence_ids=[item.evidence_id for item in pricing_records[:3]],
                         confidence=0.65,
@@ -818,7 +826,7 @@ class AnalystAgent:
             if feature_labels and feature_labels[0] != "insufficient evidence":
                 opportunities.append(
                     SwotItem(
-                        summary=f"Observed signals around {', '.join(feature_labels[:2])} create room for more targeted feature differentiation.",
+                        summary=f"围绕 {', '.join(feature_labels[:2])} 的公开信号可支持更有针对性的功能差异化分析。",
                         competitor=competitor,
                         evidence_ids=record_ids,
                         confidence=0.6,
@@ -827,9 +835,9 @@ class AnalystAgent:
             weaknesses.append(
                 SwotItem(
                     summary=(
-                        "UX and user-feedback conclusions should stay conservative until more explicit pain-point evidence is collected."
+                        "在采集到更明确的痛点证据前，UX 和用户反馈相关结论应保持保守。"
                         if {"ux", "feedback", "prioritization"} & dimension_focus
-                        else "Current public evidence still leaves some workflow and buyer-fit uncertainty."
+                        else "当前公开证据仍留下部分工作流和买方适配不确定性。"
                     ),
                     competitor=competitor,
                     evidence_ids=record_ids,
@@ -838,7 +846,7 @@ class AnalystAgent:
             )
             threats.append(
                 SwotItem(
-                    summary="Cross-competitor conclusions should remain guarded because available evidence may not cover the full product surface.",
+                    summary="由于现有证据可能无法覆盖完整产品能力，跨竞品结论应保持谨慎。",
                     competitor=competitor,
                     evidence_ids=record_ids,
                     confidence=0.5,
@@ -849,7 +857,7 @@ class AnalystAgent:
         if not strengths:
             strengths.append(
                 SwotItem(
-                    summary="Some relevant evidence exists, but not enough to isolate a durable strength yet.",
+                    summary="已有部分相关证据，但仍不足以识别稳定优势。",
                     competitor=fallback_competitor,
                     evidence_ids=["insufficient_evidence"],
                     confidence=0.35,
@@ -858,7 +866,7 @@ class AnalystAgent:
         if not opportunities:
             opportunities.append(
                 SwotItem(
-                    summary="Additional official documentation and pricing pages would improve opportunity mapping.",
+                    summary="补充官方文档和定价页会提升机会点判断质量。",
                     competitor=fallback_competitor,
                     evidence_ids=["insufficient_evidence"],
                     confidence=0.35,
@@ -911,7 +919,7 @@ class AnalystAgent:
                     fallback_ids = [record.evidence_id for record in competitor_records[:2]] or ["insufficient_evidence"]
                     items[index] = item.model_copy(
                         update={
-                            "summary": "Evidence remains too thin for a strong SWOT conclusion after recheck.",
+                            "summary": "复核后证据仍然不足，暂不保留强 SWOT 结论。",
                             "evidence_ids": fallback_ids,
                             "confidence": 0.35,
                         }
@@ -920,7 +928,7 @@ class AnalystAgent:
                 elif error_type == "swot_over_inference":
                     items[index] = item.model_copy(
                         update={
-                            "summary": f"Conservative follow-up: {item.summary}",
+                            "summary": f"保守改写：{item.summary}",
                             "confidence": min(item.confidence, 0.45),
                         }
                     )

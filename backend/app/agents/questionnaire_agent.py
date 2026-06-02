@@ -19,6 +19,15 @@ QUESTIONNAIRE_REVISION_SYSTEM_PROMPT = """你是竞品分析系统中的 Questio
 QUESTIONNAIRE_TOPIC_SYSTEM_PROMPT = """你是竞品分析系统中的 QuestionnaireAgent。
 你的任务是根据用户输入的任意研究话题生成一份可直接投放、可 CSV 分析的问卷。问卷可以独立于竞品分析任务运行，但输出仍必须结构化、可统计、避免隐私敏感信息。输出必须是合法 JSON。"""
 
+STRICT_JSON_OUTPUT_CONTRACT = (
+    "\n输出约束：只返回合法 JSON object，不要输出 JSON 外的解释文字，不要使用 Markdown 代码块包裹 JSON。"
+    "用户可见文本可以使用中文，但 JSON key、Schema 字段名、field_name 和枚举值必须保持英文。"
+)
+
+QUESTIONNAIRE_SYSTEM_PROMPT += STRICT_JSON_OUTPUT_CONTRACT
+QUESTIONNAIRE_REVISION_SYSTEM_PROMPT += STRICT_JSON_OUTPUT_CONTRACT
+QUESTIONNAIRE_TOPIC_SYSTEM_PROMPT += STRICT_JSON_OUTPUT_CONTRACT
+
 
 class QuestionnaireAgent:
     def __init__(self, llm_client: SurveyLLMClient | None = None):

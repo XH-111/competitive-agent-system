@@ -56,7 +56,7 @@ class QaAgent:
             metadata=instruction_metadata or {},
         )
         if rework_count >= MAX_REWORK:
-            instruction.suggested_action = "Max rework reached. Escalate to manual review."
+            instruction.suggested_action = "已达到最大返工次数，请进入人工复核。"
             return QaResult(
                 task_id=task_id,
                 status="manual_review",
@@ -83,8 +83,8 @@ class QaAgent:
             input_data.task.rework_count,
             "CollectorAgent",
             "missing_relevant_evidence",
-            f"Missing relevant public evidence for competitors: {', '.join(missing)}.",
-            "Re-run CollectorAgent with precise per-competitor search and do not use unrelated search results as Evidence.",
+            f"以下竞品缺少相关公开证据：{', '.join(missing)}。",
+            "请重新运行 CollectorAgent，按竞品定向搜索；不要把无关搜索结果作为 Evidence 使用。",
             failed_schema="Evidence.relevance",
             instruction_metadata={
                 "kind": "coverage_gap",
@@ -106,8 +106,8 @@ class QaAgent:
                 rework_count,
                 "CollectorAgent",
                 "missing_evidence",
-                "No usable Evidence is available to support downstream analysis or reporting.",
-                "Re-run CollectorAgent and collect at least one Evidence item with a source reference.",
+                "当前没有可用于支撑后续分析或报告的 Evidence。",
+                "请重新运行 CollectorAgent，并至少采集一条带来源引用的 Evidence。",
                 failed_schema="Evidence",
                 result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
             )
@@ -126,8 +126,8 @@ class QaAgent:
                 rework_count,
                 "AnalystAgent",
                 "invalid_extraction",
-                "AnalystAgent output is missing.",
-                "Re-run AnalystAgent to produce ProductProfile, FeatureTree, PricingModel, UserPersona, and SWOT output.",
+                "AnalystAgent 输出缺失。",
+                "请重新运行 AnalystAgent，生成 ProductProfile、FeatureTree、PricingModel、UserPersona 和 SWOT 输出。",
                 failed_schema="AnalystOutput",
                 result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
             )
@@ -139,8 +139,8 @@ class QaAgent:
                 rework_count,
                 "AnalystAgent",
                 "invalid_extraction",
-                "ProductProfile is incomplete or inconsistent.",
-                "Re-run AnalystAgent and repair ProductProfile positioning and target_segments.",
+                "ProductProfile 不完整或存在不一致。",
+                "请重新运行 AnalystAgent，修复 ProductProfile 的 positioning 和 target_segments。",
                 failed_schema="ProductProfile",
                 result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
             )
@@ -151,8 +151,8 @@ class QaAgent:
                 rework_count,
                 "AnalystAgent",
                 "invalid_extraction",
-                "Analyst output contains unsupported conclusions.",
-                "Re-run AnalystAgent and keep conclusions evidence-bound and conservative.",
+                "Analyst 输出包含缺少证据支撑的结论。",
+                "请重新运行 AnalystAgent，并保持结论与证据绑定、表达保守。",
                 failed_schema="AnalystOutput",
                 result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
             )
@@ -163,8 +163,8 @@ class QaAgent:
                 rework_count,
                 "ReportWriterAgent",
                 "bad_report_format",
-                "ReportWriterAgent output is missing.",
-                "Re-run ReportWriterAgent to generate Markdown and JSON report outputs.",
+                "ReportWriterAgent 输出缺失。",
+                "请重新运行 ReportWriterAgent，生成 Markdown 和 JSON 报告输出。",
                 failed_schema="ReportWriterOutput",
             )
 
@@ -176,8 +176,8 @@ class QaAgent:
                         rework_count,
                         "ReportWriterAgent",
                         "bad_report_format",
-                        "Draft report contains a claim without evidence_ids.",
-                        "Re-run ReportWriterAgent and bind every claim to evidence_ids or remove unsupported claims.",
+                        "草稿报告中存在缺少 evidence_ids 的 Claim。",
+                        "请重新运行 ReportWriterAgent，为每条 Claim 绑定 evidence_ids，或移除无证据支撑的 Claim。",
                         failed_claim=claim.get("text"),
                     )
 
@@ -187,8 +187,8 @@ class QaAgent:
                 rework_count,
                 "ReportWriterAgent",
                 "bad_report_format",
-                "Report output is empty.",
-                "Re-generate a report object with markdown, json_report, and claims.",
+                "Report 输出为空。",
+                "请重新生成包含 markdown、json_report 和 claims 的 Report 对象。",
                 failed_schema="Report",
             )
 
@@ -199,8 +199,8 @@ class QaAgent:
                 rework_count,
                 "ReportWriterAgent",
                 "bad_report_format",
-                "Markdown report must start with a level-1 heading.",
-                "Re-run ReportWriterAgent and generate a Markdown report with a proper top-level heading.",
+                "Markdown 报告必须以一级标题开头。",
+                "请重新运行 ReportWriterAgent，生成带有正确一级标题的 Markdown 报告。",
                 failed_schema="Report.markdown",
             )
 
@@ -211,8 +211,8 @@ class QaAgent:
                     rework_count,
                     "ReportWriterAgent",
                     "bad_report_format",
-                    f"Claim {claim.claim_id} is missing evidence_ids.",
-                    "Bind evidence_ids for every source-backed claim.",
+                    f"Claim {claim.claim_id} 缺少 evidence_ids。",
+                    "请为每条有来源支撑的 Claim 绑定 evidence_ids。",
                     claim_id=claim.claim_id,
                     failed_claim=claim.text,
                 )
@@ -236,7 +236,7 @@ class QaAgent:
             soft_suggestions=[
                 suggestion
                 for suggestion in [
-                    "Before production use, replace mock evidence with real collected evidence.",
+                    "正式生产使用前，请将 mock evidence 替换为真实采集证据。",
                     input_data.report_output.llm_fallback_reason if input_data.report_output else None,
                     *self._analysis_suggestions(input_data.analysis),
                     *quality_suggestions,
@@ -264,8 +264,8 @@ class QaAgent:
             input_data.task.rework_count,
             "CollectorAgent",
             "missing_evidence",
-            f"Missing competitor evidence coverage: {', '.join(missing)}.",
-            "Re-run CollectorAgent with per-competitor search and ensure every competitor has Evidence.",
+            f"以下竞品缺少 Evidence 覆盖：{', '.join(missing)}。",
+            "请重新运行 CollectorAgent，按竞品分别搜索，并确保每个竞品都有 Evidence。",
             failed_schema="Evidence.competitor",
             instruction_metadata={"competitors": missing, "fix_type": "collect_more_evidence"},
             result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
@@ -357,8 +357,8 @@ class QaAgent:
                         competitor=item.competitor,
                         quadrant=quadrant,
                         fix_type="collect_more_evidence",
-                        reason=f"SWOT {quadrant[:-1]} for {item.competitor or 'overall'} lacks strong evidence support.",
-                        suggested_action="Collect stronger competitor-specific evidence before keeping this SWOT item.",
+                        reason=f"{item.competitor or '整体'} 的 SWOT {quadrant[:-1]} 缺少强证据支撑。",
+                        suggested_action="保留该 SWOT 项前，请先补充更强的竞品专属证据。",
                         query_focus=self._query_focus(quadrant, selected_dimensions),
                         focus_dimensions=selected_dimensions,
                     )
@@ -375,10 +375,10 @@ class QaAgent:
                         quadrant=quadrant,
                         fix_type="recompute_swot",
                         reason=(
-                            f"SWOT {quadrant[:-1]} for {item.competitor or 'overall'} cites evidence from "
-                            f"{mismatched[0].competitor}."
+                            f"{item.competitor or '整体'} 的 SWOT {quadrant[:-1]} 引用了 "
+                            f"{mismatched[0].competitor} 的证据。"
                         ),
-                        suggested_action="Recompute SWOT and bind each item only to evidence from the same competitor.",
+                        suggested_action="请重新计算 SWOT，并确保每一项只绑定同一竞品的 Evidence。",
                         query_focus=self._query_focus(quadrant, selected_dimensions),
                         focus_dimensions=selected_dimensions,
                     )
@@ -393,8 +393,8 @@ class QaAgent:
                         competitor=item.competitor,
                         quadrant=quadrant,
                         fix_type="soften_language",
-                        reason=f"SWOT {quadrant[:-1]} for {item.competitor or 'overall'} looks over-inferred from sparse evidence.",
-                        suggested_action="Lower confidence, soften language, or remove the item unless stronger evidence exists.",
+                        reason=f"{item.competitor or '整体'} 的 SWOT {quadrant[:-1]} 基于稀疏证据存在过度推断风险。",
+                        suggested_action="除非有更强证据，否则请降低 confidence、弱化表述或移除该项。",
                         query_focus=self._query_focus(quadrant, selected_dimensions),
                         focus_dimensions=selected_dimensions,
                     )
@@ -418,11 +418,11 @@ class QaAgent:
                         competitor=competitor,
                         quadrant=None,
                         fix_type="collect_more_evidence" if target_agent == "CollectorAgent" else "recompute_swot",
-                        reason=f"SWOT coverage is missing for competitor {competitor}.",
+                        reason=f"SWOT 缺少竞品 {competitor} 的覆盖。",
                         suggested_action=(
-                            "Collect more relevant evidence for this competitor before recomputing SWOT."
+                            "重新计算 SWOT 前，请先为该竞品采集更多相关证据。"
                             if target_agent == "CollectorAgent"
-                            else "Recompute SWOT so each requested competitor is represented."
+                            else "请重新计算 SWOT，确保每个请求的竞品都有体现。"
                         ),
                         query_focus=self._query_focus("weaknesses", selected_dimensions),
                         focus_dimensions=selected_dimensions,
@@ -446,8 +446,8 @@ class QaAgent:
                     competitor=None,
                     quadrant=None,
                     fix_type="recompute_swot",
-                    reason=f"SWOT does not reflect planner-selected dimensions: {', '.join(unsupported_dimensions[:3])}.",
-                    suggested_action="Recompute SWOT so planner-selected dimensions are reflected conservatively in the items.",
+                    reason=f"SWOT 未体现 Planner 选择的分析维度：{', '.join(unsupported_dimensions[:3])}。",
+                    suggested_action="请重新计算 SWOT，并以保守方式体现 Planner 选择的维度。",
                     query_focus=[],
                     focus_dimensions=unsupported_dimensions,
                 )
@@ -525,8 +525,8 @@ class QaAgent:
                         input_data.task.rework_count,
                         "ReportWriterAgent",
                         "bad_report_format",
-                        f"Claim {claim.claim_id} uses unrelated evidence {evidence_id}.",
-                        "Re-run ReportWriterAgent and bind claims only to high/medium relevance Evidence from the same competitor.",
+                        f"Claim {claim.claim_id} 使用了无关 Evidence {evidence_id}。",
+                        "请重新运行 ReportWriterAgent，只使用同一竞品的 high/medium relevance Evidence 绑定 Claim。",
                         claim_id=claim.claim_id,
                         failed_claim=claim.text,
                         failed_schema="Claim.evidence_ids.relevance",
@@ -552,8 +552,8 @@ class QaAgent:
                 input_data.task.rework_count,
                 "ReportWriterAgent",
                 "bad_report_format",
-                f"Missing competitor claim coverage: {', '.join(missing_claims)}.",
-                "Re-run ReportWriterAgent and generate at least one source-backed claim for each competitor with available Evidence.",
+                f"以下竞品缺少 Claim 覆盖：{', '.join(missing_claims)}。",
+                "请重新运行 ReportWriterAgent，为每个已有 Evidence 的竞品至少生成一条有来源支撑的 Claim。",
                 failed_schema="Report.claims.competitor",
             )
 
@@ -568,8 +568,8 @@ class QaAgent:
                         input_data.task.rework_count,
                         "ReportWriterAgent",
                         "bad_report_format",
-                        f"Claim evidence competitor mismatch: {claim.claim_id} uses {evidence_id}.",
-                        "Re-run ReportWriterAgent and bind each claim only to Evidence from the same competitor.",
+                        f"Claim 与 Evidence 的竞品不匹配：{claim.claim_id} 使用了 {evidence_id}。",
+                        "请重新运行 ReportWriterAgent，确保每条 Claim 只绑定同一竞品的 Evidence。",
                         claim_id=claim.claim_id,
                         failed_schema="Claim.evidence_ids",
                     )
@@ -603,11 +603,11 @@ class QaAgent:
         low_relevance_claims = []
 
         if len(input_data.evidence) < 3:
-            suggestions.append("Evidence count is below 3; collect more public sources.")
+            suggestions.append("Evidence 数量少于 3 条，建议补充更多公开来源。")
 
         missing_domain_count = sum(1 for item in input_data.evidence if not item.source_domain)
         if missing_domain_count:
-            suggestions.append("Some Evidence items are missing source_domain; review source parsing.")
+            suggestions.append("部分 Evidence 缺少 source_domain，建议检查来源解析。")
 
         if input_data.report_output and input_data.report_output.report:
             for claim in input_data.report_output.report.claims:
@@ -617,7 +617,7 @@ class QaAgent:
                     suggestions.append("证据可信度较低，建议补充官方或高质量来源。")
                 if related and all(item.relevance_level == "low" for item in related):
                     low_relevance_claims.append(claim.claim_id)
-                    suggestions.append("Some claims are only backed by low-relevance evidence; add clearer competitor-specific sources.")
+                    suggestions.append("部分 Claim 只由低相关 Evidence 支撑，建议补充更明确的竞品专属来源。")
                 for evidence_id in claim.evidence_ids:
                     evidence = evidence_by_id.get(evidence_id)
                     if claim.competitor and evidence and evidence.competitor and claim.competitor != evidence.competitor:
@@ -641,7 +641,7 @@ class QaAgent:
 
         swot_issues = self._collect_swot_issues(input_data) if input_data.analysis is not None else []
         if swot_issues:
-            suggestions.append("SWOT contains weakly supported items; collect stronger evidence or recompute the affected quadrants.")
+            suggestions.append("SWOT 中存在支撑较弱的项目，建议补充更强证据或重新计算相关象限。")
 
         diagnostics = {
             "evidence_quality_checked": True,
@@ -685,18 +685,18 @@ class QaAgent:
         suggestions = []
         objects = [analysis.product_profile, analysis.feature_tree, analysis.pricing_model, analysis.user_persona]
         if any(not getattr(item, "evidence_ids", []) for item in objects):
-            suggestions.append("Some structured analysis fields are missing evidence_ids.")
+            suggestions.append("部分结构化分析字段缺少 evidence_ids。")
         capability_buckets = [
             bucket
             for buckets in analysis.capability_map.competitor_capabilities.values()
             for bucket in buckets
         ] if getattr(analysis, "capability_map", None) else []
         if capability_buckets and any(not bucket.evidence_ids and not bucket.insufficient_evidence for bucket in capability_buckets):
-            suggestions.append("Some capability buckets are missing evidence_ids and should stay evidence-bound.")
-        if "Evidence is insufficient" in analysis.product_profile.positioning:
+            suggestions.append("部分能力桶缺少 evidence_ids，应保持与证据绑定。")
+        if "Evidence is insufficient" in analysis.product_profile.positioning or "当前公开证据不足" in analysis.product_profile.positioning:
             suggestions.append("结构化分析证据不足，建议补充更多来源。")
         if not analysis.feature_tree.core_features or not analysis.pricing_model.tiers or not analysis.user_persona.goals:
-            suggestions.append("Some structured analysis sections remain sparse and may need more evidence.")
+            suggestions.append("部分结构化分析章节仍较稀疏，可能需要更多证据。")
         return suggestions
 
     @staticmethod
@@ -749,7 +749,7 @@ class QaAgent:
             to_agent="FinalReport",
             message_type="qa",
             schema_name="QaOutput",
-            input_summary="Validate schema, evidence coverage, report format, competitor coverage, and SWOT quality",
+            input_summary="校验 Schema、证据覆盖、报告格式、竞品覆盖和 SWOT 质量",
             retry_count=input_data.retry_count,
             fn=produce,
         )

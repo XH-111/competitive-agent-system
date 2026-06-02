@@ -169,8 +169,8 @@ class PlannerAgent:
         resolved_domain_pack = self._resolved_domain_pack(task, extracted)
         domain_pack = self._domain_pack_reference(task, extracted, planning_profile["scope_type"])
         planner_notes = self._normalize_string_list(payload.get("planner_notes"))
-        planner_notes.append("Planner used LLM-enhanced intent extraction and deterministic plan normalization.")
-        planner_notes.append("Planner keeps confirmed user scope separate from inferred and suggested scope metadata.")
+        planner_notes.append("Planner 已使用 LLM 增强意图抽取，并通过确定性规则归一化计划。")
+        planner_notes.append("Planner 会区分用户确认范围、系统推断范围和建议范围；confirmed user scope remains separated from inferred and suggested scope metadata.")
         missing_information = self._build_missing_information(task, extracted, planning_profile, payload.get("missing_information"))
         confidence = self._safe_confidence(payload.get("confidence", extracted.confidence), fallback=extracted.confidence or 0.75)
         diagnostics.update(
@@ -274,8 +274,8 @@ class PlannerAgent:
             survey_needed,
             planning_profile=planning_profile,
         )
-        planner_notes = ["Planner used deterministic fallback logic."]
-        planner_notes.append("Planner keeps confirmed user scope separate from inferred and suggested scope metadata.")
+        planner_notes = ["Planner 使用确定性兜底逻辑。"]
+        planner_notes.append("Planner 会区分用户确认范围、系统推断范围和建议范围；confirmed user scope remains separated from inferred and suggested scope metadata.")
         if fallback_reason:
             planner_notes.append(fallback_reason)
         downstream_guidance = self._build_guidance(
@@ -1078,15 +1078,15 @@ class PlannerAgent:
 
     def _messages(self, task: Task) -> list[dict[str, str]]:
         system = (
-            "You are the PlannerAgent for a competitive product analysis platform. "
-            "Your task is to understand the user's analysis request and return a strictly valid JSON planning result for downstream modules.\n\n"
-            "Your output must:\n"
-            "1. identify the user's high-level intent,\n"
-            "2. extract product-analysis context,\n"
-            "3. determine whether survey support is needed,\n"
-            "4. generate planning guidance for downstream modules,\n"
-            "5. strictly follow the required JSON structure and field types.\n\n"
-            "intent_classification must be exactly one of:\n"
+            "你是竞品分析平台中的 PlannerAgent。你的任务是理解用户的中文或中英混合分析需求，并为下游模块返回严格合法的 JSON 规划结果。\n\n"
+            "你的输出必须：\n"
+            "1. 识别用户的高层意图；\n"
+            "2. 抽取产品分析上下文；\n"
+            "3. 判断是否需要问卷或用户调研支持；\n"
+            "4. 为 CollectorAgent、AnalystAgent、ReportWriterAgent、QaAgent 和 Survey 模块生成中文执行指导；\n"
+            "5. 严格遵循要求的 JSON 结构和字段类型。\n\n"
+            "JSON 字段名必须保持英文，不要翻译 key。字段内容、planner_notes、downstream_guidance、survey_reason 等解释性文本应尽量使用中文，适合中文企业竞品分析场景。\n\n"
+            "intent_classification 必须严格使用以下英文枚举之一：\n"
             "- competitive_analysis\n"
             "- product_positioning\n"
             "- feature_comparison\n"
@@ -1096,10 +1096,10 @@ class PlannerAgent:
             "- survey_analysis\n"
             "- market_research\n"
             "- unknown\n\n"
-            "Classification rule:\n"
-            "- If the request combines product comparison with questionnaire generation for pain-point discovery, validation, or improvement planning, use improvement_opportunity.\n"
-            "- Use survey_design only when the main task is simply to create a questionnaire without a broader improvement-analysis purpose.\n\n"
-            "Return exactly one JSON object with these fields and types:\n"
+            "分类规则：\n"
+            "- 如果请求同时包含产品对比和问卷生成，用于痛点发现、痛点验证或改进规划，请使用 improvement_opportunity。\n"
+            "- 只有当主任务只是创建问卷、且没有更大的改进分析目标时，才使用 survey_design。\n\n"
+            "只返回一个 JSON object，字段和类型如下：\n"
             "- intent_summary: string\n"
             "- intent_classification: string\n"
             "- industry: string\n"
@@ -1128,22 +1128,22 @@ class PlannerAgent:
             '- planning_stages: [{"stage_id": string, "label": string, "objective": string, "outputs": string[], "depends_on": string[], "priority": number}]\n'
             '- planner_notes: string[]\n'
             '- downstream_guidance: {"collector": string[], "analyst": string[], "writer": string[], "qa": string[], "survey": string[]}\n\n'
-            "Important typing rules:\n"
-            "- Every list-like field must be a JSON array.\n"
-            "- Never return a string where an array is required.\n"
-            "- Even a single item must still be returned as an array.\n"
-            "- Do not return null.\n"
-            "- If some information is uncertain, infer reasonably and put uncertainties into missing_information.\n"
-            "- confidence must be a number between 0 and 1.\n"
-            "- Return JSON only.\n"
-            "- No markdown.\n"
-            "- No explanations.\n"
-            "- No code fences."
+            "重要类型规则：\n"
+            "- 所有 list-like 字段必须是 JSON array。\n"
+            "- 需要 array 的地方绝不能返回 string。\n"
+            "- 即使只有一个元素，也必须返回 array。\n"
+            "- 不要返回 null。\n"
+            "- 如果信息不确定，可以合理推断，并把不确定性写入 missing_information。\n"
+            "- confidence 必须是 0 到 1 之间的 number。\n"
+            "- 只返回 JSON。\n"
+            "- 不要输出 Markdown。\n"
+            "- 不要输出额外解释。\n"
+            "- 不要输出代码块。"
         )
         user = (
-            "User request example:\n"
+            "用户请求示例：\n"
             "“我想分析苹果和三星旗舰手机的优劣，并生成一个关于手机续航问题的用户问卷”\n\n"
-            "Expected style:\n"
+            "期望输出风格：\n"
             "{\n"
             '"intent_summary": "分析苹果和三星旗舰手机的优劣，并准备围绕手机续航问题的用户问卷。",\n'
             '"intent_classification": "improvement_opportunity",\n'
@@ -1177,7 +1177,7 @@ class PlannerAgent:
             '"survey": ["围绕续航痛点、充电体验和改进优先级设计题目。"]\n'
             "}\n"
             "}\n\n"
-            "Now return exactly one JSON object for this task input:\n"
+            "现在请针对以下 task input 返回一个且仅一个 JSON object：\n"
             f"{task.model_dump(mode='json')}"
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]

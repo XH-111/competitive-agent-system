@@ -15,6 +15,7 @@ import { SurveyWorkspacePage } from "./pages/SurveyWorkspacePage";
 import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { reportContractSource, workflowContractSource } from "./lib/contractSelectors";
 import { Pill } from "./types";
+import { labelFor } from "./i18n/zh";
 
 type Workspace = "competitive" | "survey";
 
@@ -244,10 +245,10 @@ export default function App() {
       {workspace === "competitive" && (
       <div className="p-4">
         <section className="mb-4 rounded border border-line bg-white p-4 text-sm text-slate-700">
-          <div className="font-semibold">Current Product Boundary</div>
-          <div className="mt-1">Primary workflow: LangGraph competitive-analysis run.</div>
-          <div>Legacy fallback: Custom Runner with a shorter execution path.</div>
-          <div>Questionnaire and survey work: follow-up sidecar workflow, not an always-on main DAG node.</div>
+          <div className="font-semibold">当前产品边界</div>
+          <div className="mt-1">主流程：LangGraph 竞品分析运行。</div>
+          <div>旧版兜底：Custom Runner，执行路径更短。</div>
+          <div>问卷和调研：主流程后的侧边工作流，不是主 DAG 的常驻节点。</div>
         </section>
 
         <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
@@ -271,7 +272,7 @@ export default function App() {
         {task && runs.length > 0 && (
           <section className="mb-4 rounded border border-line bg-white p-3">
             <div className="mb-2 flex items-center justify-between gap-3">
-              <h2 className="text-base font-semibold">Run History</h2>
+              <h2 className="text-base font-semibold">运行历史 Run History</h2>
               <span className="text-xs text-slate-500">当前查看：{selectedRunId ?? "latest"}</span>
             </div>
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
@@ -290,8 +291,8 @@ export default function App() {
                     <span>{run.analyst_mode}</span>
                     <span>{run.writer_mode}</span>
                   </div>
-                  <div className="mt-1">final_status: {run.final_status ?? run.status}</div>
-                  <div>elapsed: {run.elapsed_time_ms ?? 0}ms</div>
+                  <div className="mt-1">最终状态 final_status: {run.final_status ?? run.status}</div>
+                  <div>耗时 elapsed: {run.elapsed_time_ms ?? 0}ms</div>
                 </button>
               ))}
             </div>
@@ -314,33 +315,33 @@ export default function App() {
             value={writerMode}
             onChange={(event) => setWriterMode(event.target.value as "mock" | "llm")}
           >
-            <option value="mock">Mock ReportWriter</option>
-            <option value="llm">LLM ReportWriter</option>
+            <option value="mock">Mock ReportWriter（稳定演示）</option>
+            <option value="llm">LLM ReportWriter（大模型撰写）</option>
           </select>
           <select
             className="rounded border border-line bg-white px-3 py-2 text-sm"
             value={collectorMode}
             onChange={(event) => setCollectorMode(event.target.value as "mock" | "web")}
           >
-            <option value="mock">Mock Collector</option>
-            <option value="web">Web Collector</option>
+            <option value="mock">Mock Collector（稳定演示）</option>
+            <option value="web">Web Collector（公开搜索）</option>
           </select>
           <select
             className="rounded border border-line bg-white px-3 py-2 text-sm"
             value={analystMode}
             onChange={(event) => setAnalystMode(event.target.value as "mock" | "evidence" | "llm")}
           >
-            <option value="mock">Mock Analyst</option>
-            <option value="evidence">Evidence-based Analyst</option>
-            <option value="llm">LLM Analyst</option>
+            <option value="mock">Mock Analyst（稳定演示）</option>
+            <option value="evidence">基于证据的 Analyst</option>
+            <option value="llm">LLM Analyst（当前兜底到证据模式）</option>
           </select>
           <select
             className="rounded border border-line bg-white px-3 py-2 text-sm"
             value={workflowEngine}
             onChange={(event) => setWorkflowEngine(event.target.value as "custom" | "langgraph")}
           >
-            <option value="langgraph">LangGraph Runner (Primary)</option>
-            <option value="custom">Custom Runner (Legacy Fallback)</option>
+            <option value="langgraph">LangGraph Runner（主流程）</option>
+            <option value="custom">Custom Runner（旧版兜底）</option>
           </select>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
@@ -375,43 +376,43 @@ export default function App() {
             />
             auto_rework=true
           </label>
-          <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
+          <span className="text-sm text-slate-600">执行所选 Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
         </div>
 
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded border border-dashed border-line bg-white p-3 text-sm">
-          <span className="font-semibold">API Recorder</span>
+          <span className="font-semibold">API 录制器 API Recorder</span>
           <label className="inline-flex items-center gap-2">
             <input
               type="checkbox"
               checked={apiRecorderSnapshot.enabled}
               onChange={(event) => apiRecorder.setEnabled(event.target.checked)}
             />
-            enabled
+            启用 enabled
           </label>
-          <span>recorded: {apiRecorderSnapshot.records.length}</span>
+          <span>已记录 recorded: {apiRecorderSnapshot.records.length}</span>
           <button
             type="button"
             onClick={() => apiRecorder.clear()}
             className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
           >
-            Clear Recording
+            清空记录
           </button>
           <button
             type="button"
             onClick={() => apiRecorder.exportRaw()}
             className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
           >
-            Export Raw JSON
+            导出原始 JSON
           </button>
           <button
             type="button"
             onClick={() => apiRecorder.exportGroupedMarkdown()}
             className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
           >
-            Export Grouped Markdown
+            导出分组 Markdown
           </button>
           <span className="text-xs text-slate-500">
-            Records frontend request/response inputs and outputs during your manual session.
+            记录本次手动操作中的前端请求与响应，便于答辩复盘。
           </span>
         </div>
 
@@ -436,55 +437,55 @@ export default function App() {
             )}
             {writerDiagnostics && (
               <div className="mt-2 grid gap-2 md:grid-cols-4">
-                <span>requested：{writerDiagnostics.writer_mode_requested ?? "-"}</span>
-                <span>used：{writerDiagnostics.writer_mode_used ?? "-"}</span>
-                <span>fallback：{writerDiagnostics.fallback_used ? "true" : "false"}</span>
-                <span>llm_call：{writerDiagnostics.llm_call_attempted ? (writerDiagnostics.llm_call_success ? "success" : "failed") : "not_attempted"}</span>
+                <span>请求模式 requested：{writerDiagnostics.writer_mode_requested ?? "-"}</span>
+                <span>实际模式 used：{writerDiagnostics.writer_mode_used ?? "-"}</span>
+                <span>{labelFor("fallback_used")}：{writerDiagnostics.fallback_used ? "true" : "false"}</span>
+                <span>LLM 调用 llm_call：{writerDiagnostics.llm_call_attempted ? (writerDiagnostics.llm_call_success ? "success" : "failed") : "not_attempted"}</span>
               </div>
             )}
             {workflowSummary && (
               <div className="mt-2 rounded border border-line bg-panel px-3 py-2">
                 <div className="flex flex-wrap gap-x-5 gap-y-1">
-                  <span>Workflow Engine: {workflowCore?.workflow_engine_used ?? workflowSummary.workflow_engine_used ?? "-"}</span>
-                  <span>role: {workflowCore?.workflow_role ?? workflowSummary.workflow_role ?? "-"}</span>
-                  <span>requested: {workflowCore?.workflow_engine_requested ?? workflowSummary.workflow_engine_requested ?? "-"}</span>
-                  <span>rework_count: {workflowCore?.rework_count ?? workflowSummary.rework_count ?? 0}</span>
-                  <span>final_status: {workflowCore?.final_status ?? workflowSummary.final_status ?? "-"}</span>
-                  <span>frontend contract: {workflowContract}</span>
-                  <span>domain pack: {workflowCore?.domain_pack?.display_name ?? "-"}</span>
-                  {!!(workflowSummary.selected_dimensions?.length || workflowCore?.selected_dimensions?.length) && <span>planner dimensions: {(workflowSummary.selected_dimensions ?? workflowCore?.selected_dimensions ?? []).join(", ")}</span>}
+                  <span>工作流引擎 Workflow Engine: {workflowCore?.workflow_engine_used ?? workflowSummary.workflow_engine_used ?? "-"}</span>
+                  <span>角色 role: {workflowCore?.workflow_role ?? workflowSummary.workflow_role ?? "-"}</span>
+                  <span>请求引擎 requested: {workflowCore?.workflow_engine_requested ?? workflowSummary.workflow_engine_requested ?? "-"}</span>
+                  <span>返工次数 rework_count: {workflowCore?.rework_count ?? workflowSummary.rework_count ?? 0}</span>
+                  <span>最终状态 final_status: {workflowCore?.final_status ?? workflowSummary.final_status ?? "-"}</span>
+                  <span>前端契约 frontend contract: {workflowContract}</span>
+                  <span>领域配置 domain pack: {workflowCore?.domain_pack?.display_name ?? "-"}</span>
+                  {!!(workflowSummary.selected_dimensions?.length || workflowCore?.selected_dimensions?.length) && <span>Planner 维度 selected_dimensions: {(workflowSummary.selected_dimensions ?? workflowCore?.selected_dimensions ?? []).join(", ")}</span>}
                   {(workflowCore?.workflow_engine_used ?? workflowSummary.workflow_engine_used) === "langgraph" && <span className="font-semibold text-accent">LangGraph Runner</span>}
                 </div>
                 {(workflowExtensions?.primary_workflow_kind || workflowSummary.primary_workflow_kind || workflowSummary.survey_integration_mode) && (
                   <div className="mt-1 text-xs text-slate-600">
-                    primary workflow: {workflowExtensions?.primary_workflow_kind ?? workflowSummary.primary_workflow_kind ?? "-"} | survey: {workflowSummary.survey_integration_mode ?? "-"}
+                    主流程 primary workflow: {workflowExtensions?.primary_workflow_kind ?? workflowSummary.primary_workflow_kind ?? "-"} | 问卷 survey: {workflowSummary.survey_integration_mode ?? "-"}
                   </div>
                 )}
                 {(workflowDiagnostics?.workflow_data_source ?? workflowSummary.workflow_data_source) === "trace_recovered_summary" && (
                   <div className="mt-1 text-xs text-slate-600">
-                    This workflow summary was recovered from `WorkflowEngine` trace output rather than the original run response.
+                    当前运行摘要来自 `WorkflowEngine` Trace 的恢复结果，而不是原始运行响应。
                   </div>
                 )}
                 {!!(workflowSummary.downstream_guidance?.writer?.length || workflowCore?.downstream_guidance?.writer?.length) && (
                   <div className="mt-1 text-xs text-slate-600">
-                    writer guidance: {(workflowSummary.downstream_guidance?.writer ?? workflowCore?.downstream_guidance?.writer ?? []).slice(0, 3).join(" | ")}
+                    报告撰写指导 writer guidance: {(workflowSummary.downstream_guidance?.writer ?? workflowCore?.downstream_guidance?.writer ?? []).slice(0, 3).join(" | ")}
                   </div>
                 )}
                 {report && (
                   <div className="mt-1 text-xs text-slate-600">
-                    report contract: {reportContract}
+                    报告契约 report contract: {reportContract}
                   </div>
                 )}
                 {!!(workflowSummary.conditional_routes_taken?.length || workflowCore?.conditional_routes_taken?.length) && (
                   <div className="mt-1 text-xs text-slate-600">
-                    routes: {(workflowSummary.conditional_routes_taken ?? workflowCore?.conditional_routes_taken ?? []).map((item) => `${item.from_node ?? "qa"} -> ${item.to_node ?? "-"} (${item.reason ?? "qa"})`).join(" | ")}
+                    条件路由 routes: {(workflowSummary.conditional_routes_taken ?? workflowCore?.conditional_routes_taken ?? []).map((item) => `${item.from_node ?? "qa"} -> ${item.to_node ?? "-"} (${item.reason ?? "qa"})`).join(" | ")}
                   </div>
                 )}
                 {workflowSummary.evidence_gate_output && (
                   <div className={`mt-2 rounded border px-3 py-2 text-xs ${workflowSummary.evidence_gate_output.evidence_gate_passed ? "border-green-300 bg-green-50 text-success" : "border-amber-300 bg-amber-50 text-warning"}`}>
-                    EvidenceGate: {workflowSummary.evidence_gate_output.evidence_gate_passed ? "通过" : "相关证据不足"}
+                    EvidenceGate：{workflowSummary.evidence_gate_output.evidence_gate_passed ? "通过" : "相关证据不足"}
                     {!!workflowSummary.evidence_gate_output.missing_relevant_evidence_competitors?.length && (
-                      <span> | missing: {workflowSummary.evidence_gate_output.missing_relevant_evidence_competitors.join(", ")}</span>
+                      <span> | 缺少相关证据 missing: {workflowSummary.evidence_gate_output.missing_relevant_evidence_competitors.join(", ")}</span>
                     )}
                     {workflowSummary.evidence_gate_output.suggested_route && <span> | route_to: {workflowSummary.evidence_gate_output.suggested_route}</span>}
                   </div>
@@ -501,7 +502,7 @@ export default function App() {
                 {collectorDiagnosticMessage}
                 {!!collectorDiagnostics?.effective_queries_preview_by_competitor && (
                   <div className="mt-1 text-xs">
-                    planner queries: {Object.entries(collectorDiagnostics.effective_queries_preview_by_competitor).map(([competitor, queries]) => `${competitor}: ${(queries ?? []).slice(0, 2).join(" / ")}`).join(" | ")}
+                    Planner 查询 planner queries: {Object.entries(collectorDiagnostics.effective_queries_preview_by_competitor).map(([competitor, queries]) => `${competitor}: ${(queries ?? []).slice(0, 2).join(" / ")}`).join(" | ")}
                   </div>
                 )}
               </div>
