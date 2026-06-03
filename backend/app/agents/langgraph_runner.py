@@ -479,6 +479,26 @@ class LangGraphWorkflowRunner:
             )
         )
         qa_result = output.qa_result
+        previous_history = list(state.get("qa_result").rework_history) if state.get("qa_result") else []
+        if qa_result.status == "failed" and state["auto_rework"] and qa_result.route_to and qa_result.rework_instructions:
+            instruction = qa_result.rework_instructions[0]
+            qa_result.rework_history = [
+                *previous_history,
+                ReworkHistoryItem(
+                    round=qa_result.rework_count,
+                    from_status=qa_result.status,
+                    error_type=instruction.error_type,
+                    route_to=qa_result.route_to,
+                    action=instruction.suggested_action,
+                    reason=instruction.reason,
+                    failed_schema=instruction.failed_schema,
+                    claim_id=instruction.claim_id,
+                    failed_claim=instruction.failed_claim,
+                    metadata=instruction.metadata or {},
+                ),
+            ]
+        elif previous_history:
+            qa_result.rework_history = previous_history
         qa_result = self.report_service.save_qa(qa_result, run_id=state.get("run_id"))
         next_state: WorkflowState = {
             **state,

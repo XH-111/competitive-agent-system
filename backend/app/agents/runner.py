@@ -218,6 +218,11 @@ class MockWorkflowRunner:
                 error_type=instruction.error_type,
                 route_to=current_qa.route_to,
                 action=instruction.suggested_action,
+                reason=instruction.reason,
+                failed_schema=instruction.failed_schema,
+                claim_id=instruction.claim_id,
+                failed_claim=instruction.failed_claim,
+                metadata=instruction.metadata or {},
             )
             history.append(history_item)
 

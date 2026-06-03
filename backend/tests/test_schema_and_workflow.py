@@ -1416,6 +1416,8 @@ def test_auto_rework_routes_and_then_passes(db_session, demo_mode, expected_rout
     assert qa_result.rework_history
     assert qa_result.rework_history[0].route_to == expected_route
     assert qa_result.rework_history[0].result_status == "passed"
+    assert qa_result.rework_history[0].reason
+    assert qa_result.rework_history[0].failed_schema
     assert result["report"] is not None
 
     traces = TraceService(db_session).list_for_task(task.task_id)
@@ -1723,6 +1725,9 @@ def test_langgraph_conditional_routes_support_frontend_rework_history(db_session
     assert routes[0]["from_node"] == "qa"
     assert routes[0]["to_node"] == "report_writer"
     assert routes[0]["reason"] == "bad_report_format"
+    assert result["qa_result"].rework_history
+    assert result["qa_result"].rework_history[0].reason
+    assert result["qa_result"].rework_history[0].failed_schema
 
 
 def test_langgraph_modes_and_competitor_coverage_still_work(db_session, monkeypatch):

@@ -424,6 +424,11 @@ class ReworkHistoryItem(BaseModel):
     route_to: AgentName | None = None
     action: str
     result_status: Literal["passed", "failed", "manual_review"] | None = None
+    reason: str | None = None
+    failed_schema: str | None = None
+    claim_id: str | None = None
+    failed_claim: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class QaResult(BaseModel):

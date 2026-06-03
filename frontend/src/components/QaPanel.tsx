@@ -5,7 +5,13 @@ import { Pill } from "../types";
 type RouteHistoryItem = {
   from: string;
   to: string;
-  reason?: string;
+  errorType?: string;
+  reason?: string | null;
+  action?: string;
+  failedSchema?: string | null;
+  claimId?: string | null;
+  failedClaim?: string | null;
+  metadata?: Record<string, unknown>;
   resultStatus?: string;
 };
 
@@ -96,17 +102,42 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
       <div className="mt-3 rounded border border-line bg-white p-3 text-sm">
         <h3 className="mb-2 font-semibold">返工历史 rework_history</h3>
         {reworkHistory.length ? (
-          <div className="space-y-1">
+          <div className="space-y-2">
             {reworkHistory.map((item, index) => (
-              <div key={`${item.from}-${item.to}-${index}`}>
-                第 {index + 1} 轮：{item.from} -&gt; {item.to}
-                {item.reason ? `，原因：${item.reason}` : ""}
-                {item.resultStatus ? `，结果：${item.resultStatus}` : ""}
+              <div key={`${item.from}-${item.to}-${index}`} className="rounded border border-line bg-panel px-3 py-2">
+                <div>
+                  第 {index + 1} 轮：{item.from} -&gt; {item.to}
+                  {item.errorType ? `，问题：${qaReasonLabel(item.errorType)}` : ""}
+                  {item.resultStatus ? `，结果：${item.resultStatus}` : ""}
+                </div>
+                {item.reason && <div className="mt-1 text-xs text-slate-700">直接原因：{item.reason}</div>}
+                {(item.failedSchema || item.claimId) && (
+                  <div className="mt-1 text-xs text-slate-600">
+                    {item.failedSchema ? `失败 Schema：${item.failedSchema}` : ""}
+                    {item.claimId ? ` | Claim：${item.claimId}` : ""}
+                  </div>
+                )}
+                <ReworkMetadataLine metadata={item.metadata} />
+                {item.failedClaim && <div className="mt-1 text-xs text-slate-600">被打回结论：{item.failedClaim}</div>}
+                {item.action && <div className="mt-1 text-xs text-slate-600">返工动作：{item.action}</div>}
               </div>
             ))}
           </div>
         ) : (
           <p className="text-slate-500">暂无自动返工历史。</p>
+        )}
+        {(qa.hard_errors.length > 0 || qa.rework_instructions.length > 0) && (
+          <div className="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-slate-700">
+            <div className="font-semibold text-slate-900">当前失败详情</div>
+            {qa.hard_errors.map((item, index) => (
+              <div key={`hard-${index}`}>严重问题：{item}</div>
+            ))}
+            {qa.rework_instructions.slice(0, 1).map((item, index) => (
+              <div key={`instruction-${index}`}>
+                直接原因：{item.reason}；建议：{item.suggested_action}
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </section>
@@ -183,7 +214,13 @@ function buildReworkHistory(qa: QaResult, workflowSummary?: WorkflowSummary): Ro
     .map((item) => ({
       from: "QaAgent",
       to: item.route_to ?? "-",
-      reason: item.error_type ?? item.action,
+      errorType: item.error_type,
+      reason: item.reason,
+      action: item.action,
+      failedSchema: item.failed_schema,
+      claimId: item.claim_id,
+      failedClaim: item.failed_claim,
+      metadata: item.metadata,
       resultStatus: item.result_status,
     }))
     .filter((item) => item.to !== "-");
@@ -195,9 +232,34 @@ function buildReworkHistory(qa: QaResult, workflowSummary?: WorkflowSummary): Ro
     .map((item) => ({
       from: normalizeNodeName(item.from_node ?? "qa"),
       to: normalizeNodeName(item.to_node ?? "-"),
-      reason: item.reason,
+      errorType: item.reason,
       resultStatus: item.final_status,
     }));
+}
+
+function ReworkMetadataLine({ metadata }: { metadata?: Record<string, unknown> }) {
+  if (!metadata) return null;
+  const parts = [
+    typeof metadata.claim_competitor === "string" ? `Claim 竞品：${metadata.claim_competitor}` : undefined,
+    typeof metadata.evidence_id === "string" ? `Evidence：${metadata.evidence_id}` : undefined,
+    typeof metadata.evidence_competitor === "string" ? `Evidence 竞品：${metadata.evidence_competitor}` : undefined,
+    typeof metadata.evidence_source_domain === "string" ? `来源域名：${metadata.evidence_source_domain}` : undefined,
+    typeof metadata.evidence_relevance_level === "string" ? `相关性：${metadata.evidence_relevance_level}` : undefined,
+  ].filter(Boolean);
+  if (!parts.length) return null;
+  return <div className="mt-1 text-xs text-slate-600">{parts.join(" | ")}</div>;
+}
+
+function qaReasonLabel(reason: string) {
+  const labels: Record<string, string> = {
+    bad_report_format: "报告格式或 Claim 证据绑定问题",
+    missing_evidence: "缺少 Evidence",
+    missing_relevant_evidence: "缺少相关 Evidence",
+    invalid_extraction: "结构化抽取异常",
+    claim_evidence_support_mismatch: "结论与证据支撑不匹配",
+    max_rework_reached: "达到最大返工次数",
+  };
+  return labels[reason] ?? reason;
 }
 
 function normalizeNodeName(node: string) {

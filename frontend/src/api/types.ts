@@ -281,6 +281,11 @@ export type QaResult = {
     route_to?: string;
     action: string;
     result_status?: string;
+    reason?: string | null;
+    failed_schema?: string | null;
+    claim_id?: string | null;
+    failed_claim?: string | null;
+    metadata?: Record<string, unknown>;
   }>;
   route_to?: string;
   rework_count: number;
