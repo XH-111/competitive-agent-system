@@ -21,6 +21,7 @@ from app.schemas.models import (
     QaResult,
     ReworkContext,
     Report,
+    RetrievedKnowledgeChunk,
     SwotAnalysis,
     Task,
     UserPersona,
@@ -89,6 +90,7 @@ class AnalystInput(BaseModel):
     analyst_mode: Literal["mock", "evidence", "llm"] = "evidence"
     selected_dimensions: list[str] = Field(default_factory=list)
     rework_context: ReworkContext | None = None
+    retrieved_knowledge_chunks: list[RetrievedKnowledgeChunk] = Field(default_factory=list)
 
 
 class AnalystOutput(BaseModel):

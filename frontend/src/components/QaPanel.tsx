@@ -1,4 +1,4 @@
-import { SearchCheck } from "lucide-react";
+import { AlertTriangle, SearchCheck } from "lucide-react";
 import type { QaResult, WorkflowSummary } from "../types";
 import { Pill } from "../types";
 
@@ -24,22 +24,24 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
   return (
     <section className={`rounded border p-4 ${statusClass}`}>
       <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
-        <SearchCheck size={18} /> QA Result
+        <SearchCheck size={18} /> 质检结果
       </h2>
 
       <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
-        <span>final_status:</span>
+        <span>最终状态：</span>
         <Pill value={qa.status} />
-        <span>rework_count: {qa.rework_count}</span>
-        <span>max_rework: 3</span>
+        <span>返工次数：{qa.rework_count}</span>
+        <span>最大返工：3</span>
         {swotValidation && <span>swot_validation: {swotValidation.status ?? "-"}</span>}
       </div>
 
+      <ReworkReasonCard qa={qa} />
+
       <div className="grid gap-3 lg:grid-cols-3">
-        <InfoBlock title="hard_errors" items={qa.hard_errors} emptyText="None" />
-        <InfoBlock title="soft_suggestions" items={qa.soft_suggestions} emptyText="None" />
+        <InfoBlock title="严重问题 hard_errors" items={qa.hard_errors} emptyText="无" />
+        <InfoBlock title="优化建议 soft_suggestions" items={qa.soft_suggestions} emptyText="无" />
         <InfoBlock
-          title="rework_instructions"
+          title="返工指令 rework_instructions"
           items={(qa.rework_instructions ?? []).map((item) => [
             `error_type: ${item.error_type}`,
             item.failed_claim ? `failed_claim: ${item.failed_claim}` : undefined,
@@ -56,13 +58,13 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
             `rework_count: ${qa.rework_count}`,
             `final_status: ${qa.status}`,
           ].filter(Boolean).join(" | "))}
-          emptyText="None"
+          emptyText="无"
         />
       </div>
 
       {swotIssues.length > 0 && (
         <div className="mt-3 rounded border border-line bg-white p-3 text-sm">
-          <h3 className="mb-2 font-semibold">SWOT QA Issues</h3>
+          <h3 className="mb-2 font-semibold">SWOT 质检问题</h3>
           <div className="space-y-2">
             {swotIssues.map((issue, index) => (
               <div key={`${issue.error_type ?? "swot"}-${index}`} className="rounded border border-line bg-panel p-3">
@@ -92,22 +94,71 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
       )}
 
       <div className="mt-3 rounded border border-line bg-white p-3 text-sm">
-        <h3 className="mb-2 font-semibold">rework_history</h3>
+        <h3 className="mb-2 font-semibold">返工历史 rework_history</h3>
         {reworkHistory.length ? (
           <div className="space-y-1">
             {reworkHistory.map((item, index) => (
               <div key={`${item.from}-${item.to}-${index}`}>
-                round {index + 1}: {item.from} -&gt; {item.to}
-                {item.reason ? `, reason: ${item.reason}` : ""}
-                {item.resultStatus ? `, result: ${item.resultStatus}` : ""}
+                第 {index + 1} 轮：{item.from} -&gt; {item.to}
+                {item.reason ? `，原因：${item.reason}` : ""}
+                {item.resultStatus ? `，结果：${item.resultStatus}` : ""}
               </div>
             ))}
           </div>
         ) : (
-          <p className="text-slate-500">No automatic rework history.</p>
+          <p className="text-slate-500">暂无自动返工历史。</p>
         )}
       </div>
     </section>
+  );
+}
+
+function ReworkReasonCard({ qa }: { qa: QaResult }) {
+  if (qa.status === "passed" || !qa.rework_instructions?.length) return null;
+  const primary = qa.rework_instructions[0];
+  const metadata = primary.metadata ?? {};
+  const isClaimMismatch = metadata.kind === "claim_evidence_competitor_mismatch";
+
+  return (
+    <div className="mb-3 rounded border border-red-200 bg-white p-3 text-sm">
+      <div className="mb-2 flex items-center gap-2 font-semibold text-danger">
+        <AlertTriangle size={16} /> 为什么被打回
+      </div>
+      <div className="grid gap-2 lg:grid-cols-3">
+        <ReasonItem label="打回节点" value={primary.target_agent ?? qa.route_to ?? "-"} />
+        <ReasonItem label="问题类型" value={primary.error_type} />
+        <ReasonItem label="失败 Schema" value={primary.failed_schema ?? "-"} />
+      </div>
+
+      <div className="mt-2 rounded border border-line bg-panel px-3 py-2 leading-6">
+        <div><span className="font-semibold">直接原因：</span>{primary.reason}</div>
+        <div><span className="font-semibold">修复要求：</span>{primary.suggested_action}</div>
+      </div>
+
+      {isClaimMismatch && (
+        <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-slate-700">
+          <div className="font-semibold text-slate-900">Claim 与 Evidence 竞品不一致</div>
+          <div className="mt-1 grid gap-x-4 gap-y-1 md:grid-cols-2">
+            <span>Claim：{String(metadata.claim_id ?? primary.claim_id ?? "-")}</span>
+            <span>Claim 竞品：{String(metadata.claim_competitor ?? "-")}</span>
+            <span>Evidence：{String(metadata.evidence_id ?? "-")}</span>
+            <span>Evidence 竞品：{String(metadata.evidence_competitor ?? "-")}</span>
+            <span>来源域名：{String(metadata.evidence_source_domain ?? "-")}</span>
+            <span>相关性：{String(metadata.evidence_relevance_level ?? "-")}</span>
+          </div>
+          {primary.failed_claim && <div className="mt-1">被打回的结论：{primary.failed_claim}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReasonItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-line bg-panel px-3 py-2">
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="mt-1 font-semibold text-ink">{value}</div>
+    </div>
   );
 }
 

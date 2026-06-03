@@ -140,6 +140,9 @@ class AnalystAgent:
                 "selected_dimension_count": len(selected_dimensions),
                 "swot_item_count": self._count_swot_items(swot),
                 "rework_context_applied": bool(input_data.rework_context),
+                "long_term_knowledge_chunk_count": len(input_data.retrieved_knowledge_chunks),
+                "long_term_knowledge_used": False,
+                "long_term_knowledge_policy": "current_run_evidence_has_priority",
             }
         )
         return AnalystOutput(
@@ -241,6 +244,13 @@ class AnalystAgent:
                 "content_source_used": self._content_source_summary(usable_evidence),
                 "selected_dimensions": selected_dimensions,
                 "selected_dimension_count": len(selected_dimensions),
+                "long_term_knowledge_chunk_count": len(input_data.retrieved_knowledge_chunks),
+                "long_term_knowledge_evidence_ids": [
+                    item.evidence_id for item in input_data.retrieved_knowledge_chunks if item.evidence_id
+                ],
+                "long_term_knowledge_used": bool(input_data.retrieved_knowledge_chunks),
+                "long_term_knowledge_policy": "current_run_evidence_has_priority",
+                "long_term_knowledge_conflict_warnings": self._knowledge_conflict_warnings(input_data, usable_evidence),
             }
         )
         profile = ProductProfile(
@@ -390,6 +400,18 @@ class AnalystAgent:
             "page_excerpt": sum(1 for item in evidence if item.content_excerpt),
             "snippet": sum(1 for item in evidence if not item.content_excerpt),
         }
+
+    @staticmethod
+    def _knowledge_conflict_warnings(input_data: AnalystInput, current_evidence: list[Evidence]) -> list[str]:
+        current_competitors = {item.competitor for item in current_evidence if item.competitor}
+        warnings: list[str] = []
+        for chunk in input_data.retrieved_knowledge_chunks:
+            competitor = chunk.metadata.get("competitor")
+            if competitor and competitor not in input_data.task.competitors:
+                warnings.append(f"Retrieved knowledge competitor {competitor} is outside current task scope.")
+            if competitor and current_competitors and competitor not in current_competitors:
+                warnings.append(f"Retrieved knowledge for {competitor} has no current-run evidence; keep it secondary.")
+        return warnings
 
     def _feature_hits(self, evidence: list[Evidence]) -> dict[str, list[Evidence]]:
         hits: dict[str, list[Evidence]] = defaultdict(list)

@@ -28,6 +28,7 @@ from app.schemas import (
 )
 from app.schemas.workflow_state import WorkflowState
 from app.services.evidence_service import EvidenceService
+from app.services.knowledge_base_service import KbIngestionService, KbRetrieverService
 from app.services.page_fetcher import PageFetcher
 from app.services.report_service import ReportService
 from app.services.task_run_service import TaskRunService
@@ -43,6 +44,8 @@ class LangGraphWorkflowRunner:
         self.evidence_service = EvidenceService(db)
         self.report_service = ReportService(db)
         self.task_run_service = TaskRunService(db)
+        self.kb_ingestion_service = KbIngestionService(db)
+        self.kb_retriever_service = KbRetrieverService(db)
         self.planner = PlannerAgent(self.trace_service)
         self.collector = CollectorAgent(self.trace_service)
         self.analyst = AnalystAgent(self.trace_service)
@@ -129,6 +132,8 @@ class LangGraphWorkflowRunner:
             "survey_evidence": [],
             "chunks": [],
             "retrieval_results": [],
+            "retrieved_knowledge_chunks": [],
+            "knowledge_hits": [],
             "claim_support_results": [],
             "swot_analysis": None,
             "rework_context": None,
@@ -162,6 +167,7 @@ class LangGraphWorkflowRunner:
                 "plan": final_state.get("planner_output"),
                 "qa_result": final_state.get("qa_result"),
                 "report": final_state.get("report"),
+                "knowledge_hits": final_state.get("knowledge_hits", []),
                 "workflow_summary": summary,
             }
         except Exception as exc:
@@ -390,6 +396,11 @@ class LangGraphWorkflowRunner:
 
     def analyst_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
+        retrieved_chunks = self.kb_retriever_service.retrieve_for_task(
+            task,
+            selected_dimensions=state.get("selected_dimensions", []),
+            top_k=5,
+        )
         output = self.analyst.run(
             AnalystInput(
                 task=task,
@@ -400,12 +411,15 @@ class LangGraphWorkflowRunner:
                 analyst_mode=state["analyst_mode"],
                 selected_dimensions=state.get("selected_dimensions", []),
                 rework_context=state.get("rework_context"),
+                retrieved_knowledge_chunks=retrieved_chunks,
             )
         )
         return {
             **state,
             "task": task,
             "analyst_output": output,
+            "retrieved_knowledge_chunks": retrieved_chunks,
+            "knowledge_hits": [self._knowledge_hit_payload(item) for item in retrieved_chunks],
             "swot_analysis": output.swot,
             "node_sequence": [*state["node_sequence"], "analyst"],
         }
@@ -417,6 +431,7 @@ class LangGraphWorkflowRunner:
         output["content_mode_requested"] = state.get("content_mode")
         output["page_fetch_enabled"] = fetch_enabled
         saved_evidence = self.evidence_service.save_many(task.task_id, evidence, run_id=state.get("run_id"))
+        self.kb_ingestion_service.enqueue_for_evidence(saved_evidence, task=task, run_id=state.get("run_id"))
         self._save_page_fetcher_trace(task.task_id, state.get("run_id"), output, state["rework_count"])
         return {
             **state,
@@ -611,6 +626,16 @@ class LangGraphWorkflowRunner:
             "conditional_routes_taken": state.get("conditional_routes_taken", []),
             "evidence_gate_output": state.get("evidence_gate_output", {}),
             "page_fetch_output": state.get("page_fetch_output", {}),
+            "knowledge_hits": state.get("knowledge_hits", []),
+            "retrieved_knowledge_chunk_count": len(state.get("retrieved_knowledge_chunks", [])),
+            "knowledge_retrieval_strategy": {
+                "retriever": "KbRetrieverService",
+                "vector_store": "sqlite_json_embedding",
+                "embedding_provider": "local_hash_embedding",
+                "similarity": "cosine_similarity",
+                "top_k": 5,
+                "current_run_evidence_priority": True,
+            },
             "run_isolation_strategy": state.get("run_isolation_strategy", "run_id"),
             "run_cleanup_summary": state.get("run_cleanup_summary", {}),
             "rework_count": state.get("qa_result").rework_count if state.get("qa_result") else state.get("rework_count", 0),
@@ -735,3 +760,16 @@ class LangGraphWorkflowRunner:
                 error_message=None,
             )
         )
+
+    @staticmethod
+    def _knowledge_hit_payload(item) -> dict:
+        return {
+            "chunk_id": item.chunk_id,
+            "text_preview": item.text_preview or item.text[:240],
+            "source_url": item.source_url,
+            "source_domain": item.source_domain,
+            "source_quality": item.source_quality,
+            "score": item.score,
+            "evidence_id": item.evidence_id,
+            "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+        }

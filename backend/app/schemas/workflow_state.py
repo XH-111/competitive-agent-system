@@ -26,6 +26,7 @@ from app.schemas.models import (
     QaResult,
     Report,
     RetrievalResult,
+    RetrievedKnowledgeChunk,
     ReworkContext,
     SwotAnalysis,
     SurveyEvidence,
@@ -98,6 +99,8 @@ class WorkflowState(TypedDict, total=False):
     survey_evidence: list[SurveyEvidence]
     chunks: list[Chunk]
     retrieval_results: list[RetrievalResult]
+    retrieved_knowledge_chunks: list[RetrievedKnowledgeChunk]
+    knowledge_hits: list[dict[str, Any]]
     claim_support_results: list[ClaimSupportResult]
     rework_context: ReworkContext | None
     report: Report | None

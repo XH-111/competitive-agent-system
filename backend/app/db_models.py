@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -78,3 +78,39 @@ class QaRecordRow(Base):
     task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
     run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class KnowledgeItemRecordRow(Base):
+    __tablename__ = "knowledge_items"
+
+    item_id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_type: Mapped[str] = mapped_column(String, default="public_evidence", nullable=False)
+    competitor: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    industry: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    region: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_domain: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    source_quality: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    relevance_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    evidence_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    fact_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class KnowledgeChunkRecordRow(Base):
+    __tablename__ = "knowledge_chunks"
+
+    chunk_id: Mapped[str] = mapped_column(String, primary_key=True)
+    item_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

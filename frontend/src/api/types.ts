@@ -149,6 +149,26 @@ export type SearchTestResult = {
   error_message?: string | null;
 };
 
+export type KnowledgeHit = {
+  chunk_id: string;
+  text_preview: string;
+  source_url?: string | null;
+  source_domain?: string | null;
+  source_quality?: string | null;
+  score: number;
+  evidence_id?: string | null;
+  updated_at?: string | null;
+};
+
+export type KnowledgeRetrievalStrategy = {
+  retriever?: string;
+  vector_store?: string;
+  embedding_provider?: string;
+  similarity?: string;
+  top_k?: number;
+  current_run_evidence_priority?: boolean;
+};
+
 export type WorkflowSummary = {
   run_id?: string;
   task_id?: string;
@@ -214,6 +234,9 @@ export type WorkflowSummary = {
     skipped_evidence_ids?: string[];
     run_id?: string | null;
   };
+  knowledge_hits?: KnowledgeHit[];
+  retrieved_knowledge_chunk_count?: number;
+  knowledge_retrieval_strategy?: KnowledgeRetrievalStrategy;
 };
 
 export type CollectorDiagnostics = {

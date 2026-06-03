@@ -294,6 +294,51 @@ class RetrievalResult(BaseModel):
     citation_metadata: dict[str, Any]
 
 
+class KnowledgeItem(BaseModel):
+    item_id: str = Field(default_factory=lambda: f"kb_item_{uuid4().hex[:10]}")
+    source_type: str = "public_evidence"
+    competitor: str | None = None
+    industry: str | None = None
+    region: str | None = None
+    title: str | None = None
+    text: str = Field(min_length=1)
+    source_url: str = Field(min_length=1)
+    source_domain: str | None = None
+    source_quality: str | None = None
+    confidence: float = Field(ge=0, le=1)
+    relevance_score: float = Field(default=0.0, ge=0, le=1)
+    evidence_id: str = Field(min_length=1)
+    fact_id: str | None = None
+    task_id: str = Field(min_length=1)
+    run_id: str | None = None
+    content_hash: str = Field(min_length=1)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class KnowledgeChunk(BaseModel):
+    chunk_id: str = Field(default_factory=lambda: f"kb_chunk_{uuid4().hex[:10]}")
+    item_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    embedding: list[float] = Field(default_factory=list)
+    token_count: int = Field(default=0, ge=0)
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RetrievedKnowledgeChunk(BaseModel):
+    chunk_id: str
+    text: str
+    score: float = Field(ge=0, le=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    evidence_id: str | None = None
+    text_preview: str = ""
+    source_url: str | None = None
+    source_domain: str | None = None
+    source_quality: str | None = None
+    updated_at: datetime | None = None
+
+
 class ClaimSupportResult(BaseModel):
     claim_id: str = Field(min_length=1)
     supported: bool

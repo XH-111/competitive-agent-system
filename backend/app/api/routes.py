@@ -122,6 +122,16 @@ def run_task(
             "conditional_routes_taken": [],
             "rework_count": result["qa_result"].rework_count if result.get("qa_result") else 0,
             "final_status": result["qa_result"].status if result.get("qa_result") else "failed",
+            "knowledge_hits": [],
+            "retrieved_knowledge_chunk_count": 0,
+            "knowledge_retrieval_strategy": {
+                "retriever": "disabled_for_custom_runner",
+                "vector_store": "sqlite_json_embedding",
+                "embedding_provider": "local_hash_embedding",
+                "similarity": "cosine_similarity",
+                "top_k": 0,
+                "current_run_evidence_priority": True,
+            },
         }
         final_status = result["workflow_summary"]["final_status"]
         finished_run = run_service.finish_run(
@@ -132,6 +142,7 @@ def run_task(
         )
         result["run"] = finished_run
         result["run_id"] = finished_run.run_id
+        result["knowledge_hits"] = []
         result["workflow_summary"]["run_id"] = finished_run.run_id
         result["workflow_summary"]["run_isolation_strategy"] = "legacy_custom_no_run_binding"
         return result

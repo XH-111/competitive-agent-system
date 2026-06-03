@@ -568,10 +568,26 @@ class QaAgent:
                         input_data.task.rework_count,
                         "ReportWriterAgent",
                         "bad_report_format",
-                        f"Claim evidence competitor mismatch: {claim.claim_id} uses {evidence_id}.",
+                        (
+                            f"Claim evidence competitor mismatch: {claim.claim_id} belongs to "
+                            f"{claim.competitor} but uses Evidence {evidence_id} from {evidence.competitor}."
+                        ),
                         "Re-run ReportWriterAgent and bind each claim only to Evidence from the same competitor.",
                         claim_id=claim.claim_id,
+                        failed_claim=claim.text,
                         failed_schema="Claim.evidence_ids",
+                        instruction_metadata={
+                            "kind": "claim_evidence_competitor_mismatch",
+                            "claim_id": claim.claim_id,
+                            "claim_competitor": claim.competitor,
+                            "failed_claim": claim.text,
+                            "evidence_id": evidence_id,
+                            "evidence_competitor": evidence.competitor,
+                            "evidence_source_domain": evidence.source_domain,
+                            "evidence_relevance_level": evidence.relevance_level,
+                            "evidence_source_quality": evidence.source_quality,
+                            "fix_type": "rebind_claim_evidence",
+                        },
                     )
         return None
 

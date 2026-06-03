@@ -4,6 +4,7 @@ import { api } from "./api/client";
 import { apiRecorder, getApiRecorderSnapshot } from "./api/recorder";
 import { DagView } from "./components/DagView";
 import { DemoGuide } from "./components/DemoGuide";
+import { KnowledgeHitsPanel } from "./components/KnowledgeHitsPanel";
 import { KnowledgeView } from "./components/KnowledgeView";
 import { PlannerSummaryCard } from "./components/PlannerSummaryCard";
 import { QaPanel } from "./components/QaPanel";
@@ -456,6 +457,7 @@ export default function App() {
         )}
 
         <PlannerSummaryCard workflowSummary={workflowSummary} collectorDiagnostics={collectorDiagnostics} />
+        <KnowledgeHitsPanel workflowSummary={workflowSummary} />
 
         <div className="space-y-4">
           <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} />

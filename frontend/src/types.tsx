@@ -13,6 +13,8 @@ export type {
   TaskRun,
   TraceRecord,
   LlmStatus,
+  KnowledgeHit,
+  KnowledgeRetrievalStrategy,
   WriterDiagnostics,
   WorkflowSummary
 } from "./api/types";
