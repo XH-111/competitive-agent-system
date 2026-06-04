@@ -6,6 +6,7 @@ from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import QaAgent
 from app.agents.report_writer import ReportWriterAgent
+from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan, fixed_dimension_ids
 from app.schemas import (
     AnalystInput,
     AnalystOutput,
@@ -57,6 +58,16 @@ class MockWorkflowRunner:
         self.trace_service.set_run_context(run_id)
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task, run_id=run_id))
+        plan = plan.model_copy(
+            update={
+                "selected_dimensions": fixed_dimension_ids(),
+                "analysis_dimension_plan": apply_fixed_dimensions_to_plan(plan.analysis_dimension_plan, task),
+                "planner_notes": [
+                    *plan.planner_notes,
+                    "Collector/Analyst/Writer use fixed competitive dimensions for current evaluation: pricing, feature, persona, strength, weakness, opportunity, threat.",
+                ],
+            }
+        )
         planner_query_hints = plan.analysis_dimension_plan.query_hints if plan.analysis_dimension_plan else {}
         history: list[ReworkHistoryItem] = []
 
@@ -181,6 +192,7 @@ class MockWorkflowRunner:
                 selected_dimensions=plan.selected_dimensions,
                 writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
                 intent_classification=plan.intent_classification,
+                rework_context=rework_context,
             )
         )
         return evidence, analysis, writer_output
@@ -270,6 +282,7 @@ class MockWorkflowRunner:
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
                         intent_classification=plan.intent_classification,
+                        rework_context=rework_context,
                     )
                 )
             elif current_qa.route_to == "AnalystAgent":
@@ -295,6 +308,7 @@ class MockWorkflowRunner:
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
                         intent_classification=plan.intent_classification,
+                        rework_context=rework_context,
                     )
                 )
             elif current_qa.route_to == "ReportWriterAgent":
@@ -321,6 +335,7 @@ class MockWorkflowRunner:
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
                         intent_classification=plan.intent_classification,
+                        rework_context=rework_context,
                     )
                 )
             else:
@@ -425,6 +440,7 @@ class MockWorkflowRunner:
             target_agent=instruction.target_agent,
             related_competitor=metadata.get("competitor"),
             related_claim_id=instruction.claim_id,
+            related_evidence_id=metadata.get("evidence_id"),
             suggested_action=instruction.suggested_action,
             metadata=metadata,
         )

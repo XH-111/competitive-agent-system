@@ -157,6 +157,10 @@ class QaAgent:
                 result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
             )
 
+        dimension_issue = self._dimension_result_issue(input_data)
+        if dimension_issue is not None:
+            return dimension_issue
+
         if input_data.report_output is None:
             return self._result(
                 task.task_id,
@@ -693,8 +697,115 @@ class QaAgent:
                 }
                 for competitor in input_data.task.competitors
             },
+            "dimension_coverage_result": self._dimension_coverage_result(input_data),
         }
         return suggestions, diagnostics
+
+    def _dimension_result_issue(self, input_data: QaInput) -> QaResult | None:
+        if input_data.analysis is None:
+            return None
+        selected_dimensions = self._selected_dimensions(input_data)
+        if not selected_dimensions:
+            return None
+        results = input_data.analysis.dimension_results
+        if not results:
+            return self._result(
+                input_data.task.task_id,
+                input_data.task.rework_count,
+                "AnalystAgent",
+                "invalid_extraction",
+                "AnalystAgent did not produce dimension_results for planner-selected dimensions.",
+                "Re-run AnalystAgent and extract DimensionResult records for each selected dimension and competitor.",
+                failed_schema="AnalystOutput.dimension_results",
+            )
+        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
+        for competitor in input_data.task.competitors:
+            for dimension_id in selected_dimensions:
+                candidates = [
+                    item
+                    for item in results
+                    if item.competitor == competitor and item.dimension_id == dimension_id
+                ]
+                if not candidates:
+                    return self._result(
+                        input_data.task.task_id,
+                        input_data.task.rework_count,
+                        "AnalystAgent",
+                        "invalid_extraction",
+                        f"Missing DimensionResult for competitor {competitor} and dimension {dimension_id}.",
+                        "Re-run AnalystAgent and produce dimension-level findings for every requested competitor and dimension.",
+                        failed_schema="DimensionResult",
+                        instruction_metadata={
+                            "competitor": competitor,
+                            "dimension_id": dimension_id,
+                            "fix_type": "extract_dimension_result",
+                        },
+                    )
+                for result in candidates:
+                    if result.insufficient_evidence:
+                        continue
+                    for evidence_id in result.evidence_ids:
+                        evidence = evidence_by_id.get(evidence_id)
+                        if evidence is None:
+                            return self._result(
+                                input_data.task.task_id,
+                                input_data.task.rework_count,
+                                "AnalystAgent",
+                                "invalid_extraction",
+                                f"DimensionResult {dimension_id}/{competitor} cites unknown evidence {evidence_id}.",
+                                "Re-run AnalystAgent and bind dimension findings only to existing Evidence.",
+                                failed_schema="DimensionResult.evidence_ids",
+                            )
+                        if evidence.relevance_level == "unrelated":
+                            return self._result(
+                                input_data.task.task_id,
+                                input_data.task.rework_count,
+                                "AnalystAgent",
+                                "invalid_extraction",
+                                f"DimensionResult {dimension_id}/{competitor} cites unrelated evidence {evidence_id}.",
+                                "Re-run AnalystAgent and remove unrelated Evidence from dimension findings.",
+                                failed_schema="DimensionResult.evidence_ids.relevance",
+                            )
+                        if evidence.competitor and evidence.competitor != competitor:
+                            return self._result(
+                                input_data.task.task_id,
+                                input_data.task.rework_count,
+                                "AnalystAgent",
+                                "invalid_extraction",
+                                f"DimensionResult {dimension_id}/{competitor} cites Evidence {evidence_id} from {evidence.competitor}.",
+                                "Re-run AnalystAgent and bind each dimension finding only to Evidence from the same competitor.",
+                                failed_schema="DimensionResult.evidence_ids.competitor",
+                                instruction_metadata={
+                                    "competitor": competitor,
+                                    "dimension_id": dimension_id,
+                                    "evidence_id": evidence_id,
+                                    "evidence_competitor": evidence.competitor,
+                                    "fix_type": "rebind_dimension_evidence",
+                                },
+                            )
+        return None
+
+    def _dimension_coverage_result(self, input_data: QaInput) -> dict:
+        if input_data.analysis is None:
+            return {}
+        selected_dimensions = self._selected_dimensions(input_data)
+        results = input_data.analysis.dimension_results
+        return {
+            competitor: {
+                dimension_id: {
+                    "result_count": sum(
+                        1 for item in results if item.competitor == competitor and item.dimension_id == dimension_id
+                    ),
+                    "insufficient_count": sum(
+                        1
+                        for item in results
+                        if item.competitor == competitor and item.dimension_id == dimension_id and item.insufficient_evidence
+                    ),
+                }
+                for dimension_id in selected_dimensions
+            }
+            for competitor in input_data.task.competitors
+        }
 
     @staticmethod
     def _analysis_suggestions(analysis) -> list[str]:

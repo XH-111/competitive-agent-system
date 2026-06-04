@@ -17,8 +17,9 @@ QUALITY_CONFIDENCE = {
 }
 MIN_EVIDENCE_PER_COMPETITOR = 2
 MIN_RELEVANT_EVIDENCE_PER_COMPETITOR = 1
-MAX_EVIDENCE_PER_COMPETITOR = 5
-MAX_QUERY_COUNT_PER_COMPETITOR = 6
+MAX_EVIDENCE_PER_COMPETITOR = 7
+MAX_EVIDENCE_PER_QUERY = 1
+MAX_QUERY_COUNT_PER_COMPETITOR = 9
 
 
 class CollectorAgent:
@@ -120,13 +121,13 @@ class CollectorAgent:
             diagnostics["targeted_query_count_by_competitor"][competitor] = len(query_plan["targeted_queries"])
             default_query_count_by_competitor[competitor] = len(query_plan["default_queries"])
             effective_query_count_by_competitor[competitor] = len(query_plan["effective_queries"])
-            effective_queries_preview_by_competitor[competitor] = query_plan["effective_queries"][:4]
-            diagnostics["targeted_queries_preview_by_competitor"][competitor] = query_plan["targeted_queries"][:4]
+            effective_queries_preview_by_competitor[competitor] = query_plan["effective_queries"][:9]
+            diagnostics["targeted_queries_preview_by_competitor"][competitor] = query_plan["targeted_queries"][:9]
             for query in query_plan["effective_queries"]:
                 if len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
                     break
                 query_count_by_competitor[competitor] += 1
-                response = self.web_search_client.search(query, limit=5)
+                response = self.web_search_client.search(query, limit=8)
                 diagnostics["web_search_attempted"] = diagnostics["web_search_attempted"] or response.attempted
                 total_elapsed += response.elapsed_time_ms
                 if not response.available:
@@ -134,6 +135,7 @@ class CollectorAgent:
                     fallback_by_competitor[competitor] = fallback_reason
                     break
 
+                added_for_query = 0
                 for result in response.results:
                     raw_count += 1
                     raw_search_result_count_by_competitor[competitor] += 1
@@ -161,9 +163,10 @@ class CollectorAgent:
                         unrelated_evidence_count_by_competitor[competitor] += 1
                         filtered_unrelated_count += 1
                     buckets[competitor].append(candidate)
-                    if len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
+                    added_for_query += 1
+                    if added_for_query >= MAX_EVIDENCE_PER_QUERY or len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
                         break
-                if fallback_reason or len(buckets[competitor]) >= MIN_EVIDENCE_PER_COMPETITOR:
+                if fallback_reason or len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
                     break
             if fallback_reason:
                 break
@@ -301,10 +304,10 @@ class CollectorAgent:
                     competitor: len(query_plans[competitor]["effective_queries"]) for competitor in task.competitors
                 },
                 "effective_queries_preview_by_competitor": {
-                    competitor: query_plans[competitor]["effective_queries"][:4] for competitor in task.competitors
+                    competitor: query_plans[competitor]["effective_queries"][:9] for competitor in task.competitors
                 },
                 "targeted_queries_preview_by_competitor": {
-                    competitor: query_plans[competitor]["targeted_queries"][:4] for competitor in task.competitors
+                    competitor: query_plans[competitor]["targeted_queries"][:9] for competitor in task.competitors
                 },
                 "evidence_count": len(evidence),
                 "evidence_count_by_competitor": evidence_count_by_competitor,
@@ -333,12 +336,14 @@ class CollectorAgent:
                 f"{competitor} 官网 功能 定价 企业版",
                 f"{competitor} 产品介绍 协作 办公",
                 f"{competitor} pricing features official",
+                f"{competitor} strengths weaknesses opportunities threats review",
                 f"{competitor} official pricing features product",
             ]
         return [
             f"{competitor} official pricing features product",
             f"{competitor} {industry} pricing features official",
             f"{competitor} product documentation pricing",
+            f"{competitor} strengths weaknesses opportunities threats review",
         ]
 
     @classmethod

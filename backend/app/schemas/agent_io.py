@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from app.schemas.models import (
     AnalysisDimensionPlan,
     Dag,
+    DimensionResult,
     Evidence,
     FeatureTree,
     PlannerAmbiguityLevel,
@@ -94,6 +95,7 @@ class AnalystInput(BaseModel):
 
 
 class AnalystOutput(BaseModel):
+    dimension_results: list[DimensionResult] = Field(default_factory=list)
     product_profile: ProductProfile
     feature_tree: FeatureTree
     pricing_model: PricingModel
@@ -114,6 +116,7 @@ class ReportWriterInput(BaseModel):
     selected_dimensions: list[str] = Field(default_factory=list)
     writer_guidance: list[str] = Field(default_factory=list)
     intent_classification: str | None = None
+    rework_context: ReworkContext | None = None
 
 
 class ReportWriterOutput(BaseModel):

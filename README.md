@@ -271,7 +271,7 @@ SEARCH_PROVIDER=tavily
 SEARCH_API_KEY=
 SEARCH_BASE_URL=https://api.tavily.com
 SEARCH_TIMEOUT=15
-SEARCH_MAX_RESULTS=5
+SEARCH_MAX_RESULTS=8
 ```
 
 当前优先支持 Tavily Search API。请求方式为 `POST {SEARCH_BASE_URL}/search`，只请求搜索结果的 `title`、`url`、`content`、`score` 等摘要字段，不请求 `raw_content`。

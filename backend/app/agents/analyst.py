@@ -1,9 +1,15 @@
 from collections import defaultdict
+from typing import Any
 
+from pydantic import ValidationError
+
+from app.agents.base import AgentOutputValidationError
 from app.agents.base import run_with_trace
+from app.constants.analysis_dimensions import FIXED_DIMENSION_KEYWORDS, fixed_dimension_ids
 from app.schemas import (
     AnalystInput,
     AnalystOutput,
+    DimensionResult,
     Evidence,
     FeatureTree,
     PricingModel,
@@ -13,6 +19,7 @@ from app.schemas import (
     UserPersona,
 )
 from app.services.evidence_relevance_service import is_relevant_evidence
+from app.services.llm_client import LlmClient, parse_llm_json
 from app.services.trace_service import TraceService
 
 
@@ -43,8 +50,9 @@ PERSONA_KEYWORDS = {
 class AnalystAgent:
     name = "AnalystAgent"
 
-    def __init__(self, trace_service: TraceService):
+    def __init__(self, trace_service: TraceService, llm_client: LlmClient | None = None):
         self.trace_service = trace_service
+        self.llm_client = llm_client or LlmClient()
 
     def run(self, input_data: AnalystInput) -> AnalystOutput:
         task = input_data.task
@@ -53,10 +61,7 @@ class AnalystAgent:
             if input_data.analyst_mode == "mock":
                 return self._mock_output(input_data, fallback_reason=None)
             if input_data.analyst_mode == "llm":
-                return self._evidence_output(
-                    input_data,
-                    fallback_reason="analyst_mode=llm is not implemented in this phase; fallback to evidence mode.",
-                )
+                return self._llm_output(input_data)
             return self._evidence_output(input_data, fallback_reason=None)
 
         return run_with_trace(
@@ -70,6 +75,69 @@ class AnalystAgent:
             retry_count=input_data.retry_count,
             fn=produce,
         )
+
+    def _llm_output(self, input_data: AnalystInput) -> AnalystOutput:
+        diagnostics = self._llm_diagnostics(input_data)
+        messages = self._llm_messages(input_data)
+        llm_response = self.llm_client.chat_json(messages)
+        diagnostics.update(
+            {
+                "llm_call_attempted": llm_response.attempted,
+                "llm_call_success": llm_response.success,
+                "llm_elapsed_time_ms": llm_response.elapsed_time_ms,
+                "llm_error_type": llm_response.error_type,
+                "llm_error_message": llm_response.error_message,
+                "llm_response_preview": llm_response.response_preview,
+            }
+        )
+
+        if not llm_response.available:
+            return self._fallback_to_evidence(
+                input_data,
+                diagnostics,
+                llm_response.fallback_reason or "LLM is unavailable; fallback to evidence mode.",
+            )
+
+        try:
+            payload = parse_llm_json(llm_response.content or "")
+            dimension_results = self._validate_llm_dimension_results(input_data, payload)
+        except Exception as exc:  # noqa: BLE001 - analyst must keep workflow alive.
+            diagnostics.update(
+                {
+                    "llm_schema_validation_success": False,
+                    "llm_schema_validation_errors": [str(exc)],
+                    "llm_fallback_reason": f"LLM Analyst output failed validation: {exc}",
+                }
+            )
+            return self._fallback_to_evidence(input_data, diagnostics, diagnostics["llm_fallback_reason"])
+
+        diagnostics.update(
+            {
+                "analyst_mode_used": "llm",
+                "fallback_used": False,
+                "llm_schema_validation_success": True,
+                "llm_schema_validation_errors": [],
+                "dimension_results_count": len(dimension_results),
+                "insufficient_evidence_dimensions": [
+                    item.dimension_id for item in dimension_results if item.insufficient_evidence
+                ],
+                "evidence_used_count": len({evidence_id for item in dimension_results for evidence_id in item.evidence_ids}),
+            }
+        )
+        return self._output_from_dimension_results(input_data, dimension_results, diagnostics)
+
+    def _fallback_to_evidence(self, input_data: AnalystInput, diagnostics: dict, fallback_reason: str) -> AnalystOutput:
+        output = self._evidence_output(input_data, fallback_reason=fallback_reason)
+        output.diagnostics.update(diagnostics)
+        output.diagnostics.update(
+            {
+                "analyst_mode_used": "evidence",
+                "fallback_used": True,
+                "fallback_reason": fallback_reason,
+                "analyst_fallback_reason": fallback_reason,
+            }
+        )
+        return output
 
     def _mock_output(self, input_data: AnalystInput, fallback_reason: str | None) -> AnalystOutput:
         task = input_data.task
@@ -134,10 +202,12 @@ class AnalystAgent:
             evidence_ids=ids[2:4] or ids[:1],
         )
         swot = self._build_mock_swot(task.competitors, ids, selected_dimensions)
+        dimension_results = self._mock_dimension_results(task.competitors, selected_dimensions, competitor_analysis)
         diagnostics.update(
             {
                 "selected_dimensions": selected_dimensions,
                 "selected_dimension_count": len(selected_dimensions),
+                "dimension_results_count": len(dimension_results),
                 "swot_item_count": self._count_swot_items(swot),
                 "rework_context_applied": bool(input_data.rework_context),
                 "long_term_knowledge_chunk_count": len(input_data.retrieved_knowledge_chunks),
@@ -146,6 +216,7 @@ class AnalystAgent:
             }
         )
         return AnalystOutput(
+            dimension_results=dimension_results,
             product_profile=profile,
             feature_tree=feature_tree,
             pricing_model=pricing,
@@ -219,6 +290,12 @@ class AnalystAgent:
 
         missing_competitors = [competitor for competitor, records in evidence_by_competitor.items() if not records]
         insufficient = bool(missing_competitors) or any(item["insufficient_evidence"] for item in competitor_analysis.values())
+        dimension_results = self._build_dimension_results(
+            task.competitors,
+            selected_dimensions,
+            evidence_by_competitor=evidence_by_competitor,
+            competitor_analysis=competitor_analysis,
+        )
         diagnostics = self._diagnostics(
             input_data,
             "evidence",
@@ -244,6 +321,10 @@ class AnalystAgent:
                 "content_source_used": self._content_source_summary(usable_evidence),
                 "selected_dimensions": selected_dimensions,
                 "selected_dimension_count": len(selected_dimensions),
+                "dimension_results_count": len(dimension_results),
+                "insufficient_evidence_dimensions": [
+                    item.dimension_id for item in dimension_results if item.insufficient_evidence
+                ],
                 "long_term_knowledge_chunk_count": len(input_data.retrieved_knowledge_chunks),
                 "long_term_knowledge_evidence_ids": [
                     item.evidence_id for item in input_data.retrieved_knowledge_chunks if item.evidence_id
@@ -317,12 +398,304 @@ class AnalystAgent:
         diagnostics["rework_context_applied"] = bool(input_data.rework_context)
         diagnostics["swot_refinement_summary"] = swot_refinement_summary
         return AnalystOutput(
+            dimension_results=dimension_results,
             product_profile=profile,
             feature_tree=feature_tree,
             pricing_model=pricing,
             user_persona=persona,
             swot=swot,
             diagnostics=diagnostics,
+        )
+
+    def _llm_diagnostics(self, input_data: AnalystInput) -> dict[str, Any]:
+        return {
+            "analyst_mode_requested": input_data.analyst_mode,
+            "analyst_mode_used": "llm",
+            "llm_enabled": self.llm_client.is_available,
+            "llm_provider": self.llm_client.provider,
+            "llm_model": self.llm_client.model,
+            "llm_base_url_configured": bool(self.llm_client.base_url),
+            "has_api_key": self.llm_client.is_available,
+            "llm_call_attempted": False,
+            "llm_call_success": False,
+            "llm_elapsed_time_ms": 0,
+            "llm_error_type": None,
+            "llm_error_message": None,
+            "llm_response_preview": None,
+            "llm_schema_validation_success": None,
+            "llm_schema_validation_errors": [],
+            "llm_fallback_reason": None,
+            "fallback_used": False,
+            "selected_dimensions": self._analysis_dimensions(self._selected_dimensions(input_data)),
+            "long_term_knowledge_chunk_count": len(input_data.retrieved_knowledge_chunks),
+            "rework_context_applied": bool(input_data.rework_context),
+        }
+
+    def _llm_messages(self, input_data: AnalystInput) -> list[dict[str, str]]:
+        selected_dimensions = self._analysis_dimensions(self._selected_dimensions(input_data))
+        usable_evidence = [
+            item.model_dump(mode="json")
+            for item in input_data.evidence
+            if item.relevance_level in {"high", "medium"}
+        ]
+        prompt_data = {
+            "task": input_data.task.model_dump(mode="json"),
+            "selected_dimensions": selected_dimensions,
+            "evidence": usable_evidence,
+            "long_term_knowledge": [item.model_dump(mode="json") for item in input_data.retrieved_knowledge_chunks],
+            "rework_context": input_data.rework_context.model_dump(mode="json") if input_data.rework_context else None,
+        }
+        system = (
+            "You are AnalystAgent. Extract dimension-level competitor facts from supplied Evidence only. "
+            "Return strict JSON only. Do not wrap it in markdown code fences. "
+            "JSON keys must stay English. Chinese explanatory text is allowed in values. "
+            "The top-level JSON object must contain dimension_results. "
+            "Each dimension result must include dimension_id, competitor, summary, findings, evidence_ids, confidence, insufficient_evidence, metadata. "
+            "dimension_id must be one of selected_dimensions. competitor must be one of task.competitors. "
+            "For insufficient evidence, set insufficient_evidence=true, evidence_ids=[], confidence<=0.4, and keep summary conservative. "
+            "For supported findings, evidence_ids must be non-empty and must refer only to Evidence from the same competitor. "
+            "Do not use unrelated or out-of-scope evidence. Long-term knowledge is secondary context; current Evidence has priority. "
+            "If public evidence is weak, say 当前公开证据不足，暂不做强结论。"
+        )
+        user = (
+            "Extract one dimension_result for each requested competitor and each selected dimension when possible. "
+            "Output example: "
+            '{"dimension_results":[{"dimension_id":"feature","competitor":"竞品A","summary":"中文摘要",'
+            '"findings":["中文发现"],"evidence_ids":["ev_xxx"],"confidence":0.8,'
+            '"insufficient_evidence":false,"metadata":{"reason":"based on high relevance public evidence"}}]}\n'
+            "Input:\n"
+            f"{prompt_data}"
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def _validate_llm_dimension_results(self, input_data: AnalystInput, payload: dict[str, Any]) -> list[DimensionResult]:
+        if not isinstance(payload, dict):
+            raise AgentOutputValidationError("LLM Analyst output must be a JSON object.")
+        raw_results = payload.get("dimension_results")
+        if not isinstance(raw_results, list):
+            raise AgentOutputValidationError("LLM Analyst output missing dimension_results list.")
+
+        allowed_dimensions = set(self._analysis_dimensions(self._selected_dimensions(input_data)))
+        allowed_competitors = set(input_data.task.competitors)
+        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
+        results: list[DimensionResult] = []
+
+        for index, item in enumerate(raw_results):
+            if not isinstance(item, dict):
+                raise AgentOutputValidationError(f"dimension_results[{index}] must be an object.")
+            dimension_id = str(item.get("dimension_id", "")).strip().lower()
+            competitor = item.get("competitor")
+            if dimension_id not in allowed_dimensions:
+                raise AgentOutputValidationError(f"dimension_id {dimension_id!r} is not in selected_dimensions.")
+            if competitor not in allowed_competitors:
+                raise AgentOutputValidationError(f"competitor {competitor!r} is not in task.competitors.")
+
+            insufficient = bool(item.get("insufficient_evidence", False))
+            evidence_ids = [str(evidence_id) for evidence_id in item.get("evidence_ids", []) if evidence_id]
+            if insufficient:
+                evidence_ids = []
+            elif not evidence_ids:
+                raise AgentOutputValidationError(f"DimensionResult {dimension_id}/{competitor} missing evidence_ids.")
+
+            for evidence_id in evidence_ids:
+                evidence = evidence_by_id.get(evidence_id)
+                if evidence is None:
+                    raise AgentOutputValidationError(f"DimensionResult cites unknown evidence_id {evidence_id}.")
+                if evidence.relevance_level == "unrelated":
+                    raise AgentOutputValidationError(f"DimensionResult cites unrelated evidence_id {evidence_id}.")
+                if evidence.competitor and evidence.competitor != competitor:
+                    raise AgentOutputValidationError(
+                        f"DimensionResult {dimension_id}/{competitor} cites Evidence {evidence_id} from {evidence.competitor}."
+                    )
+
+            try:
+                result = DimensionResult(
+                    dimension_id=dimension_id,
+                    competitor=competitor,
+                    summary=str(item.get("summary") or "当前公开证据不足，暂不做强结论。"),
+                    findings=[
+                        str(finding)
+                        for finding in item.get("findings", [])
+                        if isinstance(finding, str) and finding.strip()
+                    ],
+                    evidence_ids=evidence_ids,
+                    confidence=float(item.get("confidence", 0.35 if insufficient else 0.7)),
+                    insufficient_evidence=insufficient,
+                    metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+                )
+            except (TypeError, ValueError, ValidationError) as exc:
+                raise AgentOutputValidationError(f"Invalid DimensionResult schema: {exc}") from exc
+            results.append(result)
+
+        self._ensure_dimension_coverage(input_data, results)
+        return results
+
+    def _ensure_dimension_coverage(self, input_data: AnalystInput, results: list[DimensionResult]) -> None:
+        selected_dimensions = self._analysis_dimensions(self._selected_dimensions(input_data))
+        existing = {(item.competitor, item.dimension_id) for item in results}
+        for competitor in input_data.task.competitors:
+            for dimension_id in selected_dimensions:
+                if (competitor, dimension_id) not in existing:
+                    results.append(
+                        DimensionResult(
+                            dimension_id=dimension_id,
+                            competitor=competitor,
+                            summary="当前公开证据不足，暂不做强结论。",
+                            findings=[],
+                            evidence_ids=[],
+                            confidence=0.35,
+                            insufficient_evidence=True,
+                            metadata={"source": "llm_coverage_fallback"},
+                        )
+                    )
+
+    def _output_from_dimension_results(
+        self,
+        input_data: AnalystInput,
+        dimension_results: list[DimensionResult],
+        diagnostics: dict[str, Any],
+    ) -> AnalystOutput:
+        task = input_data.task
+        ids = self._dedupe([evidence_id for item in dimension_results for evidence_id in item.evidence_ids]) or ["insufficient_evidence"]
+        by_competitor = {
+            competitor: [item for item in dimension_results if item.competitor == competitor]
+            for competitor in task.competitors
+        }
+        competitor_analysis = {
+            competitor: self._competitor_analysis_from_dimensions(competitor, results)
+            for competitor, results in by_competitor.items()
+        }
+        feature_results = [item for item in dimension_results if item.dimension_id in {"feature", "features"} and not item.insufficient_evidence]
+        pricing_results = [item for item in dimension_results if item.dimension_id in {"pricing", "business_model"} and not item.insufficient_evidence]
+        persona_results = [item for item in dimension_results if item.dimension_id in {"persona", "user_persona", "user"} and not item.insufficient_evidence]
+        positioning_results = [item for item in dimension_results if item.dimension_id == "positioning" and not item.insufficient_evidence]
+        insufficient = any(item.insufficient_evidence for item in dimension_results)
+
+        profile = ProductProfile(
+            product_name=task.product_name,
+            positioning=positioning_results[0].summary if positioning_results else "当前公开证据不足，暂不做强结论。",
+            target_segments=self._dedupe([finding for item in persona_results for finding in item.findings])[:4]
+            or ["当前公开证据不足，暂不做强结论。"],
+            strengths=self._dedupe([item.summary for item in feature_results])[:4]
+            or ["当前公开证据不足，暂不做强结论。"],
+            weaknesses=["Conclusions remain limited by available public evidence coverage per competitor."],
+            evidence_ids=ids[: min(5, len(ids))],
+            custom_dimensions={
+                "region": task.region,
+                "industry": task.industry,
+                "analyst_mode": "llm",
+                "selected_dimensions": self._analysis_dimensions(self._selected_dimensions(input_data)),
+                "insufficient_evidence": insufficient,
+                "supporting_evidence_ids": ids,
+                "competitor_analysis": competitor_analysis,
+            },
+        )
+        feature_tree = FeatureTree(
+            core_features={
+                f"{item.competitor} / {item.dimension_id}": item.findings or [item.summary]
+                for item in feature_results
+            }
+            or {"insufficient evidence": ["当前公开证据不足，暂不做强结论。"]},
+            differentiators=[item.summary for item in feature_results[:4]] or ["当前公开证据不足，暂不做强结论。"],
+            evidence_ids=ids,
+        )
+        pricing = PricingModel(
+            model="LLM dimension-based pricing summary" if pricing_results else "Evidence insufficient",
+            tiers=[f"{item.competitor}: {item.summary}" for item in pricing_results] or ["当前公开证据不足，暂不做强结论。"],
+            pricing_notes="; ".join(item.summary for item in pricing_results[:3])
+            or "当前公开证据不足，暂不做强结论。",
+            evidence_ids=self._dedupe([evidence_id for item in pricing_results for evidence_id in item.evidence_ids]) or ids[:1],
+        )
+        persona = UserPersona(
+            persona_name=persona_results[0].competitor or "competitor evaluation team" if persona_results else "competitor evaluation team",
+            goals=[item.summary for item in persona_results] or ["当前公开证据不足，暂不做强结论。"],
+            pain_points=["Need more explicit public user-feedback evidence."],
+            buying_triggers=["Product selection and competitor replacement"],
+            evidence_ids=self._dedupe([evidence_id for item in persona_results for evidence_id in item.evidence_ids]) or ids[:1],
+        )
+        swot = self._build_dimension_swot(task.competitors, dimension_results)
+        diagnostics.update(
+            {
+                "extracted_profile_count": len(positioning_results),
+                "extracted_feature_count": len(feature_results),
+                "extracted_pricing_count": len(pricing_results),
+                "extracted_persona_count": len(persona_results),
+                "insufficient_evidence": insufficient,
+                "swot_item_count": self._count_swot_items(swot),
+            }
+        )
+        return AnalystOutput(
+            dimension_results=dimension_results,
+            product_profile=profile,
+            feature_tree=feature_tree,
+            pricing_model=pricing,
+            user_persona=persona,
+            swot=swot,
+            diagnostics=diagnostics,
+        )
+
+    @staticmethod
+    def _competitor_analysis_from_dimensions(competitor: str, results: list[DimensionResult]) -> dict:
+        evidence_ids = [evidence_id for item in results for evidence_id in item.evidence_ids]
+        return {
+            "positioning": next((item.summary for item in results if item.dimension_id == "positioning"), "当前公开证据不足，暂不做强结论。"),
+            "features": [finding for item in results if item.dimension_id in {"feature", "features"} for finding in (item.findings or [item.summary])],
+            "pricing": [item.summary for item in results if item.dimension_id in {"pricing", "business_model"}],
+            "persona": [item.summary for item in results if item.dimension_id in {"persona", "user_persona", "user"}],
+            "evidence_ids": evidence_ids,
+            "insufficient_evidence": any(item.insufficient_evidence for item in results),
+            "dimension_result_count": len(results),
+            "competitor": competitor,
+        }
+
+    def _build_dimension_swot(self, competitors: list[str], dimension_results: list[DimensionResult]) -> SwotAnalysis:
+        supported = [item for item in dimension_results if not item.insufficient_evidence and item.evidence_ids]
+        strengths = [
+            SwotItem(
+                summary=item.summary,
+                competitor=item.competitor,
+                evidence_ids=item.evidence_ids,
+                confidence=min(0.9, item.confidence),
+            )
+            for item in supported
+            if item.dimension_id in {"feature", "positioning"}
+        ][:4]
+        weaknesses = [
+            SwotItem(
+                summary=item.summary,
+                competitor=item.competitor,
+                evidence_ids=item.evidence_ids or ["insufficient_evidence"],
+                confidence=min(0.45, item.confidence),
+            )
+            for item in dimension_results
+            if item.insufficient_evidence
+        ][:4]
+        opportunities = [
+            SwotItem(
+                summary=item.summary,
+                competitor=item.competitor,
+                evidence_ids=item.evidence_ids,
+                confidence=min(0.7, item.confidence),
+            )
+            for item in supported
+            if item.dimension_id in {"pricing", "persona", "ux", "feedback"}
+        ][:4]
+        threats = [
+            SwotItem(
+                summary="Evidence coverage remains incomplete; keep cross-competitor conclusions conservative.",
+                competitor=competitor,
+                evidence_ids=["insufficient_evidence"],
+                confidence=0.35,
+            )
+            for competitor in competitors
+            if any(item.competitor == competitor and item.insufficient_evidence for item in dimension_results)
+        ][:4]
+        fallback_id = supported[0].evidence_ids[:1] if supported else ["insufficient_evidence"]
+        return SwotAnalysis(
+            strengths=strengths or [SwotItem(summary="当前公开证据不足，暂不做强结论。", evidence_ids=fallback_id, confidence=0.35)],
+            weaknesses=weaknesses,
+            opportunities=opportunities,
+            threats=threats,
         )
 
     def _diagnostics(
@@ -469,6 +842,175 @@ class AnalystAgent:
     @staticmethod
     def _count_swot_items(swot: SwotAnalysis) -> int:
         return len(swot.strengths) + len(swot.weaknesses) + len(swot.opportunities) + len(swot.threats)
+
+    def _mock_dimension_results(
+        self,
+        competitors: list[str],
+        selected_dimensions: list[str],
+        competitor_analysis: dict[str, dict],
+    ) -> list[DimensionResult]:
+        results: list[DimensionResult] = []
+        for competitor in competitors:
+            details = competitor_analysis.get(competitor, {})
+            evidence_ids = [str(item) for item in details.get("evidence_ids", []) if item]
+            for dimension_id in self._analysis_dimensions(selected_dimensions):
+                results.append(
+                    DimensionResult(
+                        dimension_id=dimension_id,
+                        competitor=competitor,
+                        summary=f"Mock {dimension_id} analysis for {competitor}.",
+                        findings=self._dimension_findings_from_details(dimension_id, details),
+                        evidence_ids=evidence_ids[:2],
+                        confidence=0.55,
+                        insufficient_evidence=False,
+                        metadata={"source": "mock", "legacy_view": "compatibility_summary"},
+                    )
+                )
+        return results
+
+    def _build_dimension_results(
+        self,
+        competitors: list[str],
+        selected_dimensions: list[str],
+        *,
+        evidence_by_competitor: dict[str, list[Evidence]],
+        competitor_analysis: dict[str, dict],
+    ) -> list[DimensionResult]:
+        results: list[DimensionResult] = []
+        for competitor in competitors:
+            records = evidence_by_competitor.get(competitor, [])
+            details = competitor_analysis.get(competitor, {})
+            for dimension_id in self._analysis_dimensions(selected_dimensions):
+                dimension_records = self._evidence_for_dimension(dimension_id, records)
+                if not dimension_records and dimension_id in {"positioning", "swot", "risk"}:
+                    dimension_records = records[:2]
+                evidence_ids = [item.evidence_id for item in dimension_records]
+                insufficient = not evidence_ids or bool(details.get("insufficient_evidence")) and dimension_id in {"feature", "pricing", "persona"}
+                results.append(
+                    DimensionResult(
+                        dimension_id=dimension_id,
+                        competitor=competitor,
+                        summary=self._dimension_summary(dimension_id, competitor, details, insufficient),
+                        findings=[] if insufficient else self._dimension_findings(dimension_id, details, dimension_records),
+                        evidence_ids=[] if insufficient else evidence_ids,
+                        confidence=self._dimension_confidence(dimension_records, insufficient),
+                        insufficient_evidence=insufficient,
+                        metadata={
+                            "source": "evidence",
+                            "evidence_count": len(evidence_ids),
+                            "source_domains": self._dedupe([item.source_domain or "" for item in dimension_records]),
+                            "source_quality": self._dedupe([item.source_quality for item in dimension_records]),
+                            "legacy_view": "primary_dimension_result",
+                        },
+                    )
+                )
+        return results
+
+    @staticmethod
+    def _analysis_dimensions(selected_dimensions: list[str]) -> list[str]:
+        defaults = fixed_dimension_ids()
+        candidates = selected_dimensions or defaults
+        normalized = []
+        for item in candidates:
+            value = str(item).strip().lower()
+            if value and value not in normalized:
+                normalized.append(value)
+        return normalized or defaults
+
+    def _evidence_for_dimension(self, dimension_id: str, records: list[Evidence]) -> list[Evidence]:
+        if dimension_id in {"feature", "features"}:
+            grouped = self._feature_hits(records)
+            return self._dedupe_evidence([item for values in grouped.values() for item in values])
+        if dimension_id in {"pricing", "business_model"}:
+            return self._keyword_evidence(records, PRICING_KEYWORDS)
+        if dimension_id in {"persona", "user_persona", "user"}:
+            grouped = self._persona_hits(records)
+            return self._dedupe_evidence([item for values in grouped.values() for item in values])
+        keywords = {
+            "positioning": ["positioning", "market", "product", "category", "solution", "定位", "产品", "解决方案"],
+            "ux": ["ux", "user experience", "usability", "体验", "易用", "流程"],
+            "feedback": ["feedback", "review", "complaint", "评价", "反馈", "痛点"],
+            "risk": ["risk", "security", "compliance", "风险", "安全", "合规"],
+            "swot": ["feature", "pricing", "enterprise", "workflow", "功能", "定价", "企业", "流程"],
+            "strength": FIXED_DIMENSION_KEYWORDS["strength"],
+            "weakness": FIXED_DIMENSION_KEYWORDS["weakness"],
+            "opportunity": FIXED_DIMENSION_KEYWORDS["opportunity"],
+            "threat": FIXED_DIMENSION_KEYWORDS["threat"],
+        }.get(dimension_id, [dimension_id])
+        return self._keyword_evidence(records, keywords)
+
+    @staticmethod
+    def _dedupe_evidence(records: list[Evidence]) -> list[Evidence]:
+        seen: set[str] = set()
+        output: list[Evidence] = []
+        for item in records:
+            if item.evidence_id in seen:
+                continue
+            seen.add(item.evidence_id)
+            output.append(item)
+        return output
+
+    @staticmethod
+    def _dedupe(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        output: list[str] = []
+        for item in items:
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            output.append(item)
+        return output
+
+    def _dimension_summary(self, dimension_id: str, competitor: str, details: dict, insufficient: bool) -> str:
+        if insufficient:
+            return f"{competitor} has insufficient public evidence for {dimension_id}."
+        if dimension_id == "positioning":
+            return str(details.get("positioning") or f"{competitor} positioning is inferred from public evidence.")
+        if dimension_id in {"feature", "features"}:
+            return f"{competitor} has public feature signals: {', '.join((details.get('features') or [])[:4])}."
+        if dimension_id in {"pricing", "business_model"}:
+            return f"{competitor} has pricing or packaging signals: {', '.join((details.get('pricing') or [])[:3])}."
+        if dimension_id in {"persona", "user_persona", "user"}:
+            return f"{competitor} has persona signals: {', '.join((details.get('persona') or [])[:3])}."
+        if dimension_id == "strength":
+            return f"{competitor} has public evidence related to strengths and differentiators."
+        if dimension_id == "weakness":
+            return f"{competitor} has public evidence related to weaknesses, complaints, or pain points."
+        if dimension_id == "opportunity":
+            return f"{competitor} has public evidence related to market opportunities or growth signals."
+        if dimension_id == "threat":
+            return f"{competitor} has public evidence related to competitive threats or risks."
+        if dimension_id == "swot":
+            return f"{competitor} has evidence-backed signals that can feed SWOT analysis."
+        return f"{competitor} has public evidence related to {dimension_id}."
+
+    def _dimension_findings(self, dimension_id: str, details: dict, records: list[Evidence]) -> list[str]:
+        base = self._dimension_findings_from_details(dimension_id, details)
+        snippets = [self._compact(self._evidence_text(item)) for item in records[:2]]
+        return self._dedupe([*base, *snippets])[:5]
+
+    @staticmethod
+    def _dimension_findings_from_details(dimension_id: str, details: dict) -> list[str]:
+        if dimension_id in {"feature", "features"}:
+            return [f"Feature signal: {item}" for item in details.get("features", []) if item and item != "insufficient evidence"]
+        if dimension_id in {"pricing", "business_model"}:
+            return [f"Pricing signal: {item}" for item in details.get("pricing", []) if item and "insufficient" not in item.lower()]
+        if dimension_id in {"persona", "user_persona", "user"}:
+            return [f"Persona signal: {item}" for item in details.get("persona", []) if item and "insufficient" not in item.lower()]
+        if dimension_id == "positioning" and details.get("positioning"):
+            return [str(details["positioning"])]
+        if dimension_id in {"strength", "weakness", "opportunity", "threat"}:
+            return [f"{dimension_id.title()} signal: {item}" for item in details.get("features", [])[:2] if item and item != "insufficient evidence"]
+        return []
+
+    @staticmethod
+    def _dimension_confidence(records: list[Evidence], insufficient: bool) -> float:
+        if insufficient or not records:
+            return 0.35
+        avg = sum(item.confidence for item in records) / len(records)
+        relevance_bonus = 0.05 if any(item.relevance_level == "high" for item in records) else 0.0
+        count_bonus = min(0.1, 0.03 * max(0, len(records) - 1))
+        return min(0.9, round(avg + relevance_bonus + count_bonus, 2))
 
     def _build_mock_swot(self, competitors: list[str], ids: list[str], selected_dimensions: list[str]) -> SwotAnalysis:
         dimensions = ", ".join(selected_dimensions[:3]) if selected_dimensions else "feature, pricing, persona"

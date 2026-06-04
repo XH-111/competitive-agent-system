@@ -17,6 +17,7 @@ from app.agents.qa import QaAgent
 from app.agents.report_writer import ReportWriterAgent
 from app.agents.runner import MockWorkflowRunner
 from app.agents.runner_factory import resolve_workflow_engine
+from app.constants.analysis_dimensions import fixed_dimension_ids, fixed_query_hints_for_competitor
 from app.database import Base
 from app.schemas import (
     AgentMessage,
@@ -176,6 +177,14 @@ def test_public_contract_analysis_dimension_plan_validates():
     )
     assert plan.selected_dimensions == ["pricing"]
     assert plan.query_hints["AlphaCI"]
+
+
+def test_fixed_competitive_dimensions_generate_collector_queries():
+    queries = fixed_query_hints_for_competitor("苹果17pro", "智能手机")
+    assert len(queries) == len(fixed_dimension_ids())
+    joined = " ".join(queries)
+    for keyword in ["价格", "功能", "用户画像", "优势", "劣势", "机会", "威胁"]:
+        assert keyword in joined
 
 
 def test_public_contract_dimension_result_requires_evidence_or_insufficient_flag():
@@ -528,6 +537,68 @@ class FakeLlmClient:
         )
 
 
+def test_llm_analyst_extracts_dimension_results(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com", competitor="AlphaCI", snippet="AlphaCI supports AI automation workflow.", confidence=0.9, relevance_level="high"),
+        Evidence(source_type="public_web", url="https://beta.example.com", competitor="BetaIntel", snippet="BetaIntel offers enterprise pricing plan.", confidence=0.85, relevance_level="high"),
+    ]
+    client = FakeLlmClient(
+        '{"dimension_results":['
+        '{"dimension_id":"feature","competitor":"AlphaCI","summary":"AlphaCI has AI workflow capability.",'
+        '"findings":["AI automation workflow"],"evidence_ids":["'
+        + evidence[0].evidence_id
+        + '"],"confidence":0.82,"insufficient_evidence":false,"metadata":{"reason":"high relevance evidence"}},'
+        '{"dimension_id":"feature","competitor":"BetaIntel","summary":"BetaIntel feature evidence is thin.",'
+        '"findings":[],"evidence_ids":[],"confidence":0.35,"insufficient_evidence":true,"metadata":{}}]}'
+    )
+    output = AnalystAgent(trace_service, llm_client=client).run(
+        AnalystInput(task=task, evidence=evidence, analyst_mode="llm", selected_dimensions=["feature"])
+    )
+    assert output.diagnostics["analyst_mode_used"] == "llm"
+    assert output.diagnostics["llm_schema_validation_success"] is True
+    assert len(output.dimension_results) == 2
+    assert output.dimension_results[0].dimension_id == "feature"
+    assert output.dimension_results[0].evidence_ids == [evidence[0].evidence_id]
+
+
+def test_llm_analyst_invalid_json_falls_back_to_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com", competitor="AlphaCI", snippet="AlphaCI AI automation workflow pricing enterprise team.", confidence=0.9, relevance_level="high"),
+    ]
+    output = AnalystAgent(trace_service, llm_client=FakeLlmClient("not json")).run(
+        AnalystInput(task=task, evidence=evidence, analyst_mode="llm", selected_dimensions=["feature"])
+    )
+    assert output.diagnostics["analyst_mode_used"] == "evidence"
+    assert output.diagnostics["fallback_used"] is True
+    assert output.diagnostics["llm_schema_validation_success"] is False
+    assert output.dimension_results
+
+
+def test_llm_analyst_competitor_mismatch_falls_back_to_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com", competitor="AlphaCI", snippet="AlphaCI AI automation workflow pricing enterprise team.", confidence=0.9, relevance_level="high"),
+        Evidence(source_type="public_web", url="https://beta.example.com", competitor="BetaIntel", snippet="BetaIntel pricing plan.", confidence=0.85, relevance_level="high"),
+    ]
+    client = FakeLlmClient(
+        '{"dimension_results":[{"dimension_id":"feature","competitor":"AlphaCI",'
+        '"summary":"Wrong binding","findings":["wrong"],"evidence_ids":["'
+        + evidence[1].evidence_id
+        + '"],"confidence":0.8,"insufficient_evidence":false,"metadata":{}}]}'
+    )
+    output = AnalystAgent(trace_service, llm_client=client).run(
+        AnalystInput(task=task, evidence=evidence, analyst_mode="llm", selected_dimensions=["feature"])
+    )
+    assert output.diagnostics["analyst_mode_used"] == "evidence"
+    assert output.diagnostics["fallback_used"] is True
+    assert output.diagnostics["llm_schema_validation_success"] is False
+
+
 class FakeWebSearchClient:
     provider = "fake-search"
     api_key = "fake-key"
@@ -707,6 +778,65 @@ def test_llm_writer_success_records_diagnostics_and_elapsed_time(db_session):
     assert trace_diagnostics["llm_schema_validation_success"] is True
 
 
+def test_llm_writer_normalizes_overall_claim_competitor(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com", competitor="AlphaCI", snippet="AlphaCI AI automation workflow.", confidence=0.9),
+        Evidence(source_type="public_web", url="https://beta.example.com", competitor="BetaIntel", snippet="BetaIntel pricing plan for enterprise team.", confidence=0.9),
+    ]
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer = ReportWriterAgent(
+        trace_service,
+        llm_client=FakeLlmClient(
+            '{"markdown_report":"# LLM Report","json_report":{},"claims":['
+            '{"claim_id":"c_overall","competitor":"全竞品","text":"整体结论","category":"risk","evidence_ids":["'
+            + evidence[0].evidence_id
+            + '"],"confidence":0.6},'
+            '{"claim_id":"c_alpha","competitor":"AlphaCI","text":"AlphaCI claim","category":"feature","evidence_ids":["'
+            + evidence[0].evidence_id
+            + '"],"confidence":0.7},'
+            '{"claim_id":"c_beta","competitor":"BetaIntel","text":"BetaIntel claim","category":"pricing","evidence_ids":["'
+            + evidence[1].evidence_id
+            + '"],"confidence":0.7}]}'
+        ),
+    )
+    output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    assert output.report is not None
+    overall = next(claim for claim in output.report.claims if claim.claim_id == "c_overall")
+    assert overall.competitor is None
+    assert output.report.json_report["writer_diagnostics"]["claim_competitor_normalization_count"] == 1
+
+
+def test_llm_writer_rebinds_claim_to_same_competitor_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://alpha.example.com", competitor="AlphaCI", snippet="AlphaCI AI automation workflow.", confidence=0.9),
+        Evidence(source_type="public_web", url="https://beta.example.com", competitor="BetaIntel", snippet="BetaIntel pricing plan for enterprise team.", confidence=0.9),
+    ]
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer = ReportWriterAgent(
+        trace_service,
+        llm_client=FakeLlmClient(
+            '{"markdown_report":"# LLM Report","json_report":{},"claims":['
+            '{"claim_id":"c_alpha","competitor":"AlphaCI","text":"AlphaCI claim","category":"feature","evidence_ids":["'
+            + evidence[1].evidence_id
+            + '"],"confidence":0.7},'
+            '{"claim_id":"c_beta","competitor":"BetaIntel","text":"BetaIntel claim","category":"pricing","evidence_ids":["'
+            + evidence[1].evidence_id
+            + '"],"confidence":0.7}]}'
+        ),
+    )
+    output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
+    assert output.report is not None
+    alpha_claim = next(claim for claim in output.report.claims if claim.claim_id == "c_alpha")
+    assert alpha_claim.evidence_ids == [evidence[0].evidence_id]
+    assert output.report.json_report["writer_diagnostics"]["claim_evidence_rebinding_count"] == 1
+    qa_result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence, analysis=analysis, report_output=output)).qa_result
+    assert qa_result.status == "passed"
+
+
 def test_collector_mode_mock_workflow_still_passes(db_session):
     task = make_task(db_session)
     result = MockWorkflowRunner(db_session).run(task.task_id, collector_mode="mock")
@@ -828,6 +958,47 @@ def test_collector_web_results_convert_to_evidence(db_session):
     assert output.evidence[0].confidence == 0.9
     assert output.diagnostics["collector_mode_used"] == "web"
     assert output.diagnostics["web_search_success"] is True
+
+
+def test_collector_runs_dimension_queries_before_stopping(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+
+    class DimensionSearchClient(FakeWebSearchClient):
+        def __init__(self):
+            super().__init__()
+            self.calls_by_competitor = {competitor: 0 for competitor in task.competitors}
+
+        def search(self, query: str, limit: int = 5):
+            competitor = next(item for item in task.competitors if item in query)
+            self.calls_by_competitor[competitor] += 1
+            call_index = self.calls_by_competitor[competitor]
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                elapsed_time_ms=1,
+                results=[
+                    SearchResult(
+                        title=f"{competitor} dimension source {call_index}",
+                        url=f"https://{competitor.lower()}.example.com/source-{call_index}",
+                        snippet=f"{competitor} public evidence for dimension query {call_index}: pricing feature persona strengths weaknesses opportunities threats.",
+                    )
+                ],
+            )
+
+    client = DimensionSearchClient()
+    output = CollectorAgent(trace_service, web_search_client=client).run(
+        CollectorInput(
+            task=task,
+            collector_mode="web",
+            planner_query_hints={competitor: fixed_query_hints_for_competitor(competitor, task.industry) for competitor in task.competitors},
+        )
+    )
+    assert output.diagnostics["web_search_success"] is True
+    for competitor in task.competitors:
+        assert output.diagnostics["query_count_by_competitor"][competitor] >= len(fixed_dimension_ids())
+        assert output.diagnostics["evidence_count_by_competitor"][competitor] == len(fixed_dimension_ids())
 
 
 def test_collector_deduplicates_normalized_urls(db_session):
@@ -1453,6 +1624,9 @@ def test_langgraph_normal_workflow_passes_and_finalizes(db_session):
     assert result["report"] is not None
     summary = result["workflow_summary"]
     assert summary["workflow_engine_used"] == "langgraph"
+    assert summary["selected_dimensions"] == fixed_dimension_ids()
+    for competitor in task.competitors:
+        assert result["plan"].analysis_dimension_plan.query_hints[competitor]
     assert "evidence_gate" in summary["node_sequence"]
     assert summary["evidence_gate_output"]["evidence_gate_passed"] is True
     assert summary["node_sequence"][-1] == "final_report"

@@ -1,5 +1,15 @@
 import type { CollectorDiagnostics, WorkflowSummary } from "../types";
 
+const DIMENSION_LABELS: Record<string, string> = {
+  pricing: "价格",
+  feature: "功能",
+  persona: "用户画像",
+  strength: "优势",
+  weakness: "劣势",
+  opportunity: "机会",
+  threat: "威胁",
+};
+
 export function PlannerSummaryCard({
   workflowSummary,
   collectorDiagnostics,
@@ -30,7 +40,7 @@ export function PlannerSummaryCard({
     <section className="mb-4 grid gap-3 lg:grid-cols-2">
       {hasPlannerSummary && (
         <div className="rounded border border-line bg-white p-4">
-          <h2 className="mb-3 text-base font-semibold">Planner Summary</h2>
+          <h2 className="mb-3 text-base font-semibold">规划摘要</h2>
           <div className="grid gap-2 text-sm md:grid-cols-2">
             <SummaryItem label="intent" value={workflowSummary?.intent_classification ?? "-"} />
             <SummaryItem label="ambiguity" value={workflowSummary?.ambiguity_level ?? "-"} />
@@ -41,7 +51,7 @@ export function PlannerSummaryCard({
             <SummaryItem label="run id" value={workflowSummary?.run_id ?? "-"} />
           </div>
           <div className="mt-3">
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Selected Dimensions</div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">固定分析维度</div>
             <div className="flex flex-wrap gap-2">
               {(workflowSummary?.selected_dimensions?.length
                 ? workflowSummary.selected_dimensions
@@ -50,7 +60,7 @@ export function PlannerSummaryCard({
                   key={dimension}
                   className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-accent"
                 >
-                  {dimension}
+                  {dimensionLabel(dimension)}
                 </span>
               ))}
             </div>
@@ -92,7 +102,7 @@ export function PlannerSummaryCard({
 
       {hasCollectorGuidance && (
         <div className="rounded border border-line bg-white p-4">
-          <h2 className="mb-3 text-base font-semibold">Collector Guidance</h2>
+          <h2 className="mb-3 text-base font-semibold">采集查询规划</h2>
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <SummaryItem
               label="planner hints used"
@@ -123,7 +133,7 @@ export function PlannerSummaryCard({
                   </div>
                   {!!collectorDiagnostics?.targeted_queries_preview_by_competitor?.[competitor]?.length && (
                     <div className="mt-2 flex flex-wrap gap-2">
-                      {collectorDiagnostics.targeted_queries_preview_by_competitor[competitor].slice(0, 3).map((query) => (
+                      {collectorDiagnostics.targeted_queries_preview_by_competitor[competitor].slice(0, 7).map((query) => (
                         <span key={query} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
                           {query}
                         </span>
@@ -132,7 +142,7 @@ export function PlannerSummaryCard({
                   )}
                   {!!collectorDiagnostics?.effective_queries_preview_by_competitor?.[competitor]?.length && (
                     <div className="mt-2 flex flex-wrap gap-2">
-                      {collectorDiagnostics.effective_queries_preview_by_competitor[competitor].slice(0, 3).map((query) => (
+                      {collectorDiagnostics.effective_queries_preview_by_competitor[competitor].slice(0, 7).map((query) => (
                         <span key={query} className="rounded border border-line bg-white px-2 py-1 text-xs text-slate-700">
                           {query}
                         </span>
@@ -147,6 +157,11 @@ export function PlannerSummaryCard({
       )}
     </section>
   );
+}
+
+function dimensionLabel(dimension: string): string {
+  const label = DIMENSION_LABELS[dimension];
+  return label ? `${label} ${dimension}` : dimension;
 }
 
 function SummaryItem({ label, value }: { label: string; value: string }) {

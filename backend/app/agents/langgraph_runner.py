@@ -11,6 +11,7 @@ from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import MAX_REWORK, QaAgent
 from app.agents.report_writer import ReportWriterAgent
+from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan, fixed_dimension_ids
 from app.schemas import (
     AnalystInput,
     CollectorInput,
@@ -223,6 +224,18 @@ class LangGraphWorkflowRunner:
     def planner_node(self, state: WorkflowState) -> WorkflowState:
         task = state["task"]
         output = self.planner.run(PlannerInput(task=task, run_id=state.get("run_id"), retry_count=state["rework_count"]))
+        analysis_dimension_plan = apply_fixed_dimensions_to_plan(output.analysis_dimension_plan, task)
+        selected_dimensions = fixed_dimension_ids()
+        output = output.model_copy(
+            update={
+                "selected_dimensions": selected_dimensions,
+                "analysis_dimension_plan": analysis_dimension_plan,
+                "planner_notes": [
+                    *output.planner_notes,
+                    "Collector/Analyst/Writer use fixed competitive dimensions for current evaluation: pricing, feature, persona, strength, weakness, opportunity, threat.",
+                ],
+            }
+        )
         return {
             **state,
             "planner_output": output,
@@ -232,8 +245,8 @@ class LangGraphWorkflowRunner:
             "scope_type": output.scope_type,
             "scope_size": output.scope_size,
             "extracted_context": output.extracted_context,
-            "selected_dimensions": output.selected_dimensions,
-            "analysis_dimension_plan": output.analysis_dimension_plan,
+            "selected_dimensions": selected_dimensions,
+            "analysis_dimension_plan": analysis_dimension_plan,
             "downstream_guidance": output.downstream_guidance,
             "survey_needed": output.survey_needed,
             "survey_recommended": output.survey_recommended,
@@ -418,6 +431,7 @@ class LangGraphWorkflowRunner:
             **state,
             "task": task,
             "analyst_output": output,
+            "dimension_results": output.dimension_results,
             "retrieved_knowledge_chunks": retrieved_chunks,
             "knowledge_hits": [self._knowledge_hit_payload(item) for item in retrieved_chunks],
             "swot_analysis": output.swot,
@@ -455,6 +469,7 @@ class LangGraphWorkflowRunner:
                 selected_dimensions=state.get("selected_dimensions", []),
                 writer_guidance=state.get("downstream_guidance").writer if state.get("downstream_guidance") else [],
                 intent_classification=state.get("intent_classification"),
+                rework_context=state.get("rework_context"),
             )
         )
         return {
@@ -708,7 +723,7 @@ class LangGraphWorkflowRunner:
             target_agent=instruction.target_agent,
             related_competitor=metadata.get("competitor"),
             related_claim_id=instruction.claim_id,
-            related_evidence_id=None,
+            related_evidence_id=metadata.get("evidence_id"),
             suggested_action=instruction.suggested_action,
             metadata=metadata,
         )

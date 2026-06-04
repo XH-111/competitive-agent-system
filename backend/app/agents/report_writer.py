@@ -9,6 +9,20 @@ from app.services.llm_client import LlmClient, parse_llm_json
 from app.services.trace_service import TraceService
 
 
+OVERALL_COMPETITOR_LABELS = {
+    "overall",
+    "all",
+    "all competitors",
+    "all_competitors",
+    "全竞品",
+    "全部竞品",
+    "全体竞品",
+    "所有竞品",
+    "整体",
+    "综合",
+}
+
+
 class ReportWriterAgent:
     name = "ReportWriterAgent"
 
@@ -55,6 +69,9 @@ class ReportWriterAgent:
             "selected_dimensions": [item for item in input_data.selected_dimensions if item],
             "writer_guidance_count": len(input_data.writer_guidance),
             "intent_classification": input_data.intent_classification,
+            "rework_context_applied": bool(input_data.rework_context),
+            "claim_competitor_normalization_count": 0,
+            "claim_evidence_rebinding_count": 0,
         }
 
     def _run_mock(
@@ -187,6 +204,14 @@ class ReportWriterAgent:
                     "LLM output missing claims list.",
                     output={"claims": [], "markdown": payload.get("markdown_report", ""), "diagnostics": diagnostics},
                 )
+
+            claims_payload, normalization_count, rebinding_count = self._normalize_claim_payloads(input_data, claims_payload)
+            diagnostics.update(
+                {
+                    "claim_competitor_normalization_count": normalization_count,
+                    "claim_evidence_rebinding_count": rebinding_count,
+                }
+            )
 
             if any(not claim.get("evidence_ids") for claim in claims_payload):
                 diagnostics.update(
@@ -356,6 +381,64 @@ class ReportWriterAgent:
             )
         return claims
 
+    def _normalize_claim_payloads(
+        self,
+        input_data: ReportWriterInput,
+        claims_payload: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
+        evidence_ids_by_competitor = self._evidence_ids_by_competitor(input_data)
+        normalized: list[dict[str, Any]] = []
+        normalization_count = 0
+        rebinding_count = 0
+
+        for claim in claims_payload:
+            next_claim = dict(claim)
+            original_competitor = next_claim.get("competitor")
+            normalized_competitor = self._normalize_claim_competitor(original_competitor, input_data.task.competitors)
+            if normalized_competitor != original_competitor:
+                normalization_count += 1
+            next_claim["competitor"] = normalized_competitor
+
+            evidence_ids = [str(item) for item in next_claim.get("evidence_ids", []) if item]
+            if normalized_competitor in input_data.task.competitors:
+                valid_ids = [
+                    evidence_id
+                    for evidence_id in evidence_ids
+                    if self._evidence_matches_claim_competitor(evidence_by_id.get(evidence_id), normalized_competitor)
+                ]
+                if not valid_ids:
+                    valid_ids = evidence_ids_by_competitor.get(normalized_competitor, [])[: max(1, min(2, len(evidence_ids) or 2))]
+                if valid_ids != evidence_ids:
+                    rebinding_count += 1
+                next_claim["evidence_ids"] = valid_ids
+            else:
+                next_claim["evidence_ids"] = evidence_ids
+
+            normalized.append(next_claim)
+
+        return normalized, normalization_count, rebinding_count
+
+    @staticmethod
+    def _normalize_claim_competitor(value: Any, competitors: list[str]) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text in competitors:
+            return text
+        normalized = text.lower().replace("-", " ").replace("_", " ")
+        if normalized in OVERALL_COMPETITOR_LABELS or text in OVERALL_COMPETITOR_LABELS:
+            return None
+        return text
+
+    @staticmethod
+    def _evidence_matches_claim_competitor(evidence: Any, competitor: str) -> bool:
+        if evidence is None:
+            return False
+        return not evidence.competitor or evidence.competitor == competitor
+
     @staticmethod
     def _coverage_diagnostics(competitors: list[str], claim_payloads: list[dict[str, Any]]) -> dict[str, Any]:
         claim_count_by_competitor = {competitor: 0 for competitor in competitors}
@@ -374,9 +457,12 @@ class ReportWriterAgent:
             "knowledge": input_data.knowledge.model_dump(mode="json"),
             "evidence": [item.model_dump(mode="json") for item in input_data.evidence],
             "planner": self._planner_report_payload(input_data),
+            "rework_context": input_data.rework_context.model_dump(mode="json") if input_data.rework_context else None,
         }
         system = (
             "You are ReportWriterAgent. Write only from supplied Evidence and Knowledge. "
+            "The primary structured facts are knowledge.dimension_results. "
+            "Use ProductProfile, FeatureTree, PricingModel, UserPersona, and SWOT only as compatibility summaries. "
             "Do not invent sources. Every key claim must bind evidence_ids. "
             "Use planner intent, selected dimensions, writer guidance, and SWOT to frame the report. "
             "The report must include a SWOT section grounded in supplied evidence. "
@@ -384,12 +470,16 @@ class ReportWriterAgent:
             "Do not use unrelated Evidence. Low relevance Evidence may only support cautious risk notes. "
             "You must cover every input competitor. Each competitor needs its own subsection and at least one claim when its own evidence exists. "
             "Never use one competitor's evidence_ids to support another competitor's claim. "
+            "If a claim is an overall cross-competitor conclusion, set claims[].competitor to null, not 全竞品, overall, or all competitors. "
+            "If claims[].competitor names a specific competitor, all claims[].evidence_ids must come from Evidence with the same competitor. "
             "If a competitor lacks evidence, clearly state that public evidence is insufficient and avoid fabrication. "
+            "When rework_context is present, directly fix the failed claim or evidence binding described there. "
             "Return strict JSON only with keys markdown_report, json_report, claims. "
             "For claims[].category, use only one of: positioning, feature, pricing, persona, risk, recommendation."
         )
         user = (
             "markdown_report must be a complete competitor analysis report with sections for executive summary, evidence scope, competitor analysis, SWOT, risks, and next steps. "
+            "Organize the competitor analysis around planner.selected_dimensions and knowledge.dimension_results. "
             "Each claim must include claim_id, competitor, text, evidence_ids, category, confidence. "
             "Use 2-4 claims per competitor when evidence allows; otherwise keep claims cautious. "
             "Input:\n"
@@ -414,6 +504,9 @@ class ReportWriterAgent:
                 f"Selected dimensions: {', '.join(dimensions) if dimensions else 'positioning, feature, pricing, persona'}.",
                 *(f"- {line}" for line in guidance[:4]),
                 "",
+                "## Dimension Analysis",
+                *self._dimension_markdown(input_data),
+                "",
                 "## Key Claims",
                 *[
                     f"- **{claim.competitor or 'overall'} / {claim.claim_id}** {claim.text} Evidence: {', '.join(claim.evidence_ids)}"
@@ -434,6 +527,21 @@ class ReportWriterAgent:
             "selected_dimensions": self._selected_dimensions(input_data),
             "writer_guidance": [item for item in input_data.writer_guidance if item],
         }
+
+    @staticmethod
+    def _dimension_markdown(input_data: ReportWriterInput) -> list[str]:
+        results = input_data.knowledge.dimension_results
+        if not results:
+            return ["No dimension_results were produced by AnalystAgent."]
+        lines: list[str] = []
+        for result in results[:12]:
+            status = "insufficient" if result.insufficient_evidence else "supported"
+            evidence = ", ".join(result.evidence_ids) if result.evidence_ids else "insufficient_evidence"
+            lines.append(
+                f"- **{result.dimension_id} / {result.competitor or 'overall'} / {status}** "
+                f"{result.summary} Evidence: {evidence}"
+            )
+        return lines
 
     @staticmethod
     def _swot_payload(swot: SwotAnalysis) -> dict[str, Any]:
