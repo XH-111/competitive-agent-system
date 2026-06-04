@@ -306,6 +306,7 @@ class LangGraphWorkflowRunner:
             competitor: sum(1 for item in evidence if item.competitor == competitor and item.relevance_level == "unrelated")
             for competitor in task.competitors
         }
+        gate_details = self._evidence_gate_details(task, evidence, relevant_count, unrelated_count)
         missing = [competitor for competitor, count in relevant_count.items() if count < 1]
         passed = not missing
         suggested_route = None if passed else "CollectorAgent"
@@ -322,6 +323,7 @@ class LangGraphWorkflowRunner:
                         "from_node": "evidence_gate",
                         "to_node": "final_report",
                         "reason": "max_rework_reached",
+                        "details": gate_details["failure_explanation"],
                         "rework_count": state["rework_count"],
                         "final_status": "manual_review",
                     }
@@ -337,6 +339,7 @@ class LangGraphWorkflowRunner:
                             "from_node": "evidence_gate",
                             "to_node": "final_report",
                             "reason": "max_rework_reached",
+                            "details": gate_details["failure_explanation"],
                             "rework_count": next_rework_count,
                             "final_status": "manual_review",
                         }
@@ -348,6 +351,7 @@ class LangGraphWorkflowRunner:
                             "from_node": "evidence_gate",
                             "to_node": "collector",
                             "reason": "missing_relevant_evidence",
+                            "details": gate_details["failure_explanation"],
                             "rework_count": next_rework_count,
                         }
                     )
@@ -359,6 +363,7 @@ class LangGraphWorkflowRunner:
                         "from_node": "evidence_gate",
                         "to_node": "final_report",
                         "reason": "missing_relevant_evidence",
+                        "details": gate_details["failure_explanation"],
                         "rework_count": state["rework_count"],
                         "final_status": "insufficient_evidence",
                     }
@@ -368,19 +373,47 @@ class LangGraphWorkflowRunner:
                 task_id=task.task_id,
                 run_id=state.get("run_id"),
                 status="manual_review" if final_status == "manual_review" else "failed",
-                hard_errors=[f"Missing relevant public evidence for competitors: {', '.join(missing)}."],
+                hard_errors=[gate_details["failure_explanation"]],
                 rework_instructions=[
                     ReworkInstruction(
                         target_agent="CollectorAgent",
                         error_type="missing_relevant_evidence",
-                        reason=f"Missing relevant public evidence for competitors: {', '.join(missing)}.",
-                        suggested_action="Collect high/medium relevance Evidence before AnalystAgent and ReportWriterAgent run.",
+                        reason=gate_details["failure_explanation"],
+                        suggested_action=gate_details["suggested_action"],
                         failed_schema="Evidence.relevance",
+                        metadata={
+                            "source_node": "EvidenceGate",
+                            "missing_competitors": missing,
+                            "evidence_gate_details": gate_details,
+                            "query_focus": gate_details["query_focus"],
+                            "fix_type": "collect_more_relevant_evidence",
+                        },
                     )
                 ],
                 route_to="CollectorAgent" if suggested_route == "CollectorAgent" else None,
                 rework_count=next_rework_count,
+                metadata={"evidence_gate_details": gate_details},
             )
+            if state["auto_rework"] and suggested_route == "CollectorAgent":
+                qa_result.rework_history = [
+                    *list(state.get("qa_result").rework_history if state.get("qa_result") else []),
+                    ReworkHistoryItem(
+                        round=next_rework_count,
+                        from_status=qa_result.status,
+                        error_type="missing_relevant_evidence",
+                        route_to="CollectorAgent",
+                        action=gate_details["suggested_action"],
+                        reason=gate_details["failure_explanation"],
+                        failed_schema="Evidence.relevance",
+                        metadata={
+                            "source_node": "EvidenceGate",
+                            "missing_competitors": missing,
+                            "evidence_gate_details": gate_details,
+                            "query_focus": gate_details["query_focus"],
+                            "fix_type": "collect_more_relevant_evidence",
+                        },
+                    ),
+                ]
             qa_result = self.report_service.save_qa(qa_result, run_id=state.get("run_id"))
         else:
             qa_result = state.get("qa_result")
@@ -390,8 +423,10 @@ class LangGraphWorkflowRunner:
             "missing_relevant_evidence_competitors": missing,
             "relevant_evidence_count_by_competitor": relevant_count,
             "unrelated_evidence_count_by_competitor": unrelated_count,
+            "evidence_diagnostics_by_competitor": gate_details["by_competitor"],
+            "failure_explanation": gate_details["failure_explanation"],
             "suggested_route": suggested_route,
-            "suggested_action": "Proceed to AnalystAgent." if passed else "Collect more competitor-specific high/medium relevance Evidence.",
+            "suggested_action": "Proceed to AnalystAgent." if passed else gate_details["suggested_action"],
         }
         self._save_evidence_gate_trace(task.task_id, state.get("run_id"), output, state["rework_count"])
         return {
@@ -606,6 +641,119 @@ class LangGraphWorkflowRunner:
             return "report_writer"
         state["final_status"] = "manual_review"
         return "final_report"
+
+    @staticmethod
+    def _evidence_gate_details(task: Task, evidence: list, relevant_count: dict[str, int], unrelated_count: dict[str, int]) -> dict:
+        by_competitor: dict[str, dict] = {}
+        missing: list[str] = []
+        query_focus: list[str] = []
+
+        for competitor in task.competitors:
+            records = [item for item in evidence if item.competitor == competitor]
+            high = [item for item in records if item.relevance_level == "high"]
+            medium = [item for item in records if item.relevance_level == "medium"]
+            low = [item for item in records if item.relevance_level == "low"]
+            unrelated = [item for item in records if item.relevance_level == "unrelated"]
+            relevant = [*high, *medium]
+            top_records = sorted(
+                records,
+                key=lambda item: (
+                    {"high": 3, "medium": 2, "low": 1, "unrelated": 0}.get(item.relevance_level, 0),
+                    item.relevance_score,
+                    item.confidence,
+                ),
+                reverse=True,
+            )[:3]
+            alias_miss_count = sum(
+                1
+                for item in records
+                if not (item.entity_match_signals or {}).get("competitor_alias_matched")
+            )
+            dimensions_seen = sorted(
+                {
+                    str((item.entity_match_signals or {}).get("collector_dimension"))
+                    for item in records
+                    if (item.entity_match_signals or {}).get("collector_dimension")
+                }
+            )
+            if not records:
+                reason = "no_evidence_collected"
+                explanation = f"{competitor} 没有采集到任何公开 Evidence。"
+            elif not relevant and alias_miss_count == len(records):
+                reason = "alias_or_entity_not_matched"
+                explanation = (
+                    f"{competitor} 采集到 {len(records)} 条 Evidence，但都没有命中竞品名或别名，"
+                    "因此相关性只达到 low/unrelated。"
+                )
+            elif not relevant:
+                reason = "only_low_or_unrelated_evidence"
+                explanation = (
+                    f"{competitor} 采集到 {len(records)} 条 Evidence，但 high/medium 相关证据为 0；"
+                    f"low={len(low)}，unrelated={len(unrelated)}。"
+                )
+            else:
+                reason = "passed"
+                explanation = f"{competitor} 已有 {len(relevant)} 条 high/medium 相关 Evidence。"
+
+            if not relevant:
+                missing.append(competitor)
+                query_focus.extend(
+                    [
+                        f"{competitor} official",
+                        f"{competitor} 官网",
+                        f"{competitor} 产品",
+                        f"{competitor} 评测",
+                    ]
+                )
+
+            by_competitor[competitor] = {
+                "competitor": competitor,
+                "status": "passed" if relevant else "failed",
+                "reason_code": reason,
+                "explanation": explanation,
+                "total_evidence_count": len(records),
+                "relevant_evidence_count": relevant_count.get(competitor, len(relevant)),
+                "high_count": len(high),
+                "medium_count": len(medium),
+                "low_count": len(low),
+                "unrelated_count": unrelated_count.get(competitor, len(unrelated)),
+                "alias_miss_count": alias_miss_count,
+                "collector_dimensions_seen": dimensions_seen,
+                "top_evidence": [
+                    {
+                        "evidence_id": item.evidence_id,
+                        "source_domain": item.source_domain,
+                        "source_quality": item.source_quality,
+                        "relevance_level": item.relevance_level,
+                        "relevance_score": item.relevance_score,
+                        "confidence": item.confidence,
+                        "relevance_reason": item.relevance_reason,
+                        "collector_dimension": (item.entity_match_signals or {}).get("collector_dimension"),
+                        "url": item.url,
+                    }
+                    for item in top_records
+                ],
+            }
+
+        if missing:
+            failure_explanation = (
+                "EvidenceGate 未通过："
+                + "；".join(by_competitor[competitor]["explanation"] for competitor in missing)
+            )
+            suggested_action = (
+                "重新运行 CollectorAgent，优先补充缺失竞品的官方页、产品页、文档、评测或明确包含竞品别名的 high/medium Evidence。"
+            )
+        else:
+            failure_explanation = "EvidenceGate 通过：所有竞品至少有 1 条 high/medium 相关 Evidence。"
+            suggested_action = "Proceed to AnalystAgent."
+
+        return {
+            "missing_competitors": missing,
+            "failure_explanation": failure_explanation,
+            "suggested_action": suggested_action,
+            "query_focus": list(dict.fromkeys(query_focus)),
+            "by_competitor": by_competitor,
+        }
 
     def _current_task(self, state: WorkflowState) -> Task:
         return self.task_service.get_task(state["task_id"])

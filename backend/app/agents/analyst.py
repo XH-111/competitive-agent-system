@@ -884,6 +884,7 @@ class AnalystAgent:
                 dimension_records = self._evidence_for_dimension(dimension_id, records)
                 if not dimension_records and dimension_id in {"positioning", "swot", "risk"}:
                     dimension_records = records[:2]
+                dimension_records = sorted(dimension_records, key=self._evidence_quality_key, reverse=True)
                 evidence_ids = [item.evidence_id for item in dimension_records]
                 insufficient = not evidence_ids or bool(details.get("insufficient_evidence")) and dimension_id in {"feature", "pricing", "persona"}
                 results.append(
@@ -918,6 +919,13 @@ class AnalystAgent:
         return normalized or defaults
 
     def _evidence_for_dimension(self, dimension_id: str, records: list[Evidence]) -> list[Evidence]:
+        tagged_records = [
+            item
+            for item in records
+            if (item.entity_match_signals or {}).get("collector_dimension") == dimension_id
+        ]
+        if tagged_records:
+            return self._dedupe_evidence(tagged_records)
         if dimension_id in {"feature", "features"}:
             grouped = self._feature_hits(records)
             return self._dedupe_evidence([item for values in grouped.values() for item in values])
@@ -938,6 +946,19 @@ class AnalystAgent:
             "threat": FIXED_DIMENSION_KEYWORDS["threat"],
         }.get(dimension_id, [dimension_id])
         return self._keyword_evidence(records, keywords)
+
+    @staticmethod
+    def _evidence_quality_key(evidence: Evidence) -> tuple[int, float, int, float]:
+        relevance_rank = {"high": 3, "medium": 2, "low": 1, "unrelated": 0}.get(evidence.relevance_level, 0)
+        quality_rank = {
+            "official": 5,
+            "documentation": 4,
+            "media": 3,
+            "review": 2,
+            "unknown": 1,
+            "low_quality": 0,
+        }.get(evidence.source_quality, 0)
+        return (relevance_rank, evidence.confidence, quality_rank, evidence.relevance_score)
 
     @staticmethod
     def _dedupe_evidence(records: list[Evidence]) -> list[Evidence]:

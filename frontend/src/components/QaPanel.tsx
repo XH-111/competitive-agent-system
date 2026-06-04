@@ -42,6 +42,7 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
       </div>
 
       <ReworkReasonCard qa={qa} />
+      <EvidenceGateDetailsCard qa={qa} workflowSummary={workflowSummary} />
 
       <div className="grid gap-3 lg:grid-cols-3">
         <InfoBlock title="严重问题 hard_errors" items={qa.hard_errors} emptyText="无" />
@@ -144,6 +145,64 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
   );
 }
 
+function EvidenceGateDetailsCard({ qa, workflowSummary }: { qa: QaResult; workflowSummary?: WorkflowSummary }) {
+  const details = (qa.metadata?.evidence_gate_details ?? workflowSummary?.evidence_gate_output) as Record<string, unknown> | undefined;
+  const diagnostics = (details?.by_competitor ?? details?.evidence_diagnostics_by_competitor) as Record<string, Record<string, unknown>> | undefined;
+  if (!details || !diagnostics) return null;
+
+  const competitors = Object.entries(diagnostics);
+  if (!competitors.length) return null;
+
+  return (
+    <div className="mb-3 rounded border border-amber-200 bg-white p-3 text-sm">
+      <div className="mb-2 flex items-center gap-2 font-semibold text-warning">
+        <AlertTriangle size={16} /> {"EvidenceGate \u8bc1\u636e\u95e8\u7981\u8be6\u60c5"}
+      </div>
+      {typeof details.failure_explanation === "string" && (
+        <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-slate-700">
+          {details.failure_explanation}
+        </div>
+      )}
+      <div className="space-y-2">
+        {competitors.map(([competitor, raw]) => {
+          const item = raw as Record<string, unknown>;
+          const topEvidence = Array.isArray(item.top_evidence) ? item.top_evidence as Array<Record<string, unknown>> : [];
+          return (
+            <div key={competitor} className="rounded border border-line bg-panel p-3">
+              <div className="font-semibold">
+                {competitor} | {String(item.status ?? "-")} | {String(item.reason_code ?? "-")}
+              </div>
+              {typeof item.explanation === "string" && <div className="mt-1 text-xs text-slate-700">{item.explanation}</div>}
+              <div className="mt-2 grid gap-2 text-xs md:grid-cols-6">
+                <ReasonItem label="total" value={String(item.total_evidence_count ?? 0)} />
+                <ReasonItem label="high" value={String(item.high_count ?? 0)} />
+                <ReasonItem label="medium" value={String(item.medium_count ?? 0)} />
+                <ReasonItem label="low" value={String(item.low_count ?? 0)} />
+                <ReasonItem label="unrelated" value={String(item.unrelated_count ?? 0)} />
+                <ReasonItem label="alias miss" value={String(item.alias_miss_count ?? 0)} />
+              </div>
+              {!!topEvidence.length && (
+                <div className="mt-2 space-y-1 text-xs text-slate-700">
+                  <div className="font-semibold">Top Evidence</div>
+                  {topEvidence.map((evidence, index) => (
+                    <div key={`${String(evidence.evidence_id ?? index)}-${index}`} className="rounded border border-line bg-white px-2 py-1">
+                      {String(evidence.evidence_id ?? "-")} | {String(evidence.source_domain ?? "-")} | {String(evidence.source_quality ?? "-")}
+                      {" | relevance="}{String(evidence.relevance_level ?? "-")} ({String(evidence.relevance_score ?? "-")})
+                      {" | confidence="}{String(evidence.confidence ?? "-")}
+                      {evidence.collector_dimension ? ` | dimension=${String(evidence.collector_dimension)}` : ""}
+                      {typeof evidence.relevance_reason === "string" && <div className="mt-1 text-slate-500">{evidence.relevance_reason}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ReworkReasonCard({ qa }: { qa: QaResult }) {
   if (qa.status === "passed" || !qa.rework_instructions?.length) return null;
   const primary = qa.rework_instructions[0];
@@ -212,7 +271,7 @@ function InfoBlock({ title, items, emptyText }: { title: string; items?: string[
 function buildReworkHistory(qa: QaResult, workflowSummary?: WorkflowSummary): RouteHistoryItem[] {
   const qaHistory = (qa.rework_history ?? [])
     .map((item) => ({
-      from: "QaAgent",
+      from: typeof item.metadata?.source_node === "string" ? item.metadata.source_node : "QaAgent",
       to: item.route_to ?? "-",
       errorType: item.error_type,
       reason: item.reason,
@@ -240,6 +299,9 @@ function buildReworkHistory(qa: QaResult, workflowSummary?: WorkflowSummary): Ro
 function ReworkMetadataLine({ metadata }: { metadata?: Record<string, unknown> }) {
   if (!metadata) return null;
   const parts = [
+    Array.isArray(metadata.missing_competitors) && metadata.missing_competitors.length
+      ? `缺失竞品：${metadata.missing_competitors.join(", ")}`
+      : undefined,
     typeof metadata.claim_competitor === "string" ? `Claim 竞品：${metadata.claim_competitor}` : undefined,
     typeof metadata.evidence_id === "string" ? `Evidence：${metadata.evidence_id}` : undefined,
     typeof metadata.evidence_competitor === "string" ? `Evidence 竞品：${metadata.evidence_competitor}` : undefined,

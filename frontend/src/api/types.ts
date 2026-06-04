@@ -181,7 +181,7 @@ export type WorkflowSummary = {
   survey_needed?: boolean;
   survey_recommended?: boolean;
   node_sequence?: string[];
-  conditional_routes_taken?: Array<{ from_node?: string; to_node?: string; reason?: string; rework_count?: number; final_status?: string }>;
+  conditional_routes_taken?: Array<{ from_node?: string; to_node?: string; reason?: string; details?: string; rework_count?: number; final_status?: string }>;
   rework_count?: number;
   final_status?: string;
   elapsed_time_ms?: number;
@@ -193,6 +193,8 @@ export type WorkflowSummary = {
     missing_relevant_evidence_competitors?: string[];
     relevant_evidence_count_by_competitor?: Record<string, number>;
     unrelated_evidence_count_by_competitor?: Record<string, number>;
+    evidence_diagnostics_by_competitor?: Record<string, EvidenceGateCompetitorDiagnostic>;
+    failure_explanation?: string;
     suggested_route?: string | null;
     suggested_action?: string;
   };
@@ -290,6 +292,13 @@ export type QaResult = {
   route_to?: string;
   rework_count: number;
   metadata?: {
+    evidence_gate_details?: {
+      missing_competitors?: string[];
+      failure_explanation?: string;
+      suggested_action?: string;
+      query_focus?: string[];
+      by_competitor?: Record<string, EvidenceGateCompetitorDiagnostic>;
+    };
     swot_validation?: {
       status?: string;
       issue_count?: number;
@@ -306,6 +315,32 @@ export type QaResult = {
       }>;
     };
   };
+};
+
+export type EvidenceGateCompetitorDiagnostic = {
+  competitor?: string;
+  status?: string;
+  reason_code?: string;
+  explanation?: string;
+  total_evidence_count?: number;
+  relevant_evidence_count?: number;
+  high_count?: number;
+  medium_count?: number;
+  low_count?: number;
+  unrelated_count?: number;
+  alias_miss_count?: number;
+  collector_dimensions_seen?: string[];
+  top_evidence?: Array<{
+    evidence_id?: string;
+    source_domain?: string | null;
+    source_quality?: string | null;
+    relevance_level?: string;
+    relevance_score?: number;
+    confidence?: number;
+    relevance_reason?: string;
+    collector_dimension?: string;
+    url?: string | null;
+  }>;
 };
 
 export type TraceRecord = {

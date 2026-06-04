@@ -364,6 +364,30 @@ def test_analyst_evidence_extracts_pricing_and_persona(db_session):
     assert output.user_persona.persona_name in {"企业团队", "团队用户", "开发者", "市场团队", "产品团队", "学生"}
 
 
+def test_analyst_uses_collector_dimension_tags(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(
+            source_type="public_web",
+            url="https://alpha.example.com/commercial",
+            source_domain="alpha.example.com",
+            source_quality="official",
+            competitor="AlphaCI",
+            snippet="AlphaCI official commercial page with enterprise package information.",
+            confidence=0.9,
+            relevance_level="high",
+            entity_match_signals={"collector_dimension": "pricing"},
+        )
+    ]
+    output = AnalystAgent(trace_service).run(
+        AnalystInput(task=task, evidence=evidence, analyst_mode="evidence", selected_dimensions=["pricing"])
+    )
+    pricing_result = next(item for item in output.dimension_results if item.dimension_id == "pricing" and item.competitor == "AlphaCI")
+    assert pricing_result.evidence_ids == [evidence[0].evidence_id]
+    assert pricing_result.insufficient_evidence is False
+
+
 def test_analyst_insufficient_evidence_is_conservative_and_qa_suggests(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
@@ -718,6 +742,38 @@ def test_page_fetcher_excerpt_limit_and_skips_unrelated():
     assert diagnostics["page_fetch_skipped_count"] == 1
 
 
+def test_page_fetcher_prioritizes_high_quality_evidence():
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/html"}, text="<html><body><p>High quality official source.</p></body></html>")
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler), max_per_run=1, respect_robots=False)
+    low_priority = Evidence(
+        source_type="public_web",
+        url="https://unknown.example.com",
+        competitor="AlphaCI",
+        snippet="Unknown medium confidence source.",
+        confidence=0.61,
+        source_quality="unknown",
+        relevance_level="medium",
+        relevance_score=0.6,
+    )
+    high_priority = Evidence(
+        source_type="public_web",
+        url="https://official.example.com",
+        competitor="AlphaCI",
+        snippet="Official high confidence source.",
+        confidence=0.92,
+        source_quality="official",
+        relevance_level="high",
+        relevance_score=0.9,
+    )
+    enriched, diagnostics = fetcher.enrich([low_priority, high_priority], run_id="run_1")
+    assert diagnostics["page_fetch_success_count"] == 1
+    assert diagnostics["fetched_evidence_ids"] == [high_priority.evidence_id]
+    assert enriched[0].evidence_id == high_priority.evidence_id
+    assert enriched[0].page_fetch_success is True
+
+
 def test_page_fetcher_respects_competitor_and_run_limits():
     class CountingFetcher(PageFetcher):
         def __init__(self):
@@ -980,10 +1036,11 @@ def test_collector_runs_dimension_queries_before_stopping(db_session):
                 elapsed_time_ms=1,
                 results=[
                     SearchResult(
-                        title=f"{competitor} dimension source {call_index}",
-                        url=f"https://{competitor.lower()}.example.com/source-{call_index}",
+                        title=f"{competitor} dimension source {call_index}-{index}",
+                        url=f"https://{competitor.lower()}.example.com/source-{call_index}-{index}",
                         snippet=f"{competitor} public evidence for dimension query {call_index}: pricing feature persona strengths weaknesses opportunities threats.",
                     )
+                    for index in range(1, 4)
                 ],
             )
 
@@ -998,7 +1055,10 @@ def test_collector_runs_dimension_queries_before_stopping(db_session):
     assert output.diagnostics["web_search_success"] is True
     for competitor in task.competitors:
         assert output.diagnostics["query_count_by_competitor"][competitor] >= len(fixed_dimension_ids())
-        assert output.diagnostics["evidence_count_by_competitor"][competitor] == len(fixed_dimension_ids())
+        assert output.diagnostics["evidence_count_by_competitor"][competitor] == len(fixed_dimension_ids()) * 3
+        assert output.diagnostics["evidence_count_by_dimension_by_competitor"][competitor] == {
+            dimension_id: 3 for dimension_id in fixed_dimension_ids()
+        }
 
 
 def test_collector_deduplicates_normalized_urls(db_session):
@@ -1727,6 +1787,14 @@ def test_langgraph_evidence_gate_blocks_random_competitors_before_report_writer(
     assert result["workflow_summary"]["final_status"] == "insufficient_evidence"
     assert result["workflow_summary"]["node_sequence"] == ["planner", "collector", "evidence_gate", "final_report"]
     assert result["workflow_summary"]["evidence_gate_output"]["evidence_gate_passed"] is False
+    gate_output = result["workflow_summary"]["evidence_gate_output"]
+    assert gate_output["failure_explanation"]
+    assert gate_output["evidence_diagnostics_by_competitor"]["xqzvra"]["total_evidence_count"] > 0
+    assert gate_output["evidence_diagnostics_by_competitor"]["xqzvra"]["reason_code"] in {
+        "alias_or_entity_not_matched",
+        "only_low_or_unrelated_evidence",
+    }
+    assert result["qa_result"].rework_instructions[0].metadata["evidence_gate_details"]["by_competitor"]["xqzvra"]["top_evidence"]
     assert "report_writer" not in result["workflow_summary"]["node_sequence"]
 
 

@@ -12,23 +12,23 @@ FIXED_COMPETITIVE_DIMENSIONS = [
 ]
 
 FIXED_DIMENSION_LABELS = {
-    "pricing": "价格",
-    "feature": "功能",
-    "persona": "用户画像",
-    "strength": "优势",
-    "weakness": "劣势",
-    "opportunity": "机会",
-    "threat": "威胁",
+    "pricing": "\u4ef7\u683c",
+    "feature": "\u529f\u80fd",
+    "persona": "\u7528\u6237\u753b\u50cf",
+    "strength": "\u4f18\u52bf",
+    "weakness": "\u52a3\u52bf",
+    "opportunity": "\u673a\u4f1a",
+    "threat": "\u5a01\u80c1",
 }
 
 FIXED_DIMENSION_KEYWORDS = {
-    "pricing": ["价格", "定价", "套餐", "版本", "pricing", "price", "plan", "subscription"],
-    "feature": ["功能", "参数", "能力", "特性", "feature", "capability", "documentation"],
-    "persona": ["用户画像", "目标用户", "适合人群", "使用场景", "customers", "users", "use cases"],
-    "strength": ["优势", "优点", "亮点", "差异化", "strength", "advantage", "differentiator"],
-    "weakness": ["劣势", "缺点", "问题", "投诉", "负面", "weakness", "complaint", "pain point"],
-    "opportunity": ["机会", "增长", "趋势", "市场", "opportunity", "growth", "trend", "market"],
-    "threat": ["威胁", "风险", "替代", "竞争", "threat", "risk", "alternative", "competition"],
+    "pricing": ["\u4ef7\u683c", "\u5b9a\u4ef7", "\u5957\u9910", "\u7248\u672c", "pricing", "price", "plan", "subscription"],
+    "feature": ["\u529f\u80fd", "\u53c2\u6570", "\u80fd\u529b", "\u7279\u6027", "feature", "capability", "documentation"],
+    "persona": ["\u7528\u6237\u753b\u50cf", "\u76ee\u6807\u7528\u6237", "\u9002\u5408\u4eba\u7fa4", "\u4f7f\u7528\u573a\u666f", "customers", "users", "use cases"],
+    "strength": ["\u4f18\u52bf", "\u4f18\u70b9", "\u4eae\u70b9", "\u5dee\u5f02\u5316", "strength", "advantage", "differentiator"],
+    "weakness": ["\u52a3\u52bf", "\u7f3a\u70b9", "\u95ee\u9898", "\u6295\u8bc9", "\u8d1f\u9762", "weakness", "complaint", "pain point"],
+    "opportunity": ["\u673a\u4f1a", "\u589e\u957f", "\u8d8b\u52bf", "\u5e02\u573a", "opportunity", "growth", "trend", "market"],
+    "threat": ["\u5a01\u80c1", "\u98ce\u9669", "\u66ff\u4ee3", "\u7ade\u4e89", "threat", "risk", "alternative", "competition"],
 }
 
 
@@ -41,7 +41,7 @@ def fixed_dimension_plans() -> list[AnalysisDimension]:
         AnalysisDimension(
             dimension_id=dimension_id,
             label=FIXED_DIMENSION_LABELS[dimension_id],
-            description=f"围绕{FIXED_DIMENSION_LABELS[dimension_id]}维度采集、抽取和报告。",
+            description=f"\u56f4\u7ed5{FIXED_DIMENSION_LABELS[dimension_id]}\u7ef4\u5ea6\u91c7\u96c6\u3001\u62bd\u53d6\u548c\u62a5\u544a\u3002",
             keywords=FIXED_DIMENSION_KEYWORDS[dimension_id],
             required=True,
             priority=index,
@@ -52,16 +52,21 @@ def fixed_dimension_plans() -> list[AnalysisDimension]:
 
 
 def fixed_query_hints_for_competitor(competitor: str, industry: str) -> list[str]:
-    industry_part = industry.strip() if industry and industry.strip() else "竞品"
+    industry_part = industry.strip() if industry and industry.strip() else "\u7ade\u54c1"
     return [
-        f"{competitor} 价格 定价 套餐 官方 {industry_part}",
-        f"{competitor} 功能 参数 能力 官方 文档 {industry_part}",
-        f"{competitor} 用户画像 目标用户 使用场景 客户 {industry_part}",
-        f"{competitor} 优势 优点 亮点 差异化 评测 {industry_part}",
-        f"{competitor} 劣势 缺点 问题 投诉 负面评价 {industry_part}",
-        f"{competitor} 机会 增长 趋势 市场空间 {industry_part}",
-        f"{competitor} 威胁 风险 替代品 竞争对手 {industry_part}",
+        f"{competitor} \u4ef7\u683c \u5b9a\u4ef7 \u5957\u9910 \u5b98\u65b9 {industry_part}",
+        f"{competitor} \u529f\u80fd \u53c2\u6570 \u80fd\u529b \u5b98\u65b9 \u6587\u6863 {industry_part}",
+        f"{competitor} \u7528\u6237\u753b\u50cf \u76ee\u6807\u7528\u6237 \u4f7f\u7528\u573a\u666f \u5ba2\u6237 {industry_part}",
+        f"{competitor} \u4f18\u52bf \u4f18\u70b9 \u4eae\u70b9 \u5dee\u5f02\u5316 \u8bc4\u6d4b {industry_part}",
+        f"{competitor} \u52a3\u52bf \u7f3a\u70b9 \u95ee\u9898 \u6295\u8bc9 \u8d1f\u9762\u8bc4\u4ef7 {industry_part}",
+        f"{competitor} \u673a\u4f1a \u589e\u957f \u8d8b\u52bf \u5e02\u573a\u7a7a\u95f4 {industry_part}",
+        f"{competitor} \u5a01\u80c1 \u98ce\u9669 \u66ff\u4ee3\u54c1 \u7ade\u4e89\u5bf9\u624b {industry_part}",
     ]
+
+
+def fixed_dimension_query_hints_for_competitor(competitor: str, industry: str) -> dict[str, str]:
+    queries = fixed_query_hints_for_competitor(competitor, industry)
+    return dict(zip(FIXED_COMPETITIVE_DIMENSIONS, queries, strict=True))
 
 
 def fixed_query_hints(task: Task) -> dict[str, list[str]]:
@@ -74,22 +79,43 @@ def fixed_query_hints(task: Task) -> dict[str, list[str]]:
 def apply_fixed_dimensions_to_plan(plan: AnalysisDimensionPlan | None, task: Task) -> AnalysisDimensionPlan:
     existing = plan or AnalysisDimensionPlan()
     hints = dict(existing.query_hints or {})
+    dimension_query_hints = {
+        competitor: fixed_dimension_query_hints_for_competitor(competitor, task.industry)
+        for competitor in task.competitors
+    }
     for competitor, queries in fixed_query_hints(task).items():
         hints[competitor] = _dedupe([*queries, *hints.get(competitor, [])])
     metadata = dict(existing.metadata or {})
-    metadata.update({"dimension_policy": "fixed_competitive_dimensions"})
+    metadata.update(
+        {
+            "dimension_policy": "fixed_competitive_dimensions",
+            "dimension_query_hints": dimension_query_hints,
+        }
+    )
     return existing.model_copy(
         update={
             "selected_dimensions": fixed_dimension_ids(),
             "dimension_plans": fixed_dimension_plans(),
             "research_goals": [
-                "按价格、功能、用户画像、优势、劣势、机会、威胁七个固定维度采集公开证据。",
-                "结构化抽取和报告生成必须沿用同一组维度。",
+                "\u6309\u4ef7\u683c\u3001\u529f\u80fd\u3001\u7528\u6237\u753b\u50cf\u3001\u4f18\u52bf\u3001\u52a3\u52bf\u3001\u673a\u4f1a\u3001\u5a01\u80c1\u4e03\u4e2a\u56fa\u5b9a\u7ef4\u5ea6\u91c7\u96c6\u516c\u5f00\u8bc1\u636e\u3002",
+                "\u7ed3\u6784\u5316\u62bd\u53d6\u548c\u62a5\u544a\u751f\u6210\u5fc5\u987b\u6cbf\u7528\u540c\u4e00\u7ec4\u7ef4\u5ea6\u3002",
             ],
             "query_hints": hints,
             "metadata": metadata,
         }
     )
+
+
+def dimension_for_query(query: str) -> str | None:
+    text = query.lower()
+    best_dimension: str | None = None
+    best_count = 0
+    for dimension_id, keywords in FIXED_DIMENSION_KEYWORDS.items():
+        count = sum(1 for keyword in keywords if keyword.lower() in text)
+        if count > best_count:
+            best_dimension = dimension_id
+            best_count = count
+    return best_dimension
 
 
 def _dedupe(items: list[str]) -> list[str]:

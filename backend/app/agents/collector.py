@@ -1,6 +1,7 @@
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.agents.base import run_with_trace
+from app.constants.analysis_dimensions import FIXED_COMPETITIVE_DIMENSIONS, dimension_for_query
 from app.schemas import CollectorInput, CollectorOutput, Evidence
 from app.services.evidence_relevance_service import apply_relevance
 from app.services.trace_service import TraceService
@@ -17,9 +18,10 @@ QUALITY_CONFIDENCE = {
 }
 MIN_EVIDENCE_PER_COMPETITOR = 2
 MIN_RELEVANT_EVIDENCE_PER_COMPETITOR = 1
-MAX_EVIDENCE_PER_COMPETITOR = 7
-MAX_EVIDENCE_PER_QUERY = 1
-MAX_QUERY_COUNT_PER_COMPETITOR = 9
+MAX_EVIDENCE_PER_COMPETITOR = 21
+MAX_EVIDENCE_PER_DIMENSION = 3
+MAX_EVIDENCE_PER_QUERY = 3
+MAX_QUERY_COUNT_PER_COMPETITOR = 14
 
 
 class CollectorAgent:
@@ -70,10 +72,12 @@ class CollectorAgent:
             "effective_query_count_by_competitor": {},
             "effective_queries_preview_by_competitor": {},
             "targeted_queries_preview_by_competitor": {},
+            "query_dimensions_by_competitor": {},
             "query_count": 0,
             "query_count_by_competitor": {},
             "evidence_count": 0,
             "evidence_count_by_competitor": {},
+            "evidence_count_by_dimension_by_competitor": {},
             "raw_evidence_count": 0,
             "deduplicated_evidence_count": 0,
             "duplicate_removed_count": 0,
@@ -105,9 +109,14 @@ class CollectorAgent:
         default_query_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         effective_query_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         effective_queries_preview_by_competitor: dict[str, list[str]] = {competitor: [] for competitor in task.competitors}
+        query_dimensions_by_competitor: dict[str, list[dict[str, str | None]]] = {competitor: [] for competitor in task.competitors}
         fallback_by_competitor: dict[str, str | None] = {competitor: None for competitor in task.competitors}
         raw_search_result_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         unrelated_evidence_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
+        evidence_count_by_dimension_by_competitor: dict[str, dict[str, int]] = {
+            competitor: {dimension: 0 for dimension in FIXED_COMPETITIVE_DIMENSIONS}
+            for competitor in task.competitors
+        }
         filtered_unrelated_count = 0
 
         for competitor in task.competitors:
@@ -126,6 +135,13 @@ class CollectorAgent:
             for query in query_plan["effective_queries"]:
                 if len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
                     break
+                query_dimension = dimension_for_query(query)
+                if (
+                    query_dimension in FIXED_COMPETITIVE_DIMENSIONS
+                    and evidence_count_by_dimension_by_competitor[competitor][query_dimension] >= MAX_EVIDENCE_PER_DIMENSION
+                ):
+                    continue
+                query_dimensions_by_competitor[competitor].append({"query": query, "dimension_id": query_dimension})
                 query_count_by_competitor[competitor] += 1
                 response = self.web_search_client.search(query, limit=8)
                 diagnostics["web_search_attempted"] = diagnostics["web_search_attempted"] or response.attempted
@@ -159,9 +175,18 @@ class CollectorAgent:
                         competitor,
                         title=result.title,
                     )
+                    signals = dict(candidate.entity_match_signals or {})
+                    if query_dimension:
+                        signals["collector_dimension"] = query_dimension
+                        signals["collector_query"] = query
+                    candidate = candidate.model_copy(update={"entity_match_signals": signals})
                     if candidate.relevance_level == "unrelated":
                         unrelated_evidence_count_by_competitor[competitor] += 1
                         filtered_unrelated_count += 1
+                    elif query_dimension in FIXED_COMPETITIVE_DIMENSIONS:
+                        if evidence_count_by_dimension_by_competitor[competitor][query_dimension] >= MAX_EVIDENCE_PER_DIMENSION:
+                            continue
+                        evidence_count_by_dimension_by_competitor[competitor][query_dimension] += 1
                     buckets[competitor].append(candidate)
                     added_for_query += 1
                     if added_for_query >= MAX_EVIDENCE_PER_QUERY or len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
@@ -199,10 +224,12 @@ class CollectorAgent:
                 "effective_query_count_by_competitor": effective_query_count_by_competitor,
                 "effective_queries_preview_by_competitor": effective_queries_preview_by_competitor,
                 "targeted_queries_preview_by_competitor": diagnostics["targeted_queries_preview_by_competitor"],
+                "query_dimensions_by_competitor": query_dimensions_by_competitor,
                 "query_count": sum(query_count_by_competitor.values()),
                 "query_count_by_competitor": query_count_by_competitor,
                 "evidence_count": len(evidence),
                 "evidence_count_by_competitor": evidence_count_by_competitor,
+                "evidence_count_by_dimension_by_competitor": evidence_count_by_dimension_by_competitor,
                 "raw_evidence_count": raw_count,
                 "deduplicated_evidence_count": len(evidence),
                 "duplicate_removed_count": raw_count - len(evidence),
@@ -309,8 +336,19 @@ class CollectorAgent:
                 "targeted_queries_preview_by_competitor": {
                     competitor: query_plans[competitor]["targeted_queries"][:9] for competitor in task.competitors
                 },
+                "query_dimensions_by_competitor": {
+                    competitor: [
+                        {"query": query, "dimension_id": dimension_for_query(query)}
+                        for query in query_plans[competitor]["effective_queries"][:9]
+                    ]
+                    for competitor in task.competitors
+                },
                 "evidence_count": len(evidence),
                 "evidence_count_by_competitor": evidence_count_by_competitor,
+                "evidence_count_by_dimension_by_competitor": {
+                    competitor: {dimension: 0 for dimension in FIXED_COMPETITIVE_DIMENSIONS}
+                    for competitor in task.competitors
+                },
                 "raw_evidence_count": len(evidence),
                 "deduplicated_evidence_count": len(evidence),
                 "duplicate_removed_count": 0,

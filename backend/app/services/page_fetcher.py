@@ -79,7 +79,7 @@ class PageFetcher:
         fetched_by_competitor: defaultdict[str, int] = defaultdict(int)
         enriched: list[Evidence] = []
 
-        for item in evidence:
+        for item in sorted(evidence, key=self._fetch_priority, reverse=True):
             updated = item.model_copy(update={"run_id": run_id or item.run_id})
             skip_reason = "skipped:content_mode_snippet" if not enabled else self._skip_reason(updated, fetched_by_competitor, attempted)
             if skip_reason:
@@ -149,6 +149,24 @@ class PageFetcher:
             "run_id": run_id,
         }
         return enriched, diagnostics
+
+    @staticmethod
+    def _fetch_priority(evidence: Evidence) -> tuple[int, float, int, float]:
+        relevance_rank = {"high": 3, "medium": 2, "low": 1, "unrelated": 0}.get(evidence.relevance_level, 0)
+        quality_rank = {
+            "official": 5,
+            "documentation": 4,
+            "media": 3,
+            "review": 2,
+            "unknown": 1,
+            "low_quality": 0,
+        }.get(evidence.source_quality, 0)
+        return (
+            relevance_rank,
+            evidence.confidence,
+            quality_rank,
+            evidence.relevance_score,
+        )
 
     def fetch(self, url: str, *, run_id: str | None, evidence_id: str, competitor: str | None) -> PageFetchResult:
         fetched_at = datetime.utcnow()
