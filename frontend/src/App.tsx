@@ -4,6 +4,7 @@ import { api } from "./api/client";
 import { apiRecorder, getApiRecorderSnapshot } from "./api/recorder";
 import { DagView } from "./components/DagView";
 import { DemoGuide } from "./components/DemoGuide";
+import { EvidencePanel } from "./components/EvidencePanel";
 import { KnowledgeHitsPanel } from "./components/KnowledgeHitsPanel";
 import { KnowledgeView } from "./components/KnowledgeView";
 import { PlannerSummaryCard } from "./components/PlannerSummaryCard";
@@ -29,11 +30,11 @@ export default function App() {
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [demoMode, setDemoMode] = useState<DemoMode>("normal");
-  const [autoRework, setAutoRework] = useState(false);
-  const [writerMode, setWriterMode] = useState<"mock" | "llm">("mock");
-  const [collectorMode, setCollectorMode] = useState<"mock" | "web">("mock");
-  const [analystMode, setAnalystMode] = useState<"mock" | "evidence" | "llm">("evidence");
-  const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("custom");
+  const [autoRework, setAutoRework] = useState(true);
+  const [writerMode, setWriterMode] = useState<"mock" | "llm">("llm");
+  const [collectorMode, setCollectorMode] = useState<"mock" | "web">("web");
+  const [analystMode, setAnalystMode] = useState<"mock" | "evidence" | "llm">("llm");
+  const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("langgraph");
   const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>();
@@ -465,6 +466,9 @@ export default function App() {
             setSelectedClaim(undefined);
             setSelectedEvidenceIds(ids);
           }} />
+          {!report && evidence.length > 0 && (
+            <EvidencePanel evidence={evidence} evidenceIds={selectedEvidenceIds} />
+          )}
           <ReportView report={report} evidence={evidence} competitors={task?.competitors} selectedClaim={selectedClaim} selectedEvidenceIds={selectedEvidenceIds} onSelect={(claim) => {
             setSelectedClaim(claim);
             setSelectedEvidenceIds([]);

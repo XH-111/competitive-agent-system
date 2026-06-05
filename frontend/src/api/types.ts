@@ -258,6 +258,15 @@ export type CollectorDiagnostics = {
   effective_query_count_by_competitor?: Record<string, number>;
   effective_queries_preview_by_competitor?: Record<string, string[]>;
   targeted_queries_preview_by_competitor?: Record<string, string[]>;
+  entity_aliases_used?: boolean;
+  competitor_aliases_by_competitor?: Record<string, string[]>;
+  alias_query_count_by_competitor?: Record<string, number>;
+  alias_queries_preview_by_competitor?: Record<string, string[]>;
+  query_dimensions_by_competitor?: Record<string, Array<{ query?: string; dimension_id?: string | null }>>;
+  evidence_count_by_competitor?: Record<string, number>;
+  relevant_evidence_count_by_competitor?: Record<string, number>;
+  unrelated_evidence_count_by_competitor?: Record<string, number>;
+  missing_relevant_evidence_competitors?: string[];
 };
 
 export type QaResult = {
