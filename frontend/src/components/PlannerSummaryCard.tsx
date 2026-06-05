@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { CollectorDiagnostics, WorkflowSummary } from "../types";
 
 const DIMENSION_LABELS: Record<string, string> = {
@@ -15,11 +16,23 @@ const DIMENSION_LABELS: Record<string, string> = {
   channel_strategy: "渠道策略",
   ai_capability: "AI 能力",
   battery_range: "续航与电池",
-  autonomous_driving: "智能驾驶",
-  charging_network: "补能网络",
-  vehicle_performance: "动力操控",
-  after_sales_service: "售后服务",
-  delivery_capacity: "产能交付",
+  battery_life: "续航表现",
+  health_monitoring: "健康监测",
+  ecosystem_compatibility: "生态兼容",
+  appearance_design: "外观设计",
+  positioning_accuracy: "定位精度",
+  sport_mode: "运动模式",
+  sensor_config: "传感器配置",
+  sports_mode_support: "运动模式支持",
+};
+
+type PlanQuery = {
+  dimension_id?: string;
+  dimension_label?: string;
+  queries?: string[];
+  intent?: string;
+  preferred_sources?: string[];
+  query_strategy?: string;
 };
 
 export function PlannerSummaryCard({
@@ -29,52 +42,46 @@ export function PlannerSummaryCard({
   workflowSummary?: WorkflowSummary;
   collectorDiagnostics?: CollectorDiagnostics;
 }) {
-  const hasPlannerSummary = Boolean(
-    workflowSummary?.selected_dimensions?.length ||
-      workflowSummary?.candidate_competitors?.length ||
-      workflowSummary?.recommended_next_constraints?.length,
-  );
-  const hasCollectorGuidance = Boolean(
-    collectorDiagnostics?.collector_search_plan_used ||
-      collectorDiagnostics?.planner_query_hints_used ||
-      collectorDiagnostics?.targeted_recollection_used ||
-      collectorDiagnostics?.effective_query_count_by_competitor ||
-      collectorDiagnostics?.effective_queries_preview_by_competitor,
+  const dimensions = workflowSummary?.selected_dimensions ?? [];
+  const dimensionPlans = workflowSummary?.analysis_dimension_plan?.dimension_plans ?? [];
+  const researchGoals = workflowSummary?.analysis_dimension_plan?.research_goals ?? [];
+  const collectorPlan = normalizeCollectorPlan(workflowSummary?.analysis_dimension_plan?.metadata?.collector_search_plan);
+  const guidance = workflowSummary?.downstream_guidance;
+  const candidates = workflowSummary?.candidate_competitors ?? [];
+  const hasContent = Boolean(
+    workflowSummary?.intent_summary ||
+      dimensions.length ||
+      Object.keys(collectorPlan).length ||
+      collectorDiagnostics?.effective_queries_preview_by_competitor ||
+      guidance,
   );
 
-  if (!hasPlannerSummary && !hasCollectorGuidance) return null;
+  if (!hasContent) return null;
 
   return (
-    <section className="mb-4 grid gap-3 lg:grid-cols-2">
-      {hasPlannerSummary && (
-        <div className="rounded border border-line bg-white p-4">
-          <h2 className="mb-3 text-base font-semibold">规划摘要</h2>
-          <div>
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">分析维度</div>
-            <div className="flex flex-wrap gap-2">
-              {(workflowSummary?.selected_dimensions?.length
-                ? workflowSummary.selected_dimensions
-                : ["No planner-selected dimensions returned"]
-              ).map((dimension) => (
-                <span
-                  key={dimension}
-                  className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-accent"
-                >
-                  {dimensionLabel(dimension)}
-                </span>
-              ))}
-            </div>
-          </div>
+    <section className="mb-4 rounded border border-line bg-white p-4">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">PlannerAgent 任务规划</h2>
+          <p className="mt-1 text-xs text-slate-500">展示 Planner 如何理解任务、选择分析维度、为每个维度生成搜索词，并指导下游 Agent。</p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <StatusPill label="搜索计划" value={collectorDiagnostics?.collector_search_plan_used ? "已使用" : "未使用"} />
+          <StatusPill label="采集模式" value={collectorDiagnostics?.collector_mode_used ?? collectorDiagnostics?.collector_mode_requested ?? "-"} />
+        </div>
+      </div>
 
-          {!!workflowSummary?.candidate_competitors?.length && (
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="任务理解摘要">
+          <div className="rounded border border-line bg-panel p-3 text-sm leading-6 text-slate-800">
+            {workflowSummary?.intent_summary || "暂无 Planner 任务理解摘要。"}
+          </div>
+          {!!candidates.length && (
             <div className="mt-3">
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">候选竞品</div>
+              <SubTitle>候选竞品</SubTitle>
               <div className="flex flex-wrap gap-2">
-                {workflowSummary.candidate_competitors.slice(0, 4).map((item, index) => (
-                  <span
-                    key={`${item.name ?? "candidate"}-${index}`}
-                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700"
-                  >
+                {candidates.slice(0, 8).map((item, index) => (
+                  <span key={`${item.name ?? "candidate"}-${index}`} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700">
                     {item.name ?? "unknown"}
                     {typeof item.confidence === "number" ? ` (${Math.round(item.confidence * 100)}%)` : ""}
                   </span>
@@ -82,112 +89,150 @@ export function PlannerSummaryCard({
               </div>
             </div>
           )}
-
-          {!!workflowSummary?.recommended_next_constraints?.length && (
-            <details className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
-              <summary className="cursor-pointer font-semibold">Planner 约束</summary>
-              <div className="mt-2">
-                {workflowSummary.recommended_next_constraints.slice(0, 3).map((item) => (
-                  <div key={item}>- {item}</div>
+          {!!researchGoals.length && (
+            <details className="mt-3 rounded border border-line bg-white p-3 text-xs leading-5 text-slate-700">
+              <summary className="cursor-pointer font-semibold">研究目标</summary>
+              <div className="mt-2 space-y-1">
+                {researchGoals.slice(0, 5).map((goal) => (
+                  <div key={goal}>- {goal}</div>
                 ))}
               </div>
             </details>
           )}
-        </div>
-      )}
+        </Panel>
 
-      {hasCollectorGuidance && (
-        <div className="rounded border border-line bg-white p-4">
-          <h2 className="mb-3 text-base font-semibold">搜索关键词与采集计划</h2>
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <SummaryItem label="使用 Planner 搜索计划" value={formatBoolean(collectorDiagnostics?.collector_search_plan_used)} />
-            <SummaryItem label="定向返工采集" value={formatBoolean(collectorDiagnostics?.targeted_recollection_used)} />
-            <SummaryItem label="使用竞品别名" value={formatBoolean(collectorDiagnostics?.entity_aliases_used)} />
-            <SummaryItem
-              label="采集模式"
-              value={collectorDiagnostics?.collector_mode_used ?? collectorDiagnostics?.collector_mode_requested ?? "-"}
-            />
+        <Panel title="分析维度规划">
+          <div className="flex flex-wrap gap-2">
+            {(dimensions.length ? dimensions : ["No planner-selected dimensions returned"]).map((dimension) => (
+              <span key={dimension} className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-accent">
+                {dimensionLabel(dimension)}
+              </span>
+            ))}
+          </div>
+          {!!dimensionPlans.length && (
+            <details className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
+              <summary className="cursor-pointer font-semibold">查看维度说明</summary>
+              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                {dimensionPlans.slice(0, 20).map((dimension) => (
+                  <div key={dimension.dimension_id} className="rounded border border-line bg-white p-2">
+                    <div className="font-semibold">{dimensionLabel(dimension.dimension_id ?? "-")}</div>
+                    {dimension.description ? <div className="mt-1 text-slate-600">{dimension.description}</div> : null}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </Panel>
+
+        <Panel title="搜索关键词与采集计划" className="xl:col-span-2">
+          <div className="mb-3 flex flex-wrap gap-2 text-xs">
+            <StatusPill label="Planner 计划搜索词" value={sumRecord(collectorDiagnostics?.planned_query_count_by_competitor).toString()} />
+            <StatusPill label="实际执行搜索词" value={sumRecord(collectorDiagnostics?.effective_query_count_by_competitor).toString()} />
+            <StatusPill label="返工搜索词" value={sumRecord(collectorDiagnostics?.targeted_query_count_by_competitor).toString()} />
           </div>
 
-          {!!collectorDiagnostics?.effective_query_count_by_competitor && (
-            <div className="mt-3 space-y-2">
-              {Object.entries(collectorDiagnostics.effective_query_count_by_competitor).map(([competitor, count]) => (
-                <div key={competitor} className="rounded border border-line bg-panel p-3 text-sm">
-                  <div className="font-semibold">{competitor}</div>
-                  <div className="mt-1 text-xs text-slate-600">
-                    有效搜索词：{count}
-                    {typeof collectorDiagnostics?.planned_query_count_by_competitor?.[competitor] === "number" && (
-                      <span> | Planner 计划搜索词：{collectorDiagnostics.planned_query_count_by_competitor[competitor]}</span>
-                    )}
-                    {typeof collectorDiagnostics?.targeted_query_count_by_competitor?.[competitor] === "number" && (
-                      <span> | 返工搜索词：{collectorDiagnostics.targeted_query_count_by_competitor[competitor]}</span>
-                    )}
-                  </div>
-
-                  <TagGroup title="竞品别名" tone="blue" values={collectorDiagnostics.competitor_aliases_by_competitor?.[competitor]} limit={12} />
-                  {!!collectorDiagnostics.competitor_aliases_by_competitor?.[competitor]?.length && (
-                    <div className="mt-1 text-xs text-slate-500">别名只用于相关性匹配，不作为实际搜索词。</div>
-                  )}
-                  <TagGroup title="返工定向搜索词" tone="amber" values={collectorDiagnostics.targeted_queries_preview_by_competitor?.[competitor]} limit={9} />
-                  <TagGroup title="实际使用搜索词" tone="slate" values={collectorDiagnostics.effective_queries_preview_by_competitor?.[competitor]} limit={30} />
-
-                  {!!collectorDiagnostics?.query_dimensions_by_competitor?.[competitor]?.length && (
-                    <details className="mt-2 text-xs text-slate-600">
-                      <summary className="cursor-pointer font-semibold">查看搜索词对应维度</summary>
-                      <div className="mt-2 space-y-1">
-                        {collectorDiagnostics.query_dimensions_by_competitor[competitor].slice(0, 24).map((item, index) => (
-                          <div key={`${item.query ?? "query"}-${index}`} className="rounded border border-line bg-white px-2 py-1">
-                            <span className="font-semibold">{dimensionLabel(item.dimension_id ?? "-")}</span>
-                            <span className="ml-2">{item.query ?? "-"}</span>
-                            {item.source ? <span className="ml-2 text-slate-400">source={item.source}</span> : null}
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-
-                  {!!collectorDiagnostics?.skipped_queries_by_competitor?.[competitor]?.length && (
-                    <details className="mt-2 text-xs text-slate-600">
-                      <summary className="cursor-pointer font-semibold text-amber-700">查看未执行搜索词</summary>
-                      <div className="mt-2 space-y-1">
-                        {collectorDiagnostics.skipped_queries_by_competitor[competitor].slice(0, 30).map((item, index) => (
-                          <div key={`${item.query ?? "query"}-${index}`} className="rounded border border-amber-200 bg-amber-50 px-2 py-1">
-                            <span className="font-semibold">{dimensionLabel(item.dimension_id ?? "-")}</span>
-                            <span className="ml-2">{item.query ?? "-"}</span>
-                            <span className="ml-2 text-amber-700">原因：{skipReasonLabel(item.reason)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
+          <div className="space-y-4">
+            {Object.entries(collectorPlan).map(([competitor, byDimension]) => (
+              <div key={competitor} className="rounded border border-line bg-panel p-3">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">{competitor}</span>
+                  <span className="text-xs text-slate-500">
+                    {Object.keys(byDimension).length} 个维度
+                    {typeof collectorDiagnostics?.planned_query_count_by_competitor?.[competitor] === "number"
+                      ? ` / Planner 计划 ${collectorDiagnostics.planned_query_count_by_competitor[competitor]} 条`
+                      : ""}
+                    {typeof collectorDiagnostics?.effective_query_count_by_competitor?.[competitor] === "number"
+                      ? ` / 实际执行 ${collectorDiagnostics.effective_query_count_by_competitor[competitor]} 条`
+                      : ""}
+                  </span>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+                <div className="grid gap-2 lg:grid-cols-2">
+                  {dimensionsForCompetitor(dimensions, byDimension).map((dimensionId) => {
+                    const plan = byDimension[dimensionId];
+                    return (
+                      <div key={dimensionId} className="rounded border border-line bg-white p-2">
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <span className="font-semibold">{dimensionLabel(plan?.dimension_id ?? dimensionId)}</span>
+                          {plan?.query_strategy ? <span className="text-xs text-slate-400">{plan.query_strategy}</span> : null}
+                        </div>
+                        <TagGroup values={plan?.queries ?? []} limit={6} />
+                        {plan?.intent ? <div className="mt-2 text-xs leading-5 text-slate-500">{plan.intent}</div> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {!!collectorDiagnostics?.skipped_queries_by_competitor?.[competitor]?.length && (
+                  <details className="mt-3 text-xs text-slate-600">
+                    <summary className="cursor-pointer font-semibold text-amber-700">查看未执行搜索词</summary>
+                    <div className="mt-2 space-y-1">
+                      {collectorDiagnostics.skipped_queries_by_competitor[competitor].slice(0, 30).map((item, index) => (
+                        <div key={`${item.query ?? "query"}-${index}`} className="rounded border border-amber-200 bg-amber-50 px-2 py-1">
+                          <span className="font-semibold">{dimensionLabel(item.dimension_id ?? "-")}</span>
+                          <span className="ml-2">{item.query ?? "-"}</span>
+                          <span className="ml-2 text-amber-700">原因：{skipReasonLabel(item.reason)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title="下游 Agent 指导" className="xl:col-span-2">
+          <div className="grid gap-3 md:grid-cols-3">
+            <GuidanceBlock title="CollectorAgent" items={guidance?.collector} />
+            <GuidanceBlock title="AnalystAgent" items={guidance?.analyst} />
+            <GuidanceBlock title="ReportWriterAgent" items={guidance?.writer} />
+          </div>
+        </Panel>
+      </div>
     </section>
   );
 }
 
-function TagGroup({ title, values, tone, limit }: { title: string; values?: string[]; tone: "blue" | "amber" | "slate"; limit: number }) {
-  if (!values?.length) return null;
-  const cls =
-    tone === "blue"
-      ? "border-blue-200 bg-blue-50 text-accent"
-      : tone === "amber"
-        ? "border-amber-200 bg-amber-50 text-amber-800"
-        : "border-line bg-white text-slate-700";
+function Panel({ title, className = "", children }: { title: string; className?: string; children: ReactNode }) {
   return (
-    <div className="mt-2">
-      <div className="mb-1 text-xs font-semibold text-slate-500">{title}</div>
-      <div className="flex flex-wrap gap-2">
-        {values.slice(0, limit).map((value) => (
-          <span key={value} className={`rounded border px-2 py-1 text-xs ${cls}`}>
-            {value}
-          </span>
-        ))}
-      </div>
+    <div className={`rounded border border-line bg-white p-3 ${className}`}>
+      <h3 className="mb-3 text-sm font-semibold">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function GuidanceBlock({ title, items }: { title: string; items?: string[] }) {
+  return (
+    <div className="rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
+      <div className="mb-2 font-semibold text-ink">{title}</div>
+      {items?.length ? items.slice(0, 5).map((item) => <div key={item}>- {item}</div>) : <div className="text-slate-500">暂无指导</div>}
+    </div>
+  );
+}
+
+function SubTitle({ children }: { children: ReactNode }) {
+  return <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{children}</div>;
+}
+
+function StatusPill({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="rounded border border-line bg-panel px-3 py-1">
+      <span className="text-slate-500">{label}：</span>
+      <span className="font-semibold text-ink">{value}</span>
+    </span>
+  );
+}
+
+function TagGroup({ values, limit }: { values?: string[]; limit: number }) {
+  if (!values?.length) return <div className="text-xs text-slate-500">暂无搜索词</div>;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {values.slice(0, limit).map((value) => (
+        <span key={value} className="rounded border border-line bg-white px-2 py-1 text-xs text-slate-700">
+          {value}
+        </span>
+      ))}
     </div>
   );
 }
@@ -197,18 +242,32 @@ function dimensionLabel(dimension: string): string {
   return label ? `${label} ${dimension}` : dimension;
 }
 
-function SummaryItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded border border-line bg-panel px-3 py-2">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className="mt-1 font-semibold text-ink">{value}</div>
-    </div>
-  );
+function sumRecord(record?: Record<string, number>): number {
+  return Object.values(record ?? {}).reduce((sum, value) => sum + value, 0);
 }
 
-function formatBoolean(value: boolean | undefined): string {
-  if (value === undefined) return "-";
-  return value ? "是" : "否";
+function normalizeCollectorPlan(value: unknown): Record<string, Record<string, PlanQuery>> {
+  if (!value || typeof value !== "object") return {};
+  const output: Record<string, Record<string, PlanQuery>> = {};
+  for (const [competitor, byDimension] of Object.entries(value as Record<string, unknown>)) {
+    if (!byDimension || typeof byDimension !== "object") continue;
+    output[competitor] = {};
+    for (const [dimensionId, item] of Object.entries(byDimension as Record<string, unknown>)) {
+      if (!item || typeof item !== "object") continue;
+      const plan = item as PlanQuery;
+      output[competitor][dimensionId] = {
+        ...plan,
+        dimension_id: plan.dimension_id ?? dimensionId,
+        queries: Array.isArray(plan.queries) ? plan.queries : [],
+      };
+    }
+  }
+  return output;
+}
+
+function dimensionsForCompetitor(allDimensions: string[], byDimension: Record<string, PlanQuery>): string[] {
+  const ordered = [...allDimensions.filter((dimension) => byDimension[dimension]), ...Object.keys(byDimension).filter((dimension) => !allDimensions.includes(dimension))];
+  return Array.from(new Set(ordered));
 }
 
 function skipReasonLabel(reason?: string | null): string {

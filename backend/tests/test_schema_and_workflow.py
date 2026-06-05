@@ -2011,6 +2011,18 @@ def test_langgraph_modes_and_competitor_coverage_still_work(db_session, monkeypa
     assert writer_diagnostics["writer_mode_requested"] == "llm"
 
 
+def test_langgraph_bypasses_qa_temporarily(db_session, monkeypatch):
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    task = make_task(db_session)
+    result = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
+
+    assert result["report"] is not None
+    assert result["qa_result"].status == "passed"
+    assert result["qa_result"].metadata["qa_disabled"] is True
+    assert "qa" not in result["workflow_summary"]["node_sequence"]
+    assert result["workflow_summary"]["node_sequence"][-1] == "final_report"
+
+
 def test_task_run_created_for_each_langgraph_run(db_session):
     task = make_task(db_session)
     first = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")

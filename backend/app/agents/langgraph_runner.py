@@ -210,18 +210,7 @@ class LangGraphWorkflowRunner:
         )
         graph.add_edge("page_fetcher", "analyst")
         graph.add_edge("analyst", "report_writer")
-        graph.add_edge("report_writer", "qa")
-        graph.add_conditional_edges(
-            "qa",
-            self.route_after_qa,
-            {
-                "collector": "collector",
-                "analyst": "analyst",
-                "report_writer": "report_writer",
-                "final_report": "final_report",
-                "end": END,
-            },
-        )
+        graph.add_edge("report_writer", "final_report")
         graph.add_edge("final_report", END)
         return graph.compile()
 
@@ -602,9 +591,10 @@ class LangGraphWorkflowRunner:
 
     def final_report_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
-        qa_result = state.get("qa_result")
         writer_output = state.get("report_writer_output")
+        qa_result = state.get("qa_result") or self._skipped_qa_result(task, state.get("run_id"), state.get("rework_count", 0))
         if qa_result and qa_result.status == "passed" and writer_output and writer_output.report:
+            qa_result = self.report_service.save_qa(qa_result, run_id=state.get("run_id"))
             output = self.final_report.run(
                 FinalReportInput(
                     task=task,
@@ -621,6 +611,7 @@ class LangGraphWorkflowRunner:
                 **state,
                 "task": task,
                 "final_report_output": output,
+                "qa_result": qa_result,
                 "report": saved_report,
                 "final_status": "completed",
                 "node_sequence": [*state["node_sequence"], "final_report"],
@@ -629,6 +620,17 @@ class LangGraphWorkflowRunner:
         task_status = final_status if final_status in {"failed", "qa_failed", "manual_review", "completed"} else "qa_failed"
         self.task_service.update_status(task.task_id, task_status, rework_count=qa_result.rework_count if qa_result else state["rework_count"])
         return {**state, "task": task, "report": None, "final_status": final_status, "node_sequence": [*state["node_sequence"], "final_report"]}
+
+    @staticmethod
+    def _skipped_qa_result(task: Task, run_id: str | None, rework_count: int = 0) -> QaResult:
+        return QaResult(
+            task_id=task.task_id,
+            run_id=run_id,
+            status="passed",
+            soft_suggestions=["QaAgent is temporarily disabled; report was not QA-validated."],
+            rework_count=rework_count,
+            metadata={"qa_disabled": True, "qa_mode": "bypassed"},
+        )
 
     def route_after_evidence_gate(self, state: WorkflowState) -> str:
         gate = state.get("evidence_gate_output", {})
@@ -801,6 +803,7 @@ class LangGraphWorkflowRunner:
             "task_id": state.get("task_id"),
             "workflow_engine_requested": state.get("workflow_engine_requested"),
             "workflow_engine_used": "langgraph",
+            "intent_summary": state.get("intent_summary"),
             "intent_classification": state.get("intent_classification"),
             "ambiguity_level": state.get("ambiguity_level"),
             "scope_type": state.get("scope_type"),

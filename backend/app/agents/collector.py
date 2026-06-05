@@ -122,9 +122,17 @@ class CollectorAgent:
         fallback_by_competitor: dict[str, str | None] = {competitor: None for competitor in task.competitors}
         raw_search_result_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         unrelated_evidence_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
-        evidence_count_by_dimension_by_competitor: dict[str, dict[str, int]] = {
-            competitor: {dimension: 0 for dimension in self._dimension_ids_for_competitor(input_data.collector_search_plan, competitor)}
+        dimension_ids_by_competitor = {
+            competitor: self._dimension_ids_for_competitor(input_data.collector_search_plan, competitor)
             for competitor in task.competitors
+        }
+        max_evidence_by_competitor = {
+            competitor: max(MAX_EVIDENCE_PER_COMPETITOR, len(dimensions) * MAX_EVIDENCE_PER_DIMENSION)
+            for competitor, dimensions in dimension_ids_by_competitor.items()
+        }
+        evidence_count_by_dimension_by_competitor: dict[str, dict[str, int]] = {
+            competitor: {dimension: 0 for dimension in dimensions}
+            for competitor, dimensions in dimension_ids_by_competitor.items()
         }
         filtered_unrelated_count = 0
 
@@ -158,7 +166,7 @@ class CollectorAgent:
                     }
                 )
             for query_index, query in enumerate(query_plan["effective_queries"]):
-                if len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
+                if len(buckets[competitor]) >= max_evidence_by_competitor[competitor]:
                     for skipped_query in query_plan["effective_queries"][query_index:]:
                         skipped_queries_by_competitor[competitor].append(
                             {
@@ -233,9 +241,9 @@ class CollectorAgent:
                         evidence_count_by_dimension_by_competitor[competitor][query_dimension] += 1
                     buckets[competitor].append(candidate)
                     added_for_query += 1
-                    if added_for_query >= MAX_EVIDENCE_PER_QUERY or len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
+                    if added_for_query >= MAX_EVIDENCE_PER_QUERY or len(buckets[competitor]) >= max_evidence_by_competitor[competitor]:
                         break
-                if fallback_reason or len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
+                if fallback_reason:
                     break
             if fallback_reason:
                 break

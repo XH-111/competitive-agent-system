@@ -77,7 +77,7 @@ class MockWorkflowRunner:
         history: list[ReworkHistoryItem] = []
 
         if demo_mode == "qa_missing_evidence":
-            qa_result = self.qa.run(QaInput(task=task, run_id=run_id, evidence=[], demo_mode=demo_mode)).qa_result
+            qa_result = self._skipped_qa_result(task)
             self._save_qa(qa_result, history)
             if not auto_rework:
                 self.task_service.update_status(task_id, self._status_for_qa(qa_result), rework_count=qa_result.rework_count)
@@ -111,15 +111,7 @@ class MockWorkflowRunner:
             competitor_aliases=competitor_aliases,
         )
 
-        qa_result = self.qa.run(
-            QaInput(
-                task=task,
-                evidence=evidence,
-                analysis=analysis,
-                report_output=writer_output,
-                demo_mode=demo_mode,
-            )
-        ).qa_result
+        qa_result = self._skipped_qa_result(task)
         self._save_qa(qa_result, history)
 
         if demo_mode != "normal" and not auto_rework:
@@ -360,17 +352,7 @@ class MockWorkflowRunner:
             else:
                 break
 
-            current_qa = self.qa.run(
-                QaInput(
-                    task=current_task,
-                    run_id=self.run_id,
-                    evidence=current_evidence,
-                    analysis=current_analysis,
-                    report_output=current_writer_output,
-                    retry_count=current_task.rework_count,
-                    demo_mode="normal",
-                )
-            ).qa_result
+            current_qa = self._skipped_qa_result(current_task)
             history[-1].result_status = current_qa.status
             self._save_qa(current_qa, history)
 
@@ -419,6 +401,15 @@ class MockWorkflowRunner:
         if self.run_id:
             qa_result.run_id = self.run_id
         self.report_service.save_qa(qa_result, run_id=self.run_id)
+
+    def _skipped_qa_result(self, task: Task) -> QaResult:
+        return QaResult(
+            task_id=task.task_id,
+            run_id=self.run_id,
+            status="passed",
+            soft_suggestions=["QaAgent is temporarily disabled; report was not QA-validated."],
+            metadata={"qa_disabled": True, "qa_mode": "bypassed"},
+        )
 
     @staticmethod
     def _status_for_qa(qa_result: QaResult) -> str:

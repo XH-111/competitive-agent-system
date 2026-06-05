@@ -174,6 +174,7 @@ export type WorkflowSummary = {
   task_id?: string;
   workflow_engine_requested?: string;
   workflow_engine_used?: string;
+  intent_summary?: string | null;
   intent_classification?: string | null;
   ambiguity_level?: string | null;
   scope_type?: string | null;
