@@ -55,6 +55,7 @@ from app.services.task_service import TaskService
 from app.services.task_run_service import TaskRunService
 from app.services.trace_service import TraceService
 from app.services.evidence_relevance_service import apply_relevance, score_evidence_relevance
+from app.services.entity_resolver_service import EntityResolverService
 from app.services.evidence_service import EvidenceService
 from app.services.web_search_client import SearchResult, WebSearchClient, WebSearchResponse
 
@@ -2054,3 +2055,88 @@ def test_custom_runner_creates_run_and_old_chain_still_runs(db_session):
     assert result["qa_result"].status == "passed"
     assert finished.run_id == run.run_id
     assert EvidenceService(db_session).list_for_task(task.task_id, run_id=run.run_id)
+
+
+def test_entity_resolver_rule_aliases_for_chinese_apple_product(db_session):
+    task = make_custom_task(
+        db_session,
+        product_name="\u667a\u80fd\u624b\u673a\u7ade\u54c1\u5206\u6790",
+        competitors=["\u82f9\u679c17pro"],
+        industry="\u667a\u80fd\u624b\u673a",
+    )
+
+    resolved = EntityResolverService().resolve_for_task(task)
+    aliases = {alias.lower().replace(" ", "") for alias in resolved["\u82f9\u679c17pro"]["aliases"]}
+
+    assert "iphone17pro" in aliases
+    assert "appleiphone17pro" in aliases
+
+
+def test_relevance_scoring_uses_resolved_aliases_for_chinese_product_name():
+    competitor = "\u82f9\u679c17pro"
+    aliases = EntityResolverService()._rule_result(competitor).aliases
+    evidence = Evidence(
+        competitor=competitor,
+        source_type="public_web",
+        url="https://www.apple.com/iphone-17-pro/",
+        source_domain="apple.com",
+        source_quality="official",
+        snippet="Apple iPhone 17 Pro official page introduces camera, display, and performance capabilities.",
+        confidence=0.9,
+    )
+
+    scored = apply_relevance(evidence, competitor, title="Apple iPhone 17 Pro", aliases=aliases)
+
+    assert scored.relevance_level in {"high", "medium"}
+    assert scored.entity_match_signals["competitor_alias_matched"] is True
+    assert "iphone 17 pro" in scored.entity_match_signals["aliases_used"]
+
+
+def test_collector_web_uses_entity_aliases_for_query_and_relevance(db_session):
+    task = make_custom_task(
+        db_session,
+        product_name="\u667a\u80fd\u624b\u673a\u7ade\u54c1\u5206\u6790",
+        competitors=["\u82f9\u679c17pro"],
+        industry="\u667a\u80fd\u624b\u673a",
+    )
+    aliases = EntityResolverService().aliases_for_task(task)
+
+    class AliasSearchClient:
+        provider = "fake"
+        api_key = "fake"
+        base_url = "https://fake-search.example"
+
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str, limit: int = 8) -> WebSearchResponse:
+            self.queries.append(query)
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                results=[
+                    SearchResult(
+                        title="Apple iPhone 17 Pro official specs",
+                        url="https://www.apple.com/iphone-17-pro/",
+                        snippet="Apple iPhone 17 Pro official page introduces pricing, camera, display, and performance capabilities.",
+                        score=0.9,
+                    )
+                ],
+            )
+
+    trace_service = TraceService(db_session)
+    search_client = AliasSearchClient()
+    output = CollectorAgent(trace_service, web_search_client=search_client).run(
+        CollectorInput(
+            task=task,
+            collector_mode="web",
+            competitor_aliases=aliases,
+        )
+    )
+
+    assert output.diagnostics["entity_aliases_used"] is True
+    assert output.diagnostics["alias_query_count_by_competitor"]["\u82f9\u679c17pro"] > 0
+    assert any("iPhone" in query or "Apple" in query for query in search_client.queries)
+    assert output.diagnostics["missing_relevant_evidence_competitors"] == []
+    assert output.evidence[0].relevance_level in {"high", "medium"}

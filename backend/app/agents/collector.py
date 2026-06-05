@@ -64,6 +64,10 @@ class CollectorAgent:
             "web_search_attempted": False,
             "web_search_success": False,
             "planner_query_hints_used": bool(input_data.planner_query_hints),
+            "entity_aliases_used": bool(input_data.competitor_aliases),
+            "competitor_aliases_by_competitor": input_data.competitor_aliases,
+            "alias_query_count_by_competitor": {},
+            "alias_queries_preview_by_competitor": {},
             "targeted_recollection_used": bool(input_data.gate_context),
             "category_scope_hints_used": bool(input_data.planner_query_hints.get("category_scope")),
             "planner_hint_query_count_by_competitor": {},
@@ -120,13 +124,17 @@ class CollectorAgent:
         filtered_unrelated_count = 0
 
         for competitor in task.competitors:
+            aliases = input_data.competitor_aliases.get(competitor, [])
             query_plan = self._query_plan_for_competitor(
                 competitor,
                 task.industry,
                 input_data.planner_query_hints,
                 input_data.gate_context,
+                aliases,
             )
             planner_hint_query_count_by_competitor[competitor] = len(query_plan["planner_queries"])
+            diagnostics["alias_query_count_by_competitor"][competitor] = len(query_plan["alias_queries"])
+            diagnostics["alias_queries_preview_by_competitor"][competitor] = query_plan["alias_queries"][:9]
             diagnostics["targeted_query_count_by_competitor"][competitor] = len(query_plan["targeted_queries"])
             default_query_count_by_competitor[competitor] = len(query_plan["default_queries"])
             effective_query_count_by_competitor[competitor] = len(query_plan["effective_queries"])
@@ -174,6 +182,7 @@ class CollectorAgent:
                         ),
                         competitor,
                         title=result.title,
+                        aliases=aliases,
                     )
                     signals = dict(candidate.entity_match_signals or {})
                     if query_dimension:
@@ -277,10 +286,13 @@ class CollectorAgent:
                 task.industry,
                 input_data.planner_query_hints,
                 input_data.gate_context,
+                input_data.competitor_aliases.get(competitor, []),
             )
             for competitor in task.competitors
         }
+        aliases_by_competitor = input_data.competitor_aliases
         for competitor in task.competitors:
+            aliases = aliases_by_competitor.get(competitor, [])
             evidence.extend(
                 [
                     apply_relevance(
@@ -295,6 +307,7 @@ class CollectorAgent:
                         ),
                         competitor,
                         title=f"{competitor} product",
+                        aliases=aliases,
                     ),
                     apply_relevance(
                         Evidence(
@@ -308,6 +321,7 @@ class CollectorAgent:
                         ),
                         competitor,
                         title=f"{competitor} pricing",
+                        aliases=aliases,
                     ),
                 ]
             )
@@ -316,6 +330,14 @@ class CollectorAgent:
             {
                 "collector_mode_used": "mock",
                 "planner_query_hints_used": bool(input_data.planner_query_hints),
+                "entity_aliases_used": bool(input_data.competitor_aliases),
+                "competitor_aliases_by_competitor": input_data.competitor_aliases,
+                "alias_query_count_by_competitor": {
+                    competitor: len(query_plans[competitor]["alias_queries"]) for competitor in task.competitors
+                },
+                "alias_queries_preview_by_competitor": {
+                    competitor: query_plans[competitor]["alias_queries"][:9] for competitor in task.competitors
+                },
                 "targeted_recollection_used": any(len(query_plans[competitor]["targeted_queries"]) > 0 for competitor in task.competitors),
                 "category_scope_hints_used": bool(input_data.planner_query_hints.get("category_scope")),
                 "planner_hint_query_count_by_competitor": {
@@ -391,6 +413,7 @@ class CollectorAgent:
         industry: str,
         planner_query_hints: dict[str, list[str]] | None,
         gate_context: dict | None,
+        aliases: list[str] | None = None,
     ) -> dict[str, list[str]]:
         hints = planner_query_hints or {}
         competitor_hints = cls._normalize_queries(hints.get(competitor, []))
@@ -399,15 +422,34 @@ class CollectorAgent:
             for hint in cls._normalize_queries(hints.get("category_scope", []))
         ]
         targeted_queries = cls._targeted_queries_for_competitor(competitor, gate_context)
+        alias_queries = cls._alias_queries_for_competitor(competitor, industry, aliases or [])
         planner_queries = cls._dedupe_queries([*competitor_hints, *category_scope])
         default_queries = cls._default_queries_for_competitor(competitor, industry)
-        effective_queries = cls._dedupe_queries([*targeted_queries, *planner_queries, *default_queries])[:MAX_QUERY_COUNT_PER_COMPETITOR]
+        effective_queries = cls._dedupe_queries([*targeted_queries, *alias_queries, *planner_queries, *default_queries])[:MAX_QUERY_COUNT_PER_COMPETITOR]
         return {
             "targeted_queries": targeted_queries,
+            "alias_queries": alias_queries,
             "planner_queries": planner_queries,
             "default_queries": default_queries,
             "effective_queries": effective_queries,
         }
+
+    @classmethod
+    def _alias_queries_for_competitor(cls, competitor: str, industry: str, aliases: list[str]) -> list[str]:
+        queries: list[str] = []
+        competitor_key = competitor.replace(" ", "").lower()
+        for alias in aliases[:4]:
+            alias_key = alias.replace(" ", "").lower()
+            if not alias_key or alias_key == competitor_key:
+                continue
+            queries.extend(
+                [
+                    f"{alias} official {industry}",
+                    f"{alias} features specs official",
+                    f"{alias} pricing price",
+                ]
+            )
+        return cls._dedupe_queries(queries)
 
     @classmethod
     def _targeted_queries_for_competitor(cls, competitor: str, gate_context: dict | None) -> list[str]:

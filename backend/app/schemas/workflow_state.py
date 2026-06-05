@@ -70,6 +70,8 @@ class WorkflowState(TypedDict, total=False):
     final_report_output: FinalReportOutput | None
     evidence_gate_output: dict[str, Any]
     page_fetch_output: dict[str, Any]
+    entity_resolution: dict[str, Any]
+    competitor_aliases: dict[str, list[str]]
     evidence: list[Evidence]
     intent_summary: str | None
     intent_classification: str | None

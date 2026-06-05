@@ -25,6 +25,7 @@ from app.schemas import (
     Task,
 )
 from app.services.evidence_service import EvidenceService
+from app.services.entity_resolver_service import EntityResolverService
 from app.services.report_service import ReportService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
@@ -37,6 +38,7 @@ class MockWorkflowRunner:
         self.trace_service = TraceService(db)
         self.evidence_service = EvidenceService(db)
         self.report_service = ReportService(db)
+        self.entity_resolver_service = EntityResolverService()
         self.planner = PlannerAgent(self.trace_service)
         self.collector = CollectorAgent(self.trace_service)
         self.analyst = AnalystAgent(self.trace_service)
@@ -69,6 +71,7 @@ class MockWorkflowRunner:
             }
         )
         planner_query_hints = plan.analysis_dimension_plan.query_hints if plan.analysis_dimension_plan else {}
+        competitor_aliases = self.entity_resolver_service.aliases_for_task(task)
         history: list[ReworkHistoryItem] = []
 
         if demo_mode == "qa_missing_evidence":
@@ -89,6 +92,7 @@ class MockWorkflowRunner:
                 collector_mode=collector_mode,
                 analyst_mode=analyst_mode,
                 planner_query_hints=planner_query_hints,
+                competitor_aliases=competitor_aliases,
             )
 
         evidence, analysis, writer_output = self._produce_outputs(
@@ -100,6 +104,7 @@ class MockWorkflowRunner:
             collector_mode=collector_mode,
             analyst_mode=analyst_mode,
             planner_query_hints=planner_query_hints,
+            competitor_aliases=competitor_aliases,
         )
 
         qa_result = self.qa.run(
@@ -130,6 +135,7 @@ class MockWorkflowRunner:
                 collector_mode=collector_mode,
                 analyst_mode=analyst_mode,
                 planner_query_hints=planner_query_hints,
+                competitor_aliases=competitor_aliases,
             )
 
         return self._finalize_or_fail(task, plan, qa_result, history, evidence, writer_output)
@@ -145,6 +151,7 @@ class MockWorkflowRunner:
         collector_mode: str,
         analyst_mode: str,
         planner_query_hints: dict[str, list[str]] | None = None,
+        competitor_aliases: dict[str, list[str]] | None = None,
         evidence: list[Evidence] | None = None,
         analysis: AnalystOutput | None = None,
         rework_context: ReworkContext | None = None,
@@ -157,6 +164,7 @@ class MockWorkflowRunner:
                     retry_count=retry_count,
                     collector_mode=collector_mode,
                     planner_query_hints=planner_query_hints or {},
+                    competitor_aliases=competitor_aliases or {},
                     gate_context={
                         "rework_context": rework_context.model_dump(mode="json") if rework_context else None,
                         "targeted_recollection": self._targeted_recollection_summary(rework_context),
@@ -211,6 +219,7 @@ class MockWorkflowRunner:
         collector_mode: str,
         analyst_mode: str,
         planner_query_hints: dict[str, list[str]] | None,
+        competitor_aliases: dict[str, list[str]] | None,
     ) -> dict:
         current_task = task
         current_qa = qa_result
@@ -252,6 +261,7 @@ class MockWorkflowRunner:
                         retry_count=current_qa.rework_count,
                         collector_mode=collector_mode,
                         planner_query_hints=planner_query_hints or {},
+                        competitor_aliases=competitor_aliases or {},
                         gate_context={
                             "rework_context": rework_context.model_dump(mode="json") if rework_context else None,
                             "targeted_recollection": self._targeted_recollection_summary(rework_context),

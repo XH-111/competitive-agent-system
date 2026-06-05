@@ -7,9 +7,9 @@ from app.schemas import Evidence
 
 
 KNOWN_ALIASES = {
-    "飞书": ["飞书", "feishu", "lark"],
-    "钉钉": ["钉钉", "dingtalk"],
-    "企业微信": ["企业微信", "wecom", "wechat work", "weixin work"],
+    "\u98de\u4e66": ["\u98de\u4e66", "feishu", "lark"],
+    "\u9489\u9489": ["\u9489\u9489", "dingtalk"],
+    "\u4f01\u4e1a\u5fae\u4fe1": ["\u4f01\u4e1a\u5fae\u4fe1", "wecom", "wechat work", "weixin work"],
 }
 
 
@@ -34,18 +34,16 @@ def generate_competitor_aliases(name: str) -> list[str]:
     normalized = normalize_competitor_name(name)
     if normalized:
         aliases.append(normalized)
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for alias in aliases:
-        clean = alias.strip().lower()
-        if clean and clean not in seen:
-            seen.add(clean)
-            deduped.append(clean)
-    return deduped
+    return _merge_aliases(aliases, [])
 
 
-def score_evidence_relevance(evidence: Evidence, competitor: str, aliases: list[str] | None = None, title: str = "") -> EvidenceRelevanceResult:
-    aliases = aliases or generate_competitor_aliases(competitor)
+def score_evidence_relevance(
+    evidence: Evidence,
+    competitor: str,
+    aliases: list[str] | None = None,
+    title: str = "",
+) -> EvidenceRelevanceResult:
+    aliases = _merge_aliases(generate_competitor_aliases(competitor), aliases or [])
     url = evidence.url or ""
     domain = evidence.source_domain or _domain(url)
     snippet = evidence.snippet or ""
@@ -103,6 +101,8 @@ def score_evidence_relevance(evidence: Evidence, competitor: str, aliases: list[
         "competitor_alias_matched": competitor_alias_matched,
         "domain_similarity_score": round(domain_similarity_score, 2),
         "strong_entity_match": strong_entity_match,
+        "aliases_used": aliases,
+        "alias_count": len(aliases),
     }
     reason = _reason(competitor, aliases, signals, level)
     return EvidenceRelevanceResult(
@@ -113,8 +113,8 @@ def score_evidence_relevance(evidence: Evidence, competitor: str, aliases: list[
     )
 
 
-def apply_relevance(evidence: Evidence, competitor: str, title: str = "") -> Evidence:
-    result = score_evidence_relevance(evidence, competitor, title=title)
+def apply_relevance(evidence: Evidence, competitor: str, title: str = "", aliases: list[str] | None = None) -> Evidence:
+    result = score_evidence_relevance(evidence, competitor, aliases=aliases, title=title)
     data = evidence.model_dump()
     data.update(
         {
@@ -141,6 +141,20 @@ def _contains_alias(text: str, aliases: list[str]) -> bool:
         if normalized_alias and normalized_alias in normalized_text:
             return True
     return False
+
+
+def _merge_aliases(primary: list[str], secondary: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for alias in [*primary, *secondary]:
+        clean = alias.strip().lower() if isinstance(alias, str) else ""
+        normalized = normalize_competitor_name(clean)
+        key = normalized or clean
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        output.append(clean)
+    return output
 
 
 def _similarity(left: str, right: str) -> float:

@@ -29,6 +29,7 @@ from app.schemas import (
 )
 from app.schemas.workflow_state import WorkflowState
 from app.services.evidence_service import EvidenceService
+from app.services.entity_resolver_service import EntityResolverService
 from app.services.knowledge_base_service import KbIngestionService, KbRetrieverService
 from app.services.page_fetcher import PageFetcher
 from app.services.report_service import ReportService
@@ -47,6 +48,7 @@ class LangGraphWorkflowRunner:
         self.task_run_service = TaskRunService(db)
         self.kb_ingestion_service = KbIngestionService(db)
         self.kb_retriever_service = KbRetrieverService(db)
+        self.entity_resolver_service = EntityResolverService()
         self.planner = PlannerAgent(self.trace_service)
         self.collector = CollectorAgent(self.trace_service)
         self.analyst = AnalystAgent(self.trace_service)
@@ -105,6 +107,8 @@ class LangGraphWorkflowRunner:
             "final_report_output": None,
             "evidence_gate_output": {},
             "page_fetch_output": {},
+            "entity_resolution": {},
+            "competitor_aliases": {},
             "evidence": [],
             "intent_summary": None,
             "intent_classification": None,
@@ -236,9 +240,16 @@ class LangGraphWorkflowRunner:
                 ],
             }
         )
+        entity_resolution = self.entity_resolver_service.resolve_for_task(task)
+        competitor_aliases = {
+            competitor: result.get("aliases", [])
+            for competitor, result in entity_resolution.items()
+        }
         return {
             **state,
             "planner_output": output,
+            "entity_resolution": entity_resolution,
+            "competitor_aliases": competitor_aliases,
             "intent_summary": output.intent_summary,
             "intent_classification": output.intent_classification,
             "ambiguity_level": output.ambiguity_level,
@@ -279,6 +290,7 @@ class LangGraphWorkflowRunner:
                 retry_count=state["rework_count"],
                 collector_mode=state["collector_mode"],
                 planner_query_hints=planner_query_hints,
+                competitor_aliases=state.get("competitor_aliases", {}),
                 gate_context={
                     **state.get("evidence_gate_output", {}),
                     "rework_context": state.get("rework_context").model_dump(mode="json") if state.get("rework_context") else None,
@@ -790,6 +802,8 @@ class LangGraphWorkflowRunner:
             "survey_needed": state.get("survey_needed"),
             "survey_recommended": state.get("survey_recommended"),
             "selected_dimensions": state.get("selected_dimensions", []),
+            "entity_resolution": state.get("entity_resolution", {}),
+            "competitor_aliases": state.get("competitor_aliases", {}),
             "downstream_guidance": state.get("downstream_guidance").model_dump(mode="json")
             if state.get("downstream_guidance")
             else None,
