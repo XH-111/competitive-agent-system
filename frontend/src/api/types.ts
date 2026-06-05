@@ -199,6 +199,28 @@ export type WorkflowSummary = {
     suggested_action?: string;
   };
   selected_dimensions?: string[];
+  analysis_dimension_plan?: {
+    selected_dimensions?: string[];
+    dimension_plans?: Array<{
+      dimension_id?: string;
+      label?: string;
+      description?: string;
+      keywords?: string[];
+      required?: boolean;
+      priority?: number;
+      metadata?: Record<string, unknown>;
+    }>;
+    research_goals?: string[];
+    query_hints?: Record<string, string[]>;
+    metadata?: {
+      dimension_policy?: string;
+      base_dimensions?: string[];
+      dynamic_dimensions?: string[];
+      dynamic_dimension_reasons?: string[];
+      dimension_query_hints?: Record<string, Record<string, string>>;
+      collector_search_plan?: Record<string, Record<string, unknown>>;
+    };
+  } | null;
   recommended_next_constraints?: string[];
   clarification_targets?: string[];
   candidate_competitors?: Array<{
@@ -252,17 +274,21 @@ export type CollectorDiagnostics = {
   fallback_reason?: string;
   elapsed_time_ms?: number;
   planner_query_hints_used?: boolean;
+  collector_search_plan_used?: boolean;
   targeted_recollection_used?: boolean;
   planner_hint_query_count_by_competitor?: Record<string, number>;
+  planned_query_count_by_competitor?: Record<string, number>;
   targeted_query_count_by_competitor?: Record<string, number>;
   effective_query_count_by_competitor?: Record<string, number>;
   effective_queries_preview_by_competitor?: Record<string, string[]>;
   targeted_queries_preview_by_competitor?: Record<string, string[]>;
+  skipped_queries_by_competitor?: Record<string, Array<{ query?: string; dimension_id?: string | null; reason?: string | null }>>;
+  query_policy?: string[];
   entity_aliases_used?: boolean;
   competitor_aliases_by_competitor?: Record<string, string[]>;
   alias_query_count_by_competitor?: Record<string, number>;
   alias_queries_preview_by_competitor?: Record<string, string[]>;
-  query_dimensions_by_competitor?: Record<string, Array<{ query?: string; dimension_id?: string | null }>>;
+  query_dimensions_by_competitor?: Record<string, Array<{ query?: string; dimension_id?: string | null; intent?: string | null; source?: string | null }>>;
   evidence_count_by_competitor?: Record<string, number>;
   relevant_evidence_count_by_competitor?: Record<string, number>;
   unrelated_evidence_count_by_competitor?: Record<string, number>;

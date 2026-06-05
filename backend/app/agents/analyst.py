@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from app.agents.base import AgentOutputValidationError
 from app.agents.base import run_with_trace
-from app.constants.analysis_dimensions import FIXED_DIMENSION_KEYWORDS, fixed_dimension_ids
+from app.constants.analysis_dimensions import dimension_keyword_map, fixed_dimension_ids
 from app.schemas import (
     AnalystInput,
     AnalystOutput,
@@ -950,10 +950,7 @@ class AnalystAgent:
             "feedback": ["feedback", "review", "complaint", "评价", "反馈", "痛点"],
             "risk": ["risk", "security", "compliance", "风险", "安全", "合规"],
             "swot": ["feature", "pricing", "enterprise", "workflow", "功能", "定价", "企业", "流程"],
-            "strength": FIXED_DIMENSION_KEYWORDS["strength"],
-            "weakness": FIXED_DIMENSION_KEYWORDS["weakness"],
-            "opportunity": FIXED_DIMENSION_KEYWORDS["opportunity"],
-            "threat": FIXED_DIMENSION_KEYWORDS["threat"],
+            **dimension_keyword_map(),
         }.get(dimension_id, [dimension_id])
         return self._keyword_evidence(records, keywords)
 

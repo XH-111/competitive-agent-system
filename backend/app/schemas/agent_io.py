@@ -74,6 +74,7 @@ class CollectorInput(BaseModel):
     retry_count: int = 0
     collector_mode: Literal["mock", "web"] = "mock"
     planner_query_hints: dict[str, list[str]] = Field(default_factory=dict)
+    collector_search_plan: dict = Field(default_factory=dict)
     competitor_aliases: dict[str, list[str]] = Field(default_factory=dict)
     gate_context: dict = Field(default_factory=dict)
 

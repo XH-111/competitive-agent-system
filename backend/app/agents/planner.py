@@ -155,6 +155,7 @@ class PlannerAgent:
             survey_needed,
             planning_profile=planning_profile,
         )
+        analysis_dimension_plan = self._attach_llm_search_planning(analysis_dimension_plan, payload)
         survey_inputs = self._build_survey_inputs(payload.get("survey_inputs"), extracted)
         downstream_guidance = self._build_guidance(
             task,
@@ -462,6 +463,20 @@ class PlannerAgent:
                 "candidate_competitors": [candidate.name for candidate in planning_profile["candidate_competitors"]],
             },
         )
+
+    def _attach_llm_search_planning(self, plan: AnalysisDimensionPlan, payload: dict[str, Any]) -> AnalysisDimensionPlan:
+        metadata = dict(plan.metadata or {})
+        dynamic_dimensions = payload.get("dynamic_dimensions")
+        collector_search_plan = payload.get("collector_search_plan")
+        if isinstance(dynamic_dimensions, list):
+            metadata["llm_dynamic_dimensions"] = dynamic_dimensions
+        if isinstance(collector_search_plan, dict):
+            metadata["llm_collector_search_plan"] = collector_search_plan
+        if "dynamic_dimensions" in metadata or "llm_dynamic_dimensions" in metadata:
+            metadata["llm_planner_dimensions_attempted"] = True
+        if "collector_search_plan" in metadata or "llm_collector_search_plan" in metadata:
+            metadata["llm_planner_search_plan_attempted"] = True
+        return plan.model_copy(update={"metadata": metadata})
 
     def _build_survey_inputs(self, raw_inputs: Any, extracted: PlannerExtractedContext) -> PlannerSurveyInput | None:
         if not extracted.survey_needed:
@@ -1016,9 +1031,10 @@ class PlannerAgent:
             "Your output must:\n"
             "1. identify the user's high-level intent,\n"
             "2. extract product-analysis context,\n"
-            "3. determine whether survey support is needed,\n"
-            "4. generate planning guidance for downstream modules,\n"
-            "5. strictly follow the required JSON structure and field types.\n\n"
+            "3. select base and industry-specific research dimensions,\n"
+            "4. generate a collector search plan for every competitor and dimension,\n"
+            "5. generate planning guidance for downstream Collector/Analyst/Writer modules,\n"
+            "6. strictly follow the required JSON structure and field types.\n\n"
             "intent_classification must be exactly one of:\n"
             "- competitive_analysis\n"
             "- product_positioning\n"
@@ -1030,8 +1046,8 @@ class PlannerAgent:
             "- market_research\n"
             "- unknown\n\n"
             "Classification rule:\n"
-            "- If the request combines product comparison with questionnaire generation for pain-point discovery, validation, or improvement planning, use improvement_opportunity.\n"
-            "- Use survey_design only when the main task is simply to create a questionnaire without a broader improvement-analysis purpose.\n\n"
+            "- For ordinary competitor analysis, use competitive_analysis.\n"
+            "- Do not plan questionnaire or survey work in this phase; keep survey_needed=false.\n\n"
             "Return exactly one JSON object with these fields and types:\n"
             "- intent_summary: string\n"
             "- intent_classification: string\n"
@@ -1052,6 +1068,8 @@ class PlannerAgent:
             "- scope_type: string\n"
             "- scope_size: string\n"
             "- selected_dimensions: string[]\n"
+            "- dynamic_dimensions: object[] optional. Each object must contain English keys: dimension_id, label, description, keywords, reason, preferred_sources. dimension_id must be English snake_case.\n"
+            "- collector_search_plan: object optional. Shape: {competitor: {dimension_id: {queries: string[], intent: string, preferred_sources: string[]}}}. Competitor keys must match task.competitors. Dimension keys must stay English snake_case.\n"
             "- survey_objective: string\n"
             '- survey_inputs: {"objective": string, "respondent_type": string, "question_themes": string[], "hypotheses": string[]}\n'
             '- recommended_next_constraints: string[]\n'
@@ -1068,6 +1086,12 @@ class PlannerAgent:
             "- Do not return null.\n"
             "- If some information is uncertain, infer reasonably and put uncertainties into missing_information.\n"
             "- confidence must be a number between 0 and 1.\n"
+            "- Keep JSON keys in English. Do not use Chinese JSON keys.\n"
+            "- selected_dimensions must include these base dimensions for competitive analysis: feature, pricing, persona, strength, weakness, opportunity, threat.\n"
+            "- Add dynamic_dimensions only when they are relevant to the industry/product category.\n"
+            "- Use Chinese for user-visible labels, descriptions, reasons, query intent, and report-oriented wording.\n"
+            "- For every task competitor and every selected dimension, collector_search_plan should provide 1-3 concise, evidence-oriented search queries.\n"
+            "- survey_needed must be false and survey_inputs should contain empty arrays; this phase does not generate questionnaires.\n"
             "- Return JSON only.\n"
             "- No markdown.\n"
             "- No explanations.\n"
@@ -1075,39 +1099,50 @@ class PlannerAgent:
         )
         user = (
             "User request example:\n"
-            "“我想分析苹果和三星旗舰手机的优劣，并生成一个关于手机续航问题的用户问卷”\n\n"
+            "“我想分析华为 Mate、iPhone、小米旗舰机在中国智能手机市场的竞品表现”\n\n"
             "Expected style:\n"
             "{\n"
-            '"intent_summary": "分析苹果和三星旗舰手机的优劣，并准备围绕手机续航问题的用户问卷。",\n'
-            '"intent_classification": "improvement_opportunity",\n'
-            '"industry": "旗舰智能手机",\n'
+            '"intent_summary": "分析华为 Mate、iPhone、小米旗舰机在中国智能手机市场的竞品表现。",\n'
+            '"intent_classification": "competitive_analysis",\n'
+            '"industry": "智能手机",\n'
             '"domain": "智能手机硬件",\n'
-            '"product_name": "苹果和三星旗舰手机对比",\n'
+            '"product_name": "智能手机竞品分析",\n'
             '"product_type": "旗舰手机",\n'
             '"target_users": ["计划购买旗舰手机的消费者", "重度使用者"],\n'
             '"region": "中国",\n'
-            '"competitors_mentioned": ["苹果", "三星"],\n'
-            '"analysis_focus_points": ["续航表现", "性能取舍", "影像体验", "系统体验"],\n'
-            '"requested_outputs": ["竞品优劣分析", "手机续航问卷"],\n'
-            '"survey_needed": true,\n'
-            '"survey_reason": "用户希望围绕续航问题收集反馈，以支持改进机会分析。",\n'
-            '"missing_information": ["未指定问卷样本规模", "未指定受访者细分标准"],\n'
+            '"competitors_mentioned": ["华为 Mate", "iPhone", "小米旗舰机"],\n'
+            '"analysis_focus_points": ["硬件参数", "影像能力", "芯片性能", "系统生态", "渠道策略", "AI 能力"],\n'
+            '"requested_outputs": ["竞品分析报告", "结构化竞品知识", "可追溯证据"],\n'
+            '"survey_needed": false,\n'
+            '"survey_reason": "",\n'
+            '"missing_information": [],\n'
             '"confidence": 0.95,\n'
-            '"selected_dimensions": ["feature", "pricing", "persona", "feedback", "prioritization"],\n'
-            '"survey_objective": "收集用户对旗舰手机续航问题、使用场景和改进期望的结构化反馈。",\n'
-            '"survey_inputs": {\n'
-            '"objective": "收集用户对旗舰手机续航问题、使用场景和改进期望的结构化反馈。",\n'
-            '"respondent_type": "使用或计划购买苹果、三星旗舰手机的用户。",\n'
-            '"question_themes": ["续航痛点", "充电频率", "高负载场景", "改进优先级"],\n'
-            '"hypotheses": ["用户对旗舰手机续航的主要不满来自高负载场景掉电过快。"]\n'
+            '"selected_dimensions": ["feature", "pricing", "persona", "strength", "weakness", "opportunity", "threat", "hardware_specs", "camera_capability", "chip_performance", "os_ecosystem", "channel_strategy", "ai_capability"],\n'
+            '"dynamic_dimensions": [\n'
+            '{"dimension_id": "hardware_specs", "label": "硬件参数", "description": "比较屏幕、电池、存储、机身等硬件规格。", "keywords": ["硬件", "参数", "屏幕", "电池", "specs"], "reason": "旗舰手机竞争需要比较硬件配置。", "preferred_sources": ["official", "documentation", "review"]},\n'
+            '{"dimension_id": "camera_capability", "label": "影像能力", "description": "比较镜头配置、拍照体验、视频能力和影像算法。", "keywords": ["影像", "摄像头", "拍照", "camera"], "reason": "影像能力是旗舰手机核心差异点。", "preferred_sources": ["official", "review", "media"]}\n'
+            "],\n"
+            '"collector_search_plan": {\n'
+            '"iPhone": {\n'
+            '"feature": {"queries": ["iPhone 功能 官方", "iPhone 产品能力 文档"], "intent": "采集 iPhone 功能能力相关公开证据。", "preferred_sources": ["official", "documentation"]},\n'
+            '"pricing": {"queries": ["iPhone 价格 官方 中国"], "intent": "采集 iPhone 定价和版本相关公开证据。", "preferred_sources": ["official"]},\n'
+            '"camera_capability": {"queries": ["iPhone 影像能力 评测", "iPhone 摄像头 官方"], "intent": "采集 iPhone 影像能力相关公开证据。", "preferred_sources": ["official", "review"]}\n'
+            "}\n"
             "},\n"
-            '"planner_notes": ["已识别为竞品分析 + 问卷生成场景。"],\n'
+            '"survey_objective": "",\n'
+            '"survey_inputs": {\n'
+            '"objective": "",\n'
+            '"respondent_type": "",\n'
+            '"question_themes": [],\n'
+            '"hypotheses": []\n'
+            "},\n"
+            '"planner_notes": ["已识别为智能手机竞品分析场景，并生成动态维度和搜索计划。"],\n'
             '"downstream_guidance": {\n'
-            '"collector": ["收集苹果和三星旗舰手机在续航、充电、性能和影像方面的公开证据。"],\n'
-            '"analyst": ["比较两家旗舰手机在续航相关优劣势和使用场景差异。"],\n'
-            '"writer": ["突出优劣对比、续航问题和问卷设计目的。"],\n'
-            '"qa": ["验证所有优劣结论是否有对应证据支撑。"],\n'
-            '"survey": ["围绕续航痛点、充电体验和改进优先级设计题目。"]\n'
+            '"collector": ["按 collector_search_plan 对每个竞品和维度采集公开证据。"],\n'
+            '"analyst": ["按 selected_dimensions 抽取结构化事实，并保留 evidence_ids。"],\n'
+            '"writer": ["按维度生成中文竞品分析报告，证据不足时保持保守。"],\n'
+            '"qa": ["验证维度覆盖和证据绑定。"],\n'
+            '"survey": []\n'
             "}\n"
             "}\n\n"
             "Now return exactly one JSON object for this task input:\n"

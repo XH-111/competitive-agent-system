@@ -17,7 +17,7 @@ from app.agents.qa import QaAgent
 from app.agents.report_writer import ReportWriterAgent
 from app.agents.runner import MockWorkflowRunner
 from app.agents.runner_factory import resolve_workflow_engine
-from app.constants.analysis_dimensions import fixed_dimension_ids, fixed_query_hints_for_competitor
+from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan, fixed_dimension_ids, fixed_query_hints_for_competitor
 from app.database import Base
 from app.schemas import (
     AgentMessage,
@@ -186,6 +186,25 @@ def test_fixed_competitive_dimensions_generate_collector_queries():
     joined = " ".join(queries)
     for keyword in ["价格", "功能", "用户画像", "优势", "劣势", "机会", "威胁"]:
         assert keyword in joined
+
+
+def test_planner_dimension_plan_adds_industry_dynamic_dimensions(db_session):
+    task = make_custom_task(
+        db_session,
+        product_name="\u65b0\u80fd\u6e90\u6c7d\u8f66\u7ade\u54c1\u5206\u6790",
+        competitors=["\u5c0f\u7c73 SU7", "\u7279\u65af\u62c9 Model 3"],
+        industry="\u65b0\u80fd\u6e90\u6c7d\u8f66",
+    )
+    plan = apply_fixed_dimensions_to_plan(None, task)
+
+    for dimension_id in ["feature", "pricing", "persona", "strength", "weakness", "opportunity", "threat"]:
+        assert dimension_id in plan.selected_dimensions
+    for dimension_id in ["battery_range", "autonomous_driving", "charging_network", "vehicle_performance"]:
+        assert dimension_id in plan.selected_dimensions
+
+    search_plan = plan.metadata["collector_search_plan"]
+    assert search_plan["\u5c0f\u7c73 SU7"]["battery_range"]["queries"] == ["\u5c0f\u7c73 SU7 \u7eed\u822a\u4e0e\u7535\u6c60"]
+    assert plan.metadata["dimension_policy"] == "base_plus_dynamic_planner_search_plan"
 
 
 def test_public_contract_dimension_result_requires_evidence_or_insufficient_flag():
@@ -2150,3 +2169,214 @@ def test_collector_web_uses_entity_aliases_for_query_and_relevance(db_session):
     ]
     assert output.diagnostics["missing_relevant_evidence_competitors"] == []
     assert output.evidence[0].relevance_level in {"high", "medium"}
+
+
+def test_collector_web_uses_planner_collector_search_plan(db_session):
+    task = make_custom_task(
+        db_session,
+        product_name="\u65b0\u80fd\u6e90\u6c7d\u8f66\u7ade\u54c1\u5206\u6790",
+        competitors=["\u5c0f\u7c73 SU7"],
+        industry="\u65b0\u80fd\u6e90\u6c7d\u8f66",
+    )
+    plan = apply_fixed_dimensions_to_plan(None, task)
+    collector_search_plan = plan.metadata["collector_search_plan"]
+
+    class PlannedSearchClient:
+        provider = "fake"
+        api_key = "fake"
+        base_url = "https://fake-search.example"
+
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str, limit: int = 8) -> WebSearchResponse:
+            self.queries.append(query)
+            index = len(self.queries)
+            return WebSearchResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                results=[
+                    SearchResult(
+                        title="\u5c0f\u7c73 SU7 \u5b98\u65b9\u4ea7\u54c1\u4fe1\u606f",
+                        url=f"https://www.mi.com/su7/{index}",
+                        snippet="\u5c0f\u7c73 SU7 \u5b98\u65b9\u9875\u9762\u4ecb\u7ecd\u7eed\u822a\u3001\u667a\u9a7e\u548c\u52a8\u529b\u80fd\u529b\u3002",
+                        score=0.9,
+                    )
+                ],
+            )
+
+    search_client = PlannedSearchClient()
+    output = CollectorAgent(TraceService(db_session), web_search_client=search_client).run(
+        CollectorInput(
+            task=task,
+            collector_mode="web",
+            collector_search_plan=collector_search_plan,
+        )
+    )
+
+    assert output.diagnostics["collector_search_plan_used"] is True
+    assert "planner_collector_search_plan" in output.diagnostics["query_policy"]
+    assert "\u5c0f\u7c73 SU7 \u7eed\u822a\u4e0e\u7535\u6c60" in search_client.queries
+    assert not any("features specs official" in query for query in search_client.queries)
+    battery_evidence = next(
+        item for item in output.evidence if (item.entity_match_signals or {}).get("collector_dimension") == "battery_range"
+    )
+    assert battery_evidence.entity_match_signals["collector_query_source"] == "planner_search_plan"
+
+
+def test_collector_records_skipped_queries_when_plan_exceeds_limit(db_session):
+    task = make_custom_task(
+        db_session,
+        product_name="\u641c\u7d22\u4e0a\u9650\u6d4b\u8bd5",
+        competitors=["AlphaCI"],
+        industry="B2B SaaS",
+    )
+    collector_search_plan = {
+        "AlphaCI": {
+            f"dimension_{index}": {
+                "dimension_id": f"dimension_{index}",
+                "queries": [f"AlphaCI dimension {index} official"],
+                "intent": "test",
+                "preferred_sources": ["official"],
+            }
+            for index in range(35)
+        }
+    }
+
+    class EmptySearchClient:
+        provider = "fake"
+        api_key = "fake"
+        base_url = "https://fake-search.example"
+
+        def search(self, query: str, limit: int = 8) -> WebSearchResponse:
+            return WebSearchResponse(available=True, attempted=True, success=True, results=[])
+
+    output = CollectorAgent(TraceService(db_session), web_search_client=EmptySearchClient()).run(
+        CollectorInput(task=task, collector_mode="web", collector_search_plan=collector_search_plan)
+    )
+
+    diagnostics = output.diagnostics
+    assert diagnostics["effective_query_count_by_competitor"]["AlphaCI"] == 30
+    assert len(diagnostics["effective_queries_preview_by_competitor"]["AlphaCI"]) == 30
+    skipped = diagnostics["skipped_queries_by_competitor"]["AlphaCI"]
+    assert len(skipped) == 5
+    assert skipped[0]["reason"] == "exceeded_max_query_count_per_competitor"
+
+
+def test_collector_query_budget_round_robins_dimensions_before_extra_queries():
+    collector_search_plan = {
+        "AlphaCI": {
+            f"dimension_{index}": {
+                "dimension_id": f"dimension_{index}",
+                "queries": [
+                    f"AlphaCI dimension {index} query 1",
+                    f"AlphaCI dimension {index} query 2",
+                    f"AlphaCI dimension {index} query 3",
+                ],
+                "intent": "test",
+                "preferred_sources": ["official"],
+            }
+            for index in range(12)
+        }
+    }
+
+    query_plan = CollectorAgent._query_plan_for_competitor(
+        "AlphaCI",
+        "B2B SaaS",
+        planner_query_hints={},
+        collector_search_plan=collector_search_plan,
+        gate_context={},
+        aliases=[],
+    )
+
+    first_round = query_plan["effective_queries"][:12]
+    assert first_round == [f"AlphaCI dimension {index} query 1" for index in range(12)]
+    assert "AlphaCI dimension 0 query 2" in query_plan["effective_queries"][:24]
+    assert len(query_plan["effective_queries"]) == 30
+    assert len(query_plan["all_candidate_queries"]) == 36
+
+
+def test_planner_llm_dynamic_dimensions_and_search_plan_are_normalized(db_session):
+    task = make_custom_task(
+        db_session,
+        product_name="\u667a\u80fd\u624b\u673a\u7ade\u54c1\u5206\u6790",
+        competitors=["iPhone", "\u5c0f\u7c73\u65d7\u8230\u673a"],
+        industry="\u667a\u80fd\u624b\u673a",
+    )
+    payload = {
+        "intent_summary": "\u667a\u80fd\u624b\u673a\u7ade\u54c1\u5206\u6790",
+        "intent_classification": "competitive_analysis",
+        "industry": "\u667a\u80fd\u624b\u673a",
+        "domain": "\u667a\u80fd\u624b\u673a",
+        "product_name": "\u667a\u80fd\u624b\u673a\u7ade\u54c1\u5206\u6790",
+        "product_type": "\u65d7\u8230\u624b\u673a",
+        "target_users": ["\u6d88\u8d39\u8005"],
+        "region": "\u4e2d\u56fd",
+        "competitors_mentioned": ["iPhone", "\u5c0f\u7c73\u65d7\u8230\u673a"],
+        "analysis_focus_points": ["\u5f71\u50cf", "\u82af\u7247", "AI"],
+        "requested_outputs": ["\u7ade\u54c1\u5206\u6790\u62a5\u544a"],
+        "survey_needed": False,
+        "survey_reason": "",
+        "missing_information": [],
+        "confidence": 0.9,
+        "ambiguity_level": "low",
+        "scope_type": "specific_product_benchmark",
+        "scope_size": "narrow",
+        "selected_dimensions": ["feature", "pricing", "persona", "strength", "weakness", "opportunity", "threat", "camera_capability"],
+        "dynamic_dimensions": [
+            {
+                "dimension_id": "camera_capability",
+                "label": "\u5f71\u50cf\u80fd\u529b",
+                "description": "\u6bd4\u8f83\u6444\u50cf\u5934\u548c\u5f71\u50cf\u7b97\u6cd5\u3002",
+                "keywords": ["\u5f71\u50cf", "\u6444\u50cf\u5934", "camera"],
+                "reason": "\u624b\u673a\u7ade\u54c1\u9700\u8981\u6bd4\u8f83\u5f71\u50cf\u80fd\u529b\u3002",
+                "preferred_sources": ["official", "review"],
+            },
+            {
+                "dimension_id": "\u4e2d\u6587\u5b57\u6bb5",
+                "label": "\u5e94\u88ab\u4e22\u5f03",
+                "keywords": ["bad"],
+            },
+        ],
+        "collector_search_plan": {
+            "iPhone": {
+                "camera_capability": {
+                    "queries": ["iPhone \u5f71\u50cf\u80fd\u529b \u8bc4\u6d4b", "iPhone \u6444\u50cf\u5934 \u5b98\u65b9"],
+                    "intent": "\u91c7\u96c6 iPhone \u5f71\u50cf\u8bc1\u636e\u3002",
+                    "preferred_sources": ["official", "review"],
+                },
+                "\u4e2d\u6587\u7ef4\u5ea6": {
+                    "queries": ["iPhone bad"],
+                    "intent": "bad",
+                    "preferred_sources": ["official"],
+                },
+            },
+            "NotInTask": {
+                "camera_capability": {
+                    "queries": ["NotInTask camera"],
+                    "intent": "bad",
+                    "preferred_sources": ["official"],
+                }
+            },
+        },
+        "survey_objective": "",
+        "survey_inputs": {"objective": "", "respondent_type": "", "question_themes": [], "hypotheses": []},
+        "recommended_next_constraints": [],
+        "assumptions": [],
+        "candidate_competitors": [],
+        "clarification_targets": [],
+        "planning_stages": [],
+        "planner_notes": [],
+        "downstream_guidance": {"collector": [], "analyst": [], "writer": [], "qa": [], "survey": []},
+    }
+    planner_output = PlannerAgent(TraceService(db_session), llm_client=FakeLlmClient(json.dumps(payload, ensure_ascii=False))).run(
+        PlannerInput(task=task)
+    )
+    normalized = apply_fixed_dimensions_to_plan(planner_output.analysis_dimension_plan, task)
+
+    assert "camera_capability" in normalized.selected_dimensions
+    assert "\u4e2d\u6587\u5b57\u6bb5" not in normalized.selected_dimensions
+    assert normalized.metadata["llm_collector_search_plan_used"] is True
+    assert normalized.metadata["collector_search_plan"]["iPhone"]["camera_capability"]["queries"][0] == "iPhone \u5f71\u50cf\u80fd\u529b \u8bc4\u6d4b"
+    assert "NotInTask" not in normalized.metadata["collector_search_plan"]

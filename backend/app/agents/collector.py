@@ -21,7 +21,7 @@ MIN_RELEVANT_EVIDENCE_PER_COMPETITOR = 1
 MAX_EVIDENCE_PER_COMPETITOR = 21
 MAX_EVIDENCE_PER_DIMENSION = 3
 MAX_EVIDENCE_PER_QUERY = 3
-MAX_QUERY_COUNT_PER_COMPETITOR = 14
+MAX_QUERY_COUNT_PER_COMPETITOR = 30
 
 
 class CollectorAgent:
@@ -64,6 +64,7 @@ class CollectorAgent:
             "web_search_attempted": False,
             "web_search_success": False,
             "planner_query_hints_used": bool(input_data.planner_query_hints),
+            "collector_search_plan_used": bool(input_data.collector_search_plan),
             "entity_aliases_used": bool(input_data.competitor_aliases),
             "competitor_aliases_by_competitor": input_data.competitor_aliases,
             "alias_query_count_by_competitor": {},
@@ -71,11 +72,14 @@ class CollectorAgent:
             "targeted_recollection_used": bool(input_data.gate_context),
             "category_scope_hints_used": bool(input_data.planner_query_hints.get("category_scope")),
             "planner_hint_query_count_by_competitor": {},
+            "planned_query_count_by_competitor": {},
             "targeted_query_count_by_competitor": {},
             "default_query_count_by_competitor": {},
             "effective_query_count_by_competitor": {},
             "effective_queries_preview_by_competitor": {},
             "targeted_queries_preview_by_competitor": {},
+            "skipped_queries_by_competitor": {},
+            "query_policy": [],
             "query_dimensions_by_competitor": {},
             "query_count": 0,
             "query_count_by_competitor": {},
@@ -113,12 +117,13 @@ class CollectorAgent:
         default_query_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         effective_query_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         effective_queries_preview_by_competitor: dict[str, list[str]] = {competitor: [] for competitor in task.competitors}
+        skipped_queries_by_competitor: dict[str, list[dict[str, str | None]]] = {competitor: [] for competitor in task.competitors}
         query_dimensions_by_competitor: dict[str, list[dict[str, str | None]]] = {competitor: [] for competitor in task.competitors}
         fallback_by_competitor: dict[str, str | None] = {competitor: None for competitor in task.competitors}
         raw_search_result_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         unrelated_evidence_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in task.competitors}
         evidence_count_by_dimension_by_competitor: dict[str, dict[str, int]] = {
-            competitor: {dimension: 0 for dimension in FIXED_COMPETITIVE_DIMENSIONS}
+            competitor: {dimension: 0 for dimension in self._dimension_ids_for_competitor(input_data.collector_search_plan, competitor)}
             for competitor in task.competitors
         }
         filtered_unrelated_count = 0
@@ -129,27 +134,51 @@ class CollectorAgent:
                 competitor,
                 task.industry,
                 input_data.planner_query_hints,
+                input_data.collector_search_plan,
                 input_data.gate_context,
                 aliases,
             )
             planner_hint_query_count_by_competitor[competitor] = len(query_plan["planner_queries"])
+            diagnostics["planned_query_count_by_competitor"][competitor] = len(query_plan["planned_queries"])
             diagnostics["alias_query_count_by_competitor"][competitor] = len(query_plan["alias_queries"])
             diagnostics["alias_queries_preview_by_competitor"][competitor] = query_plan["alias_queries"][:9]
             diagnostics["targeted_query_count_by_competitor"][competitor] = len(query_plan["targeted_queries"])
             default_query_count_by_competitor[competitor] = len(query_plan["default_queries"])
             effective_query_count_by_competitor[competitor] = len(query_plan["effective_queries"])
-            effective_queries_preview_by_competitor[competitor] = query_plan["effective_queries"][:9]
+            effective_queries_preview_by_competitor[competitor] = query_plan["effective_queries"]
             diagnostics["targeted_queries_preview_by_competitor"][competitor] = query_plan["targeted_queries"][:9]
-            for query in query_plan["effective_queries"]:
+            all_candidate_queries = query_plan.get("all_candidate_queries", query_plan["effective_queries"])
+            for skipped_query in all_candidate_queries[len(query_plan["effective_queries"]):]:
+                skipped_queries_by_competitor[competitor].append(
+                    {
+                        "query": skipped_query,
+                        "dimension_id": query_plan["query_metadata_by_query"].get(skipped_query, {}).get("dimension_id")
+                        or dimension_for_query(skipped_query),
+                        "reason": "exceeded_max_query_count_per_competitor",
+                    }
+                )
+            for query_index, query in enumerate(query_plan["effective_queries"]):
                 if len(buckets[competitor]) >= MAX_EVIDENCE_PER_COMPETITOR:
+                    for skipped_query in query_plan["effective_queries"][query_index:]:
+                        skipped_queries_by_competitor[competitor].append(
+                            {
+                                "query": skipped_query,
+                                "dimension_id": query_plan["query_metadata_by_query"].get(skipped_query, {}).get("dimension_id")
+                                or dimension_for_query(skipped_query),
+                                "reason": "max_evidence_per_competitor_reached",
+                            }
+                        )
                     break
-                query_dimension = dimension_for_query(query)
-                if (
-                    query_dimension in FIXED_COMPETITIVE_DIMENSIONS
-                    and evidence_count_by_dimension_by_competitor[competitor][query_dimension] >= MAX_EVIDENCE_PER_DIMENSION
-                ):
-                    continue
-                query_dimensions_by_competitor[competitor].append({"query": query, "dimension_id": query_dimension})
+                query_metadata = query_plan["query_metadata_by_query"].get(query, {})
+                query_dimension = query_metadata.get("dimension_id") or dimension_for_query(query)
+                query_dimensions_by_competitor[competitor].append(
+                    {
+                        "query": query,
+                        "dimension_id": query_dimension,
+                        "intent": query_metadata.get("intent"),
+                        "source": query_metadata.get("source"),
+                    }
+                )
                 query_count_by_competitor[competitor] += 1
                 response = self.web_search_client.search(query, limit=8)
                 diagnostics["web_search_attempted"] = diagnostics["web_search_attempted"] or response.attempted
@@ -189,12 +218,16 @@ class CollectorAgent:
                     signals["collector_query"] = query
                     if query_dimension:
                         signals["collector_dimension"] = query_dimension
+                    if query_metadata:
+                        signals["collector_query_intent"] = query_metadata.get("intent")
+                        signals["collector_query_source"] = query_metadata.get("source")
+                        signals["collector_preferred_sources"] = query_metadata.get("preferred_sources", [])
                     signals["confidence_breakdown"] = confidence_breakdown
                     candidate = candidate.model_copy(update={"entity_match_signals": signals})
                     if candidate.relevance_level == "unrelated":
                         unrelated_evidence_count_by_competitor[competitor] += 1
                         filtered_unrelated_count += 1
-                    elif query_dimension in FIXED_COMPETITIVE_DIMENSIONS:
+                    elif query_dimension in evidence_count_by_dimension_by_competitor[competitor]:
                         if evidence_count_by_dimension_by_competitor[competitor][query_dimension] >= MAX_EVIDENCE_PER_DIMENSION:
                             continue
                         evidence_count_by_dimension_by_competitor[competitor][query_dimension] += 1
@@ -225,16 +258,33 @@ class CollectorAgent:
             {
                 "collector_mode_used": "web",
                 "planner_query_hints_used": bool(input_data.planner_query_hints),
+                "collector_search_plan_used": bool(input_data.collector_search_plan),
                 "targeted_recollection_used": any(
                     diagnostics["targeted_query_count_by_competitor"].get(competitor, 0) > 0 for competitor in task.competitors
                 ),
                 "category_scope_hints_used": bool(input_data.planner_query_hints.get("category_scope")),
                 "planner_hint_query_count_by_competitor": planner_hint_query_count_by_competitor,
+                "planned_query_count_by_competitor": diagnostics["planned_query_count_by_competitor"],
                 "targeted_query_count_by_competitor": diagnostics["targeted_query_count_by_competitor"],
                 "default_query_count_by_competitor": default_query_count_by_competitor,
                 "effective_query_count_by_competitor": effective_query_count_by_competitor,
                 "effective_queries_preview_by_competitor": effective_queries_preview_by_competitor,
                 "targeted_queries_preview_by_competitor": diagnostics["targeted_queries_preview_by_competitor"],
+                "skipped_queries_by_competitor": skipped_queries_by_competitor,
+                "query_policy": self._dedupe_queries(
+                    [
+                        policy
+                        for competitor in task.competitors
+                        for policy in self._query_plan_for_competitor(
+                            competitor,
+                            task.industry,
+                            input_data.planner_query_hints,
+                            input_data.collector_search_plan,
+                            input_data.gate_context,
+                            input_data.competitor_aliases.get(competitor, []),
+                        )["query_policy"]
+                    ]
+                ),
                 "query_dimensions_by_competitor": query_dimensions_by_competitor,
                 "query_count": sum(query_count_by_competitor.values()),
                 "query_count_by_competitor": query_count_by_competitor,
@@ -287,6 +337,7 @@ class CollectorAgent:
                 competitor,
                 task.industry,
                 input_data.planner_query_hints,
+                input_data.collector_search_plan,
                 input_data.gate_context,
                 input_data.competitor_aliases.get(competitor, []),
             )
@@ -332,6 +383,7 @@ class CollectorAgent:
             {
                 "collector_mode_used": "mock",
                 "planner_query_hints_used": bool(input_data.planner_query_hints),
+                "collector_search_plan_used": bool(input_data.collector_search_plan),
                 "entity_aliases_used": bool(input_data.competitor_aliases),
                 "competitor_aliases_by_competitor": input_data.competitor_aliases,
                 "alias_query_count_by_competitor": {
@@ -345,6 +397,9 @@ class CollectorAgent:
                 "planner_hint_query_count_by_competitor": {
                     competitor: len(query_plans[competitor]["planner_queries"]) for competitor in task.competitors
                 },
+                "planned_query_count_by_competitor": {
+                    competitor: len(query_plans[competitor]["planned_queries"]) for competitor in task.competitors
+                },
                 "targeted_query_count_by_competitor": {
                     competitor: len(query_plans[competitor]["targeted_queries"]) for competitor in task.competitors
                 },
@@ -355,14 +410,35 @@ class CollectorAgent:
                     competitor: len(query_plans[competitor]["effective_queries"]) for competitor in task.competitors
                 },
                 "effective_queries_preview_by_competitor": {
-                    competitor: query_plans[competitor]["effective_queries"][:9] for competitor in task.competitors
+                    competitor: query_plans[competitor]["effective_queries"] for competitor in task.competitors
                 },
                 "targeted_queries_preview_by_competitor": {
                     competitor: query_plans[competitor]["targeted_queries"][:9] for competitor in task.competitors
                 },
+                "skipped_queries_by_competitor": {
+                    competitor: [
+                        {
+                            "query": query,
+                            "dimension_id": query_plans[competitor]["query_metadata_by_query"].get(query, {}).get("dimension_id")
+                            or dimension_for_query(query),
+                            "reason": "exceeded_max_query_count_per_competitor",
+                        }
+                        for query in query_plans[competitor].get("all_candidate_queries", [])[len(query_plans[competitor]["effective_queries"]):]
+                    ]
+                    for competitor in task.competitors
+                },
+                "query_policy": self._dedupe_queries(
+                    [policy for competitor in task.competitors for policy in query_plans[competitor]["query_policy"]]
+                ),
                 "query_dimensions_by_competitor": {
                     competitor: [
-                        {"query": query, "dimension_id": dimension_for_query(query)}
+                        {
+                            "query": query,
+                            "dimension_id": query_plans[competitor]["query_metadata_by_query"].get(query, {}).get("dimension_id")
+                            or dimension_for_query(query),
+                            "intent": query_plans[competitor]["query_metadata_by_query"].get(query, {}).get("intent"),
+                            "source": query_plans[competitor]["query_metadata_by_query"].get(query, {}).get("source"),
+                        }
                         for query in query_plans[competitor]["effective_queries"][:9]
                     ]
                     for competitor in task.competitors
@@ -370,7 +446,7 @@ class CollectorAgent:
                 "evidence_count": len(evidence),
                 "evidence_count_by_competitor": evidence_count_by_competitor,
                 "evidence_count_by_dimension_by_competitor": {
-                    competitor: {dimension: 0 for dimension in FIXED_COMPETITIVE_DIMENSIONS}
+                    competitor: {dimension: 0 for dimension in self._dimension_ids_for_competitor(input_data.collector_search_plan, competitor)}
                     for competitor in task.competitors
                 },
                 "raw_evidence_count": len(evidence),
@@ -414,9 +490,10 @@ class CollectorAgent:
         competitor: str,
         industry: str,
         planner_query_hints: dict[str, list[str]] | None,
+        collector_search_plan: dict | None,
         gate_context: dict | None,
         aliases: list[str] | None = None,
-    ) -> dict[str, list[str]]:
+    ) -> dict:
         hints = planner_query_hints or {}
         competitor_hints = cls._normalize_queries(hints.get(competitor, []))
         category_scope = [
@@ -426,16 +503,95 @@ class CollectorAgent:
         targeted_queries = cls._targeted_queries_for_competitor(competitor, gate_context)
         alias_queries = cls._alias_queries_for_competitor(competitor, industry, aliases or [])
         planner_queries = cls._dedupe_queries([*competitor_hints, *category_scope])
+        planned_queries, query_metadata_by_query = cls._planned_queries_for_competitor(competitor, collector_search_plan)
         default_queries = fixed_query_hints_for_competitor(competitor, industry)
-        effective_queries = cls._dedupe_queries([*targeted_queries, *default_queries])[:MAX_QUERY_COUNT_PER_COMPETITOR]
+        query_policy = ["targeted_recollection_queries"]
+        if planned_queries:
+            query_policy.append("planner_collector_search_plan")
+            base_queries = planned_queries
+        elif planner_queries:
+            query_policy.append("planner_query_hints")
+            base_queries = planner_queries
+        else:
+            query_policy.append("fixed_competitor_dimension_queries")
+            base_queries = default_queries
+        ordered_base_queries = cls._round_robin_queries_by_dimension(base_queries, query_metadata_by_query)
+        all_candidate_queries = cls._dedupe_queries([*targeted_queries, *ordered_base_queries])
+        effective_queries = all_candidate_queries[:MAX_QUERY_COUNT_PER_COMPETITOR]
+        for query in targeted_queries:
+            query_metadata_by_query.setdefault(
+                query,
+                {
+                    "source": "targeted_recollection",
+                    "dimension_id": dimension_for_query(query),
+                    "intent": "Re-collect evidence for the failed QA/EvidenceGate focus.",
+                    "preferred_sources": ["official", "documentation", "media", "review"],
+                },
+            )
         return {
             "targeted_queries": targeted_queries,
             "alias_queries": alias_queries,
             "planner_queries": planner_queries,
+            "planned_queries": planned_queries,
             "default_queries": default_queries,
             "effective_queries": effective_queries,
-            "query_policy": ["targeted_recollection_queries", "fixed_competitor_dimension_queries"],
+            "all_candidate_queries": all_candidate_queries,
+            "query_policy": query_policy,
+            "query_metadata_by_query": query_metadata_by_query,
         }
+
+    @classmethod
+    def _round_robin_queries_by_dimension(cls, queries: list[str], query_metadata_by_query: dict[str, dict]) -> list[str]:
+        by_dimension: dict[str, list[str]] = {}
+        dimension_order: list[str] = []
+        for query in queries:
+            metadata = query_metadata_by_query.get(query, {})
+            dimension_id = metadata.get("dimension_id") or dimension_for_query(query) or "unknown"
+            if dimension_id not in by_dimension:
+                by_dimension[dimension_id] = []
+                dimension_order.append(dimension_id)
+            by_dimension[dimension_id].append(query)
+
+        ordered: list[str] = []
+        max_depth = max((len(items) for items in by_dimension.values()), default=0)
+        for index in range(max_depth):
+            for dimension_id in dimension_order:
+                dimension_queries = by_dimension[dimension_id]
+                if index < len(dimension_queries):
+                    ordered.append(dimension_queries[index])
+        return cls._dedupe_queries(ordered)
+
+    @classmethod
+    def _planned_queries_for_competitor(cls, competitor: str, collector_search_plan: dict | None) -> tuple[list[str], dict[str, dict]]:
+        if not isinstance(collector_search_plan, dict):
+            return [], {}
+        by_dimension = collector_search_plan.get(competitor)
+        if not isinstance(by_dimension, dict):
+            return [], {}
+        queries: list[str] = []
+        query_metadata_by_query: dict[str, dict] = {}
+        for dimension_id, item in by_dimension.items():
+            if not isinstance(item, dict):
+                continue
+            item_queries = cls._normalize_queries(item.get("queries", []))
+            for query in item_queries:
+                queries.append(query)
+                query_metadata_by_query[query] = {
+                    "source": "planner_search_plan",
+                    "dimension_id": item.get("dimension_id") or dimension_id,
+                    "intent": item.get("intent"),
+                    "preferred_sources": item.get("preferred_sources", []),
+                    "query_strategy": item.get("query_strategy"),
+                }
+        return cls._dedupe_queries(queries), query_metadata_by_query
+
+    @staticmethod
+    def _dimension_ids_for_competitor(collector_search_plan: dict | None, competitor: str) -> list[str]:
+        if isinstance(collector_search_plan, dict):
+            by_dimension = collector_search_plan.get(competitor)
+            if isinstance(by_dimension, dict) and by_dimension:
+                return list(by_dimension.keys())
+        return list(FIXED_COMPETITIVE_DIMENSIONS)
 
     @classmethod
     def _alias_queries_for_competitor(cls, competitor: str, industry: str, aliases: list[str]) -> list[str]:

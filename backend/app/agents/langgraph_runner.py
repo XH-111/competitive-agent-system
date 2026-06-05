@@ -11,7 +11,7 @@ from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import MAX_REWORK, QaAgent
 from app.agents.report_writer import ReportWriterAgent
-from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan, fixed_dimension_ids
+from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan
 from app.schemas import (
     AnalystInput,
     CollectorInput,
@@ -229,14 +229,14 @@ class LangGraphWorkflowRunner:
         task = state["task"]
         output = self.planner.run(PlannerInput(task=task, run_id=state.get("run_id"), retry_count=state["rework_count"]))
         analysis_dimension_plan = apply_fixed_dimensions_to_plan(output.analysis_dimension_plan, task)
-        selected_dimensions = fixed_dimension_ids()
+        selected_dimensions = analysis_dimension_plan.selected_dimensions
         output = output.model_copy(
             update={
                 "selected_dimensions": selected_dimensions,
                 "analysis_dimension_plan": analysis_dimension_plan,
                 "planner_notes": [
                     *output.planner_notes,
-                    "Collector/Analyst/Writer use fixed competitive dimensions for current evaluation: pricing, feature, persona, strength, weakness, opportunity, threat.",
+                    "Collector/Analyst/Writer use Planner-selected base plus dynamic dimensions and the Planner collector_search_plan.",
                 ],
             }
         )
@@ -283,6 +283,11 @@ class LangGraphWorkflowRunner:
         planner_query_hints = (
             state["analysis_dimension_plan"].query_hints if state.get("analysis_dimension_plan") is not None else {}
         )
+        collector_search_plan = (
+            state["analysis_dimension_plan"].metadata.get("collector_search_plan", {})
+            if state.get("analysis_dimension_plan") is not None
+            else {}
+        )
         output = self.collector.run(
             CollectorInput(
                 task=task,
@@ -290,6 +295,7 @@ class LangGraphWorkflowRunner:
                 retry_count=state["rework_count"],
                 collector_mode=state["collector_mode"],
                 planner_query_hints=planner_query_hints,
+                collector_search_plan=collector_search_plan,
                 competitor_aliases=state.get("competitor_aliases", {}),
                 gate_context={
                     **state.get("evidence_gate_output", {}),
@@ -802,6 +808,9 @@ class LangGraphWorkflowRunner:
             "survey_needed": state.get("survey_needed"),
             "survey_recommended": state.get("survey_recommended"),
             "selected_dimensions": state.get("selected_dimensions", []),
+            "analysis_dimension_plan": state.get("analysis_dimension_plan").model_dump(mode="json")
+            if state.get("analysis_dimension_plan")
+            else None,
             "entity_resolution": state.get("entity_resolution", {}),
             "competitor_aliases": state.get("competitor_aliases", {}),
             "downstream_guidance": state.get("downstream_guidance").model_dump(mode="json")

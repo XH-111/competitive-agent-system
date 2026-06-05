@@ -6,7 +6,7 @@ from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import QaAgent
 from app.agents.report_writer import ReportWriterAgent
-from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan, fixed_dimension_ids
+from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan
 from app.schemas import (
     AnalystInput,
     AnalystOutput,
@@ -60,17 +60,19 @@ class MockWorkflowRunner:
         self.trace_service.set_run_context(run_id)
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task, run_id=run_id))
+        analysis_dimension_plan = apply_fixed_dimensions_to_plan(plan.analysis_dimension_plan, task)
         plan = plan.model_copy(
             update={
-                "selected_dimensions": fixed_dimension_ids(),
-                "analysis_dimension_plan": apply_fixed_dimensions_to_plan(plan.analysis_dimension_plan, task),
+                "selected_dimensions": analysis_dimension_plan.selected_dimensions,
+                "analysis_dimension_plan": analysis_dimension_plan,
                 "planner_notes": [
                     *plan.planner_notes,
-                    "Collector/Analyst/Writer use fixed competitive dimensions for current evaluation: pricing, feature, persona, strength, weakness, opportunity, threat.",
+                    "Collector/Analyst/Writer use Planner-selected base plus dynamic dimensions and the Planner collector_search_plan.",
                 ],
             }
         )
         planner_query_hints = plan.analysis_dimension_plan.query_hints if plan.analysis_dimension_plan else {}
+        collector_search_plan = plan.analysis_dimension_plan.metadata.get("collector_search_plan", {}) if plan.analysis_dimension_plan else {}
         competitor_aliases = self.entity_resolver_service.aliases_for_task(task)
         history: list[ReworkHistoryItem] = []
 
@@ -92,6 +94,7 @@ class MockWorkflowRunner:
                 collector_mode=collector_mode,
                 analyst_mode=analyst_mode,
                 planner_query_hints=planner_query_hints,
+                collector_search_plan=collector_search_plan,
                 competitor_aliases=competitor_aliases,
             )
 
@@ -104,6 +107,7 @@ class MockWorkflowRunner:
             collector_mode=collector_mode,
             analyst_mode=analyst_mode,
             planner_query_hints=planner_query_hints,
+            collector_search_plan=collector_search_plan,
             competitor_aliases=competitor_aliases,
         )
 
@@ -135,6 +139,7 @@ class MockWorkflowRunner:
                 collector_mode=collector_mode,
                 analyst_mode=analyst_mode,
                 planner_query_hints=planner_query_hints,
+                collector_search_plan=collector_search_plan,
                 competitor_aliases=competitor_aliases,
             )
 
@@ -151,6 +156,7 @@ class MockWorkflowRunner:
         collector_mode: str,
         analyst_mode: str,
         planner_query_hints: dict[str, list[str]] | None = None,
+        collector_search_plan: dict | None = None,
         competitor_aliases: dict[str, list[str]] | None = None,
         evidence: list[Evidence] | None = None,
         analysis: AnalystOutput | None = None,
@@ -164,6 +170,7 @@ class MockWorkflowRunner:
                     retry_count=retry_count,
                     collector_mode=collector_mode,
                     planner_query_hints=planner_query_hints or {},
+                    collector_search_plan=collector_search_plan or {},
                     competitor_aliases=competitor_aliases or {},
                     gate_context={
                         "rework_context": rework_context.model_dump(mode="json") if rework_context else None,
@@ -219,6 +226,7 @@ class MockWorkflowRunner:
         collector_mode: str,
         analyst_mode: str,
         planner_query_hints: dict[str, list[str]] | None,
+        collector_search_plan: dict | None,
         competitor_aliases: dict[str, list[str]] | None,
     ) -> dict:
         current_task = task
@@ -261,6 +269,7 @@ class MockWorkflowRunner:
                         retry_count=current_qa.rework_count,
                         collector_mode=collector_mode,
                         planner_query_hints=planner_query_hints or {},
+                        collector_search_plan=collector_search_plan or {},
                         competitor_aliases=competitor_aliases or {},
                         gate_context={
                             "rework_context": rework_context.model_dump(mode="json") if rework_context else None,
