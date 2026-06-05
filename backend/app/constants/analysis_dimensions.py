@@ -52,15 +52,14 @@ def fixed_dimension_plans() -> list[AnalysisDimension]:
 
 
 def fixed_query_hints_for_competitor(competitor: str, industry: str) -> list[str]:
-    industry_part = industry.strip() if industry and industry.strip() else "\u7ade\u54c1"
     return [
-        f"{competitor} \u4ef7\u683c \u5b9a\u4ef7 \u5957\u9910 \u5b98\u65b9 {industry_part}",
-        f"{competitor} \u529f\u80fd \u53c2\u6570 \u80fd\u529b \u5b98\u65b9 \u6587\u6863 {industry_part}",
-        f"{competitor} \u7528\u6237\u753b\u50cf \u76ee\u6807\u7528\u6237 \u4f7f\u7528\u573a\u666f \u5ba2\u6237 {industry_part}",
-        f"{competitor} \u4f18\u52bf \u4f18\u70b9 \u4eae\u70b9 \u5dee\u5f02\u5316 \u8bc4\u6d4b {industry_part}",
-        f"{competitor} \u52a3\u52bf \u7f3a\u70b9 \u95ee\u9898 \u6295\u8bc9 \u8d1f\u9762\u8bc4\u4ef7 {industry_part}",
-        f"{competitor} \u673a\u4f1a \u589e\u957f \u8d8b\u52bf \u5e02\u573a\u7a7a\u95f4 {industry_part}",
-        f"{competitor} \u5a01\u80c1 \u98ce\u9669 \u66ff\u4ee3\u54c1 \u7ade\u4e89\u5bf9\u624b {industry_part}",
+        f"{competitor} \u4ef7\u683c",
+        f"{competitor} \u529f\u80fd",
+        f"{competitor} \u7528\u6237\u753b\u50cf",
+        f"{competitor} \u4f18\u52bf",
+        f"{competitor} \u52a3\u52bf",
+        f"{competitor} \u673a\u4f1a",
+        f"{competitor} \u5a01\u80c1",
     ]
 
 

@@ -88,6 +88,8 @@ class AnalystAgent:
                 "llm_error_type": llm_response.error_type,
                 "llm_error_message": llm_response.error_message,
                 "llm_response_preview": llm_response.response_preview,
+                "llm_response_text_preview": self._preview_text(llm_response.content, 5000),
+                "llm_response_text_length": len(llm_response.content or ""),
             }
         )
 
@@ -422,6 +424,8 @@ class AnalystAgent:
             "llm_error_type": None,
             "llm_error_message": None,
             "llm_response_preview": None,
+            "llm_response_text_preview": None,
+            "llm_response_text_length": 0,
             "llm_schema_validation_success": None,
             "llm_schema_validation_errors": [],
             "llm_fallback_reason": None,
@@ -430,6 +434,12 @@ class AnalystAgent:
             "long_term_knowledge_chunk_count": len(input_data.retrieved_knowledge_chunks),
             "rework_context_applied": bool(input_data.rework_context),
         }
+
+    @staticmethod
+    def _preview_text(content: str | None, limit: int) -> str | None:
+        if content is None:
+            return None
+        return content[:limit]
 
     def _llm_messages(self, input_data: AnalystInput) -> list[dict[str, str]]:
         selected_dimensions = self._analysis_dimensions(self._selected_dimensions(input_data))

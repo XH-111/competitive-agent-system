@@ -55,10 +55,16 @@ def score_evidence_relevance(
     normalized_domain = normalize_competitor_name(domain_text)
     normalized_competitor = normalize_competitor_name(competitor)
 
-    competitor_in_title = _contains_alias(title_text, aliases)
-    competitor_in_snippet = _contains_alias(snippet_text, aliases)
-    competitor_in_url = _contains_alias(url_text, aliases)
-    competitor_in_domain = _contains_alias(domain_text, aliases) or _contains_alias(normalized_domain, aliases)
+    matched_aliases_by_field = {
+        "title": _matched_aliases(title_text, aliases),
+        "snippet": _matched_aliases(snippet_text, aliases),
+        "url": _matched_aliases(url_text, aliases),
+        "domain": _merge_aliases(_matched_aliases(domain_text, aliases), _matched_aliases(normalized_domain, aliases)),
+    }
+    competitor_in_title = bool(matched_aliases_by_field["title"])
+    competitor_in_snippet = bool(matched_aliases_by_field["snippet"])
+    competitor_in_url = bool(matched_aliases_by_field["url"])
+    competitor_in_domain = bool(matched_aliases_by_field["domain"])
     strong_entity_match = any([competitor_in_title, competitor_in_url, competitor_in_domain])
     competitor_alias_matched = any([strong_entity_match, competitor_in_snippet])
     domain_similarity_score = _similarity(normalized_competitor, normalized_domain)
@@ -103,6 +109,7 @@ def score_evidence_relevance(
         "strong_entity_match": strong_entity_match,
         "aliases_used": aliases,
         "alias_count": len(aliases),
+        "matched_aliases_by_field": matched_aliases_by_field,
     }
     reason = _reason(competitor, aliases, signals, level)
     return EvidenceRelevanceResult(
@@ -132,15 +139,25 @@ def is_relevant_evidence(evidence: Evidence) -> bool:
 
 
 def _contains_alias(text: str, aliases: list[str]) -> bool:
+    return bool(_matched_aliases(text, aliases))
+
+
+def _matched_aliases(text: str, aliases: list[str]) -> list[str]:
     normalized_text = normalize_competitor_name(text)
+    output: list[str] = []
+    seen: set[str] = set()
     for alias in aliases:
         clean = alias.lower().strip()
         normalized_alias = normalize_competitor_name(clean)
-        if clean and clean in text:
-            return True
-        if normalized_alias and normalized_alias in normalized_text:
-            return True
-    return False
+        if not clean:
+            continue
+        if clean in text or (normalized_alias and normalized_alias in normalized_text):
+            key = normalized_alias or clean
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(clean)
+    return output
 
 
 def _merge_aliases(primary: list[str], secondary: list[str]) -> list[str]:

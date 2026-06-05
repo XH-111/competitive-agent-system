@@ -101,6 +101,7 @@ export function EvidencePanel({
             </div>
             <div className="mt-2 text-slate-700">{item.snippet}</div>
             <div className="mt-2 break-all text-xs text-slate-500">{item.url ?? item.local_ref}</div>
+            <EvidenceQuerySummary evidence={item} />
             <div className="mt-2 grid gap-1 text-xs text-slate-600 md:grid-cols-2">
               <span>内容模式：{item.content_mode === "page" ? "正文摘要" : "搜索摘要"}</span>
               <span>正文抓取：{item.page_fetch_success ? "成功" : "未抓取或失败"}</span>
@@ -113,6 +114,7 @@ export function EvidencePanel({
               <span className="md:col-span-2">相关性原因：{item.relevance_reason ?? "-"}</span>
               <span>采集时间：{item.collected_at ? new Date(item.collected_at).toLocaleString() : "-"}</span>
             </div>
+            <ScoringExplanation evidence={item} />
             {item.content_excerpt && (
               <details className="mt-2 text-xs text-slate-600">
                 <summary className="cursor-pointer font-semibold">查看正文摘要</summary>
@@ -139,6 +141,184 @@ export function EvidencePanel({
       </div>
     </section>
   );
+}
+
+function EvidenceQuerySummary({ evidence }: { evidence: Evidence }) {
+  const signals = evidence.entity_match_signals ?? {};
+  const collectorQuery = typeof signals.collector_query === "string" ? signals.collector_query : undefined;
+  const collectorDimension = typeof signals.collector_dimension === "string" ? signals.collector_dimension : undefined;
+  const matched = getMatchedAliasEntries(signals.matched_aliases_by_field);
+  if (!collectorQuery && !matched.length) return null;
+
+  return (
+    <div className="mt-2 rounded border border-blue-100 bg-blue-50 p-2 text-xs text-slate-700">
+      {collectorQuery && (
+        <div>
+          <span className="font-semibold text-accent">搜索关键词：</span>
+          <span>{collectorQuery}</span>
+          {collectorDimension && <span className="ml-2 text-slate-500">维度：{collectorDimension}</span>}
+        </div>
+      )}
+      {!!matched.length && (
+        <div className="mt-1">
+          <span className="font-semibold text-accent">命中的竞品名/别名：</span>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {matched.map((item) => (
+              <span key={`${item.field}-${item.alias}`} className="rounded border border-blue-200 bg-white px-2 py-0.5">
+                {fieldLabel(item.field)}：{item.alias}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScoringExplanation({ evidence }: { evidence: Evidence }) {
+  const signals = evidence.entity_match_signals ?? {};
+  const confidenceBreakdown = getRecord(signals.confidence_breakdown);
+  const matchedAliasesByField = getRecord(signals.matched_aliases_by_field);
+  const relevanceRows = [
+    {
+      label: "标题命中",
+      matched: Boolean(signals.competitor_in_title),
+      weight: 0.35,
+      note: "title 中出现竞品名或别名",
+    },
+    {
+      label: "摘要命中",
+      matched: Boolean(signals.competitor_in_snippet),
+      weight: 0.35,
+      note: "snippet 中出现竞品名或别名",
+    },
+    {
+      label: "URL 命中",
+      matched: Boolean(signals.competitor_in_url),
+      weight: 0.2,
+      note: "url 中出现竞品名或别名",
+    },
+    {
+      label: "域名命中",
+      matched: Boolean(signals.competitor_in_domain),
+      weight: 0.2,
+      note: "domain 中出现竞品名或别名",
+    },
+    {
+      label: "域名相似",
+      matched: Number(signals.domain_similarity_score ?? 0) >= 0.75,
+      weight: 0.1,
+      note: `domain_similarity_score=${formatNumber(signals.domain_similarity_score)}`,
+    },
+  ];
+
+  return (
+    <details className="mt-2 rounded border border-line bg-white p-2 text-xs text-slate-700">
+      <summary className="cursor-pointer font-semibold">查看相关性与置信度计算过程</summary>
+      <div className="mt-2 grid gap-3 lg:grid-cols-2">
+        <div>
+          <div className="mb-1 font-semibold">相关性计算</div>
+          <div className="space-y-1">
+            {relevanceRows.map((row) => (
+              <div key={row.label} className="flex items-start justify-between gap-2 rounded border border-line bg-panel px-2 py-1">
+                <div>
+                  <span className={row.matched ? "font-semibold text-success" : "text-slate-500"}>
+                    {row.matched ? "命中" : "未命中"} · {row.label}
+                  </span>
+                  <div className="text-slate-500">{row.note}</div>
+                  <MatchedAliasLine field={fieldKey(row.label)} matchedAliasesByField={matchedAliasesByField} />
+                </div>
+                <span className="font-semibold">{row.matched ? `+${row.weight}` : "+0"}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 rounded border border-line bg-panel px-2 py-1">
+            最终相关性：{formatPercent(evidence.relevance_score)} · {evidence.relevance_level ?? "-"}
+          </div>
+          {Array.isArray(signals.aliases_used) && (
+            <div className="mt-2">
+              <div className="mb-1 font-semibold">参与匹配的别名</div>
+              <div className="flex flex-wrap gap-1">
+                {signals.aliases_used.slice(0, 12).map((alias) => (
+                  <span key={String(alias)} className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-accent">
+                    {String(alias)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="mb-1 font-semibold">置信度计算</div>
+          {confidenceBreakdown ? (
+            <div className="space-y-1 rounded border border-line bg-panel p-2">
+              <div>来源质量：{String(confidenceBreakdown.source_quality ?? evidence.source_quality ?? "unknown")}</div>
+              <div>来源质量基础分：{formatNumber(confidenceBreakdown.source_quality_base)}</div>
+              <div>搜索结果分：{formatNumber(confidenceBreakdown.search_score)}</div>
+              <div>搜索分换算置信度：{formatNumber(confidenceBreakdown.search_score_confidence)}</div>
+              <div>公式：{String(confidenceBreakdown.formula ?? "-")}</div>
+              <div className="font-semibold">最终置信度：{formatPercent(confidenceBreakdown.final_confidence ?? evidence.confidence)}</div>
+              <div className="text-slate-500">{String(confidenceBreakdown.reason ?? "")}</div>
+            </div>
+          ) : (
+            <div className="rounded border border-line bg-panel p-2">
+              当前 Evidence 来自旧 run，未记录置信度拆解；只能看到最终置信度 {formatPercent(evidence.confidence)}。
+            </div>
+          )}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function getRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function MatchedAliasLine({ field, matchedAliasesByField }: { field?: string; matchedAliasesByField?: Record<string, unknown> }) {
+  if (!field || !matchedAliasesByField) return null;
+  const aliases = getStringArray(matchedAliasesByField[field]);
+  if (!aliases.length) return null;
+  return <div className="text-accent">命中别名：{aliases.join(", ")}</div>;
+}
+
+function getMatchedAliasEntries(value: unknown): Array<{ field: string; alias: string }> {
+  const record = getRecord(value);
+  if (!record) return [];
+  return Object.entries(record).flatMap(([field, aliases]) =>
+    getStringArray(aliases).map((alias) => ({ field, alias })),
+  );
+}
+
+function getStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function fieldKey(label: string): string | undefined {
+  if (label === "标题命中") return "title";
+  if (label === "摘要命中") return "snippet";
+  if (label === "URL 命中") return "url";
+  if (label === "域名命中") return "domain";
+  return undefined;
+}
+
+function fieldLabel(field: string): string {
+  if (field === "title") return "标题";
+  if (field === "snippet") return "摘要";
+  if (field === "url") return "URL";
+  if (field === "domain") return "域名";
+  return field;
+}
+
+function formatNumber(value: unknown): string {
+  if (typeof value !== "number") return "-";
+  return String(Math.round(value * 100) / 100);
+}
+
+function formatPercent(value: unknown): string {
+  if (typeof value !== "number") return "-";
+  return `${Math.round(value * 100)}%`;
 }
 
 function confidenceLabel(confidence: number) {

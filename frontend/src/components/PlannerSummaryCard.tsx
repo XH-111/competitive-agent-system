@@ -122,16 +122,15 @@ export function PlannerSummaryCard({
                     {typeof collectorDiagnostics?.planner_hint_query_count_by_competitor?.[competitor] === "number" && (
                       <span> | Planner 搜索词：{collectorDiagnostics.planner_hint_query_count_by_competitor[competitor]}</span>
                     )}
-                    {typeof collectorDiagnostics?.alias_query_count_by_competitor?.[competitor] === "number" && (
-                      <span> | 别名搜索词：{collectorDiagnostics.alias_query_count_by_competitor[competitor]}</span>
-                    )}
                     {typeof collectorDiagnostics?.targeted_query_count_by_competitor?.[competitor] === "number" && (
                       <span> | 返工搜索词：{collectorDiagnostics.targeted_query_count_by_competitor[competitor]}</span>
                     )}
                   </div>
 
                   <TagGroup title="竞品别名" tone="blue" values={collectorDiagnostics.competitor_aliases_by_competitor?.[competitor]} limit={12} />
-                  <TagGroup title="别名扩展搜索词" tone="blue" values={collectorDiagnostics.alias_queries_preview_by_competitor?.[competitor]} limit={9} />
+                  {!!collectorDiagnostics.competitor_aliases_by_competitor?.[competitor]?.length && (
+                    <div className="mt-1 text-xs text-slate-500">别名只用于相关性匹配，不作为实际搜索词。</div>
+                  )}
                   <TagGroup title="返工定向搜索词" tone="amber" values={collectorDiagnostics.targeted_queries_preview_by_competitor?.[competitor]} limit={9} />
                   <TagGroup title="实际使用搜索词" tone="slate" values={collectorDiagnostics.effective_queries_preview_by_competitor?.[competitor]} limit={14} />
 

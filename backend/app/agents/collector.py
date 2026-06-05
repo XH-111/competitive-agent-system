@@ -1,7 +1,7 @@
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.agents.base import run_with_trace
-from app.constants.analysis_dimensions import FIXED_COMPETITIVE_DIMENSIONS, dimension_for_query
+from app.constants.analysis_dimensions import FIXED_COMPETITIVE_DIMENSIONS, dimension_for_query, fixed_query_hints_for_competitor
 from app.schemas import CollectorInput, CollectorOutput, Evidence
 from app.services.evidence_relevance_service import apply_relevance
 from app.services.trace_service import TraceService
@@ -170,6 +170,7 @@ class CollectorAgent:
                     seen_keys.add(dedupe_key)
                     quality = self._source_quality(normalized_url, result.title, result.snippet, task.competitors)
                     confidence = self._confidence_for_result(normalized_url, result.snippet, quality, result.score)
+                    confidence_breakdown = self._confidence_breakdown(quality, result.score)
                     candidate = apply_relevance(
                         Evidence(
                             competitor=competitor,
@@ -185,9 +186,10 @@ class CollectorAgent:
                         aliases=aliases,
                     )
                     signals = dict(candidate.entity_match_signals or {})
+                    signals["collector_query"] = query
                     if query_dimension:
                         signals["collector_dimension"] = query_dimension
-                        signals["collector_query"] = query
+                    signals["confidence_breakdown"] = confidence_breakdown
                     candidate = candidate.model_copy(update={"entity_match_signals": signals})
                     if candidate.relevance_level == "unrelated":
                         unrelated_evidence_count_by_competitor[competitor] += 1
@@ -424,14 +426,15 @@ class CollectorAgent:
         targeted_queries = cls._targeted_queries_for_competitor(competitor, gate_context)
         alias_queries = cls._alias_queries_for_competitor(competitor, industry, aliases or [])
         planner_queries = cls._dedupe_queries([*competitor_hints, *category_scope])
-        default_queries = cls._default_queries_for_competitor(competitor, industry)
-        effective_queries = cls._dedupe_queries([*targeted_queries, *alias_queries, *planner_queries, *default_queries])[:MAX_QUERY_COUNT_PER_COMPETITOR]
+        default_queries = fixed_query_hints_for_competitor(competitor, industry)
+        effective_queries = cls._dedupe_queries([*targeted_queries, *default_queries])[:MAX_QUERY_COUNT_PER_COMPETITOR]
         return {
             "targeted_queries": targeted_queries,
             "alias_queries": alias_queries,
             "planner_queries": planner_queries,
             "default_queries": default_queries,
             "effective_queries": effective_queries,
+            "query_policy": ["targeted_recollection_queries", "fixed_competitor_dimension_queries"],
         }
 
     @classmethod
@@ -526,6 +529,31 @@ class CollectorAgent:
             return base
         score_confidence = max(0.6, min(0.9, 0.6 + float(score) * 0.3))
         return round((base * 0.7) + (score_confidence * 0.3), 2)
+
+    @staticmethod
+    def _confidence_breakdown(quality: str, score: float | None = None) -> dict:
+        base = QUALITY_CONFIDENCE[quality]
+        if score is None or quality in {"official", "documentation", "low_quality"}:
+            return {
+                "source_quality": quality,
+                "source_quality_base": base,
+                "search_score": score,
+                "search_score_confidence": None,
+                "formula": "source_quality_base",
+                "final_confidence": base,
+                "reason": "Official/documentation/low_quality sources use the source-quality confidence directly.",
+            }
+        score_confidence = round(max(0.6, min(0.9, 0.6 + float(score) * 0.3)), 2)
+        final_confidence = round((base * 0.7) + (score_confidence * 0.3), 2)
+        return {
+            "source_quality": quality,
+            "source_quality_base": base,
+            "search_score": score,
+            "search_score_confidence": score_confidence,
+            "formula": "source_quality_base * 0.7 + search_score_confidence * 0.3",
+            "final_confidence": final_confidence,
+            "reason": "Non-official sources blend source quality with search-provider score.",
+        }
 
     @staticmethod
     def _source_quality(url: str, title: str, snippet: str, competitors: list[str]) -> str:

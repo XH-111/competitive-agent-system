@@ -1013,6 +1013,7 @@ def test_collector_web_results_convert_to_evidence(db_session):
     assert output.evidence[0].source_type == "public_web"
     assert output.evidence[0].url == "https://alphaci.example.com/pricing"
     assert output.evidence[0].confidence == 0.9
+    assert output.evidence[0].entity_match_signals["collector_query"]
     assert output.diagnostics["collector_mode_used"] == "web"
     assert output.diagnostics["web_search_success"] is True
 
@@ -2137,6 +2138,15 @@ def test_collector_web_uses_entity_aliases_for_query_and_relevance(db_session):
 
     assert output.diagnostics["entity_aliases_used"] is True
     assert output.diagnostics["alias_query_count_by_competitor"]["\u82f9\u679c17pro"] > 0
-    assert any("iPhone" in query or "Apple" in query for query in search_client.queries)
+    assert not any("iPhone" in query or "Apple" in query for query in search_client.queries)
+    assert search_client.queries == [
+        "\u82f9\u679c17pro \u4ef7\u683c",
+        "\u82f9\u679c17pro \u529f\u80fd",
+        "\u82f9\u679c17pro \u7528\u6237\u753b\u50cf",
+        "\u82f9\u679c17pro \u4f18\u52bf",
+        "\u82f9\u679c17pro \u52a3\u52bf",
+        "\u82f9\u679c17pro \u673a\u4f1a",
+        "\u82f9\u679c17pro \u5a01\u80c1",
+    ]
     assert output.diagnostics["missing_relevant_evidence_competitors"] == []
     assert output.evidence[0].relevance_level in {"high", "medium"}
