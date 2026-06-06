@@ -452,6 +452,7 @@ class AnalystAgent:
             "task": input_data.task.model_dump(mode="json"),
             "selected_dimensions": selected_dimensions,
             "evidence": usable_evidence,
+            "allowed_evidence_ids_by_competitor": self._allowed_evidence_ids_by_competitor(input_data.evidence),
             "long_term_knowledge": [item.model_dump(mode="json") for item in input_data.retrieved_knowledge_chunks],
             "rework_context": input_data.rework_context.model_dump(mode="json") if input_data.rework_context else None,
         }
@@ -465,6 +466,8 @@ class AnalystAgent:
             "For insufficient evidence, set insufficient_evidence=true, evidence_ids=[], confidence<=0.4, and keep summary conservative. "
             "For supported findings, evidence_ids must be non-empty and must refer only to Evidence from the same competitor. "
             "Do not use unrelated or out-of-scope evidence. Long-term knowledge is secondary context; current Evidence has priority. "
+            "When long-term knowledge is available, it is also injected into evidence as source_type=knowledge_base with a current-run evidence_id. "
+            "Only cite evidence_id values that appear in the evidence list. Do not cite long_term_knowledge.evidence_id or chunk_id directly. "
             "If public evidence is weak, say 当前公开证据不足，暂不做强结论。"
         )
         user = (
@@ -477,6 +480,14 @@ class AnalystAgent:
             f"{prompt_data}"
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    @staticmethod
+    def _allowed_evidence_ids_by_competitor(evidence: list[Evidence]) -> dict[str, list[str]]:
+        output: dict[str, list[str]] = defaultdict(list)
+        for item in evidence:
+            if item.competitor and item.relevance_level in {"high", "medium"}:
+                output[item.competitor].append(item.evidence_id)
+        return dict(output)
 
     def _validate_llm_dimension_results(self, input_data: AnalystInput, payload: dict[str, Any]) -> list[DimensionResult]:
         if not isinstance(payload, dict):

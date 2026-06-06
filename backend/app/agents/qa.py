@@ -1,27 +1,13 @@
-from collections.abc import Iterable
+from collections import defaultdict
+from typing import Any
 
 from app.agents.base import run_with_trace
+from app.constants.analysis_dimensions import fixed_dimension_ids
 from app.schemas import QaInput, QaOutput, QaResult, ReworkInstruction
 from app.services.trace_service import TraceService
 
+
 MAX_REWORK = 3
-SWOT_QUADRANTS = ("strengths", "weaknesses", "opportunities", "threats")
-DIMENSION_KEYWORDS = {
-    "positioning": ["positioning", "category", "differentiation", "segment"],
-    "feature": ["feature", "capability", "workflow", "integration", "automation", "api"],
-    "pricing": ["pricing", "price", "plan", "enterprise", "quote", "trial"],
-    "persona": ["user", "buyer", "team", "persona", "segment"],
-    "ux": ["ux", "usability", "workflow", "experience", "pain point"],
-    "feedback": ["feedback", "review", "complaint", "pain point"],
-    "prioritization": ["priority", "prioritize", "improve", "improvement"],
-    "hypothesis": ["hypothesis", "assumption", "validate"],
-}
-SWOT_QUERY_FOCUS = {
-    "strengths": ["official features", "product differentiation", "documentation"],
-    "weaknesses": ["reviews complaints", "pain points", "usability issues"],
-    "opportunities": ["feature gaps", "improvement opportunities", "user requests"],
-    "threats": ["alternatives", "competitive pressure", "market comparison"],
-}
 
 
 class QaAgent:
@@ -30,837 +16,12 @@ class QaAgent:
     def __init__(self, trace_service: TraceService):
         self.trace_service = trace_service
 
-    def _result(
-        self,
-        task_id: str,
-        rework_count: int,
-        target_agent: str,
-        error_type: str,
-        reason: str,
-        suggested_action: str,
-        *,
-        claim_id: str | None = None,
-        failed_claim: str | None = None,
-        failed_schema: str | None = None,
-        instruction_metadata: dict | None = None,
-        result_metadata: dict | None = None,
-    ) -> QaResult:
-        instruction = ReworkInstruction(
-            target_agent=target_agent,
-            error_type=error_type,
-            reason=reason,
-            suggested_action=suggested_action,
-            claim_id=claim_id,
-            failed_claim=failed_claim,
-            failed_schema=failed_schema,
-            metadata=instruction_metadata or {},
-        )
-        if rework_count >= MAX_REWORK:
-            instruction.suggested_action = "Max rework reached. Escalate to manual review."
-            return QaResult(
-                task_id=task_id,
-                status="manual_review",
-                hard_errors=[reason],
-                route_to=None,
-                rework_count=rework_count,
-                rework_instructions=[instruction],
-                metadata=result_metadata or {},
-            )
-
-        return QaResult(
-            task_id=task_id,
-            status="failed",
-            hard_errors=[reason],
-            rework_instructions=[instruction],
-            route_to=target_agent,
-            rework_count=rework_count + 1,
-            metadata=result_metadata or {},
-        )
-
-    def _missing_relevant_evidence_result(self, input_data: QaInput, missing: list[str]) -> QaResult:
-        return self._result(
-            input_data.task.task_id,
-            input_data.task.rework_count,
-            "CollectorAgent",
-            "missing_relevant_evidence",
-            f"Missing relevant public evidence for competitors: {', '.join(missing)}.",
-            "Re-run CollectorAgent with precise per-competitor search and do not use unrelated search results as Evidence.",
-            failed_schema="Evidence.relevance",
-            instruction_metadata={
-                "kind": "coverage_gap",
-                "competitors": missing,
-                "fix_type": "collect_more_evidence",
-            },
-            result_metadata={
-                "swot_validation": {"status": "not_checked", "issues": []},
-            },
-        )
-
-    def evaluate(self, input_data: QaInput) -> QaResult:
-        task = input_data.task
-        rework_count = task.rework_count
-
-        if input_data.demo_mode == "qa_missing_evidence" or not input_data.evidence:
-            return self._result(
-                task.task_id,
-                rework_count,
-                "CollectorAgent",
-                "missing_evidence",
-                "No usable Evidence is available to support downstream analysis or reporting.",
-                "Re-run CollectorAgent and collect at least one Evidence item with a source reference.",
-                failed_schema="Evidence",
-                result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
-            )
-
-        evidence_coverage_issue = self._competitor_evidence_coverage_issue(input_data)
-        if evidence_coverage_issue is not None:
-            return evidence_coverage_issue
-
-        relevance_coverage_issue = self._competitor_relevance_coverage_issue(input_data)
-        if relevance_coverage_issue is not None:
-            return relevance_coverage_issue
-
-        if input_data.analysis is None:
-            return self._result(
-                task.task_id,
-                rework_count,
-                "AnalystAgent",
-                "invalid_extraction",
-                "AnalystAgent output is missing.",
-                "Re-run AnalystAgent to produce ProductProfile, FeatureTree, PricingModel, UserPersona, and SWOT output.",
-                failed_schema="AnalystOutput",
-                result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
-            )
-
-        profile = input_data.analysis.product_profile
-        if input_data.demo_mode == "qa_invalid_extraction" or not profile.positioning or not profile.target_segments:
-            return self._result(
-                task.task_id,
-                rework_count,
-                "AnalystAgent",
-                "invalid_extraction",
-                "ProductProfile is incomplete or inconsistent.",
-                "Re-run AnalystAgent and repair ProductProfile positioning and target_segments.",
-                failed_schema="ProductProfile",
-                result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
-            )
-
-        if self._has_unsupported_analysis(input_data):
-            return self._result(
-                task.task_id,
-                rework_count,
-                "AnalystAgent",
-                "invalid_extraction",
-                "Analyst output contains unsupported conclusions.",
-                "Re-run AnalystAgent and keep conclusions evidence-bound and conservative.",
-                failed_schema="AnalystOutput",
-                result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
-            )
-
-        dimension_issue = self._dimension_result_issue(input_data)
-        if dimension_issue is not None:
-            return dimension_issue
-
-        if input_data.report_output is None:
-            return self._result(
-                task.task_id,
-                rework_count,
-                "ReportWriterAgent",
-                "bad_report_format",
-                "ReportWriterAgent output is missing.",
-                "Re-run ReportWriterAgent to generate Markdown and JSON report outputs.",
-                failed_schema="ReportWriterOutput",
-            )
-
-        if input_data.report_output.draft_report:
-            for claim in input_data.report_output.draft_report.get("claims", []):
-                if not claim.get("evidence_ids"):
-                    return self._result(
-                        task.task_id,
-                        rework_count,
-                        "ReportWriterAgent",
-                        "bad_report_format",
-                        "Draft report contains a claim without evidence_ids.",
-                        "Re-run ReportWriterAgent and bind every claim to evidence_ids or remove unsupported claims.",
-                        failed_claim=claim.get("text"),
-                    )
-
-        if input_data.report_output.report is None:
-            return self._result(
-                task.task_id,
-                rework_count,
-                "ReportWriterAgent",
-                "bad_report_format",
-                "Report output is empty.",
-                "Re-generate a report object with markdown, json_report, and claims.",
-                failed_schema="Report",
-            )
-
-        report = input_data.report_output.report
-        if input_data.demo_mode == "qa_bad_report" or not report.markdown.startswith("#"):
-            return self._result(
-                task.task_id,
-                rework_count,
-                "ReportWriterAgent",
-                "bad_report_format",
-                "Markdown report must start with a level-1 heading.",
-                "Re-run ReportWriterAgent and generate a Markdown report with a proper top-level heading.",
-                failed_schema="Report.markdown",
-            )
-
-        for claim in report.claims:
-            if not claim.evidence_ids:
-                return self._result(
-                    task.task_id,
-                    rework_count,
-                    "ReportWriterAgent",
-                    "bad_report_format",
-                    f"Claim {claim.claim_id} is missing evidence_ids.",
-                    "Bind evidence_ids for every source-backed claim.",
-                    claim_id=claim.claim_id,
-                    failed_claim=claim.text,
-                )
-
-        unrelated_claim_issue = self._unrelated_evidence_claim_issue(input_data)
-        if unrelated_claim_issue is not None:
-            return unrelated_claim_issue
-
-        claim_coverage_issue = self._competitor_claim_coverage_issue(input_data)
-        if claim_coverage_issue is not None:
-            return claim_coverage_issue
-
-        swot_issue = self._swot_issue_result(input_data)
-        if swot_issue is not None:
-            return swot_issue
-
-        quality_suggestions, diagnostics = self._quality_suggestions(input_data)
-        return QaResult(
-            task_id=task.task_id,
-            status="passed",
-            soft_suggestions=[
-                suggestion
-                for suggestion in [
-                    "Before production use, replace mock evidence with real collected evidence.",
-                    input_data.report_output.llm_fallback_reason if input_data.report_output else None,
-                    *self._analysis_suggestions(input_data.analysis),
-                    *quality_suggestions,
-                ]
-                if suggestion
-            ],
-            rework_count=rework_count,
-            metadata={
-                "swot_validation": diagnostics.get("swot_validation", {"status": "passed", "issues": []}),
-            },
-        )
-
-    def _competitor_evidence_coverage_issue(self, input_data: QaInput) -> QaResult | None:
-        if not any(item.competitor for item in input_data.evidence):
-            return None
-        evidence_count_by_competitor = {
-            competitor: sum(1 for item in input_data.evidence if item.competitor == competitor)
-            for competitor in input_data.task.competitors
-        }
-        missing = [competitor for competitor, count in evidence_count_by_competitor.items() if count == 0]
-        if not missing:
-            return None
-        return self._result(
-            input_data.task.task_id,
-            input_data.task.rework_count,
-            "CollectorAgent",
-            "missing_evidence",
-            f"Missing competitor evidence coverage: {', '.join(missing)}.",
-            "Re-run CollectorAgent with per-competitor search and ensure every competitor has Evidence.",
-            failed_schema="Evidence.competitor",
-            instruction_metadata={"competitors": missing, "fix_type": "collect_more_evidence"},
-            result_metadata={"swot_validation": {"status": "not_checked", "issues": []}},
-        )
-
-    def _competitor_relevance_coverage_issue(self, input_data: QaInput) -> QaResult | None:
-        if not any(item.competitor for item in input_data.evidence):
-            return None
-        relevant_count_by_competitor = {
-            competitor: sum(
-                1
-                for item in input_data.evidence
-                if item.competitor == competitor and item.relevance_level in {"high", "medium"}
-            )
-            for competitor in input_data.task.competitors
-        }
-        missing = [competitor for competitor, count in relevant_count_by_competitor.items() if count == 0]
-        if missing:
-            return self._missing_relevant_evidence_result(input_data, missing)
-        return None
-
-    def _swot_issue_result(self, input_data: QaInput) -> QaResult | None:
-        issues = self._collect_swot_issues(input_data)
-        if not issues:
-            return None
-        primary = issues[0]
-        metadata = {
-            "swot_validation": {
-                "status": "failed",
-                "issues": issues,
-                "issue_count": len(issues),
-            }
-        }
-        instruction_metadata = {
-            "kind": "swot_quality_issue",
-            "competitor": primary.get("competitor"),
-            "quadrant": primary.get("quadrant"),
-            "fix_type": primary.get("fix_type"),
-            "focus_dimensions": primary.get("focus_dimensions", []),
-            "query_focus": primary.get("query_focus", []),
-            "all_issue_types": [issue["error_type"] for issue in issues],
-            "swot_issues": issues,
-        }
-        return self._result(
-            input_data.task.task_id,
-            input_data.task.rework_count,
-            primary["target_agent"],
-            primary["error_type"],
-            primary["reason"],
-            primary["suggested_action"],
-            failed_schema="SwotAnalysis",
-            instruction_metadata=instruction_metadata,
-            result_metadata=metadata,
-        )
-
-    def _collect_swot_issues(self, input_data: QaInput) -> list[dict]:
-        analysis = input_data.analysis
-        if analysis is None:
-            return []
-        task = input_data.task
-        swot = analysis.swot
-        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
-        relevant_count_by_competitor = {
-            competitor: sum(
-                1
-                for item in input_data.evidence
-                if item.competitor == competitor and item.relevance_level in {"high", "medium"}
-            )
-            for competitor in task.competitors
-        }
-        selected_dimensions = self._selected_dimensions(input_data)
-        issues: list[dict] = []
-        seen_issue_keys: set[tuple[str, str | None, str | None]] = set()
-
-        for quadrant in SWOT_QUADRANTS:
-            for item in getattr(swot, quadrant):
-                key = (quadrant, item.competitor, item.summary)
-                records = [evidence_by_id[evidence_id] for evidence_id in item.evidence_ids if evidence_id in evidence_by_id]
-                strong_records = [record for record in records if record.relevance_level in {"high", "medium"}]
-                mismatched = [
-                    record
-                    for record in records
-                    if item.competitor and record.competitor and record.competitor != item.competitor
-                ]
-                if not strong_records and item.confidence >= 0.5:
-                    issue = self._swot_issue(
-                        error_type="swot_missing_support",
-                        target_agent="CollectorAgent",
-                        competitor=item.competitor,
-                        quadrant=quadrant,
-                        fix_type="collect_more_evidence",
-                        reason=f"SWOT {quadrant[:-1]} for {item.competitor or 'overall'} lacks strong evidence support.",
-                        suggested_action="Collect stronger competitor-specific evidence before keeping this SWOT item.",
-                        query_focus=self._query_focus(quadrant, selected_dimensions),
-                        focus_dimensions=selected_dimensions,
-                    )
-                    if (issue["error_type"], issue.get("competitor"), issue.get("quadrant")) not in seen_issue_keys:
-                        issues.append(issue)
-                        seen_issue_keys.add((issue["error_type"], issue.get("competitor"), issue.get("quadrant")))
-                    continue
-
-                if mismatched:
-                    issue = self._swot_issue(
-                        error_type="swot_competitor_mismatch",
-                        target_agent="AnalystAgent",
-                        competitor=item.competitor,
-                        quadrant=quadrant,
-                        fix_type="recompute_swot",
-                        reason=(
-                            f"SWOT {quadrant[:-1]} for {item.competitor or 'overall'} cites evidence from "
-                            f"{mismatched[0].competitor}."
-                        ),
-                        suggested_action="Recompute SWOT and bind each item only to evidence from the same competitor.",
-                        query_focus=self._query_focus(quadrant, selected_dimensions),
-                        focus_dimensions=selected_dimensions,
-                    )
-                    if (issue["error_type"], issue.get("competitor"), issue.get("quadrant")) not in seen_issue_keys:
-                        issues.append(issue)
-                        seen_issue_keys.add((issue["error_type"], issue.get("competitor"), issue.get("quadrant")))
-
-                if quadrant in {"opportunities", "threats"} and item.confidence >= 0.7 and len(strong_records) < 2:
-                    issue = self._swot_issue(
-                        error_type="swot_over_inference",
-                        target_agent="AnalystAgent",
-                        competitor=item.competitor,
-                        quadrant=quadrant,
-                        fix_type="soften_language",
-                        reason=f"SWOT {quadrant[:-1]} for {item.competitor or 'overall'} looks over-inferred from sparse evidence.",
-                        suggested_action="Lower confidence, soften language, or remove the item unless stronger evidence exists.",
-                        query_focus=self._query_focus(quadrant, selected_dimensions),
-                        focus_dimensions=selected_dimensions,
-                    )
-                    if (issue["error_type"], issue.get("competitor"), issue.get("quadrant")) not in seen_issue_keys:
-                        issues.append(issue)
-                        seen_issue_keys.add((issue["error_type"], issue.get("competitor"), issue.get("quadrant")))
-
-        swot_competitors = {
-            item.competitor
-            for quadrant in SWOT_QUADRANTS
-            for item in getattr(swot, quadrant)
-            if item.competitor
-        }
-        for competitor in task.competitors:
-            if competitor not in swot_competitors and relevant_count_by_competitor.get(competitor, 0) >= 2:
-                target_agent = "CollectorAgent" if relevant_count_by_competitor.get(competitor, 0) < 2 else "AnalystAgent"
-                issues.append(
-                    self._swot_issue(
-                        error_type="swot_sparse_competitor_coverage",
-                        target_agent=target_agent,
-                        competitor=competitor,
-                        quadrant=None,
-                        fix_type="collect_more_evidence" if target_agent == "CollectorAgent" else "recompute_swot",
-                        reason=f"SWOT coverage is missing for competitor {competitor}.",
-                        suggested_action=(
-                            "Collect more relevant evidence for this competitor before recomputing SWOT."
-                            if target_agent == "CollectorAgent"
-                            else "Recompute SWOT so each requested competitor is represented."
-                        ),
-                        query_focus=self._query_focus("weaknesses", selected_dimensions),
-                        focus_dimensions=selected_dimensions,
-                    )
-                )
-                break
-
-        dimension_gap_candidates = {"pricing", "feedback", "ux"}
-        unsupported_dimensions = [
-            dimension
-            for dimension in selected_dimensions
-            if dimension in dimension_gap_candidates
-            and self._dimension_has_evidence_support(dimension, input_data.evidence)
-            and not self._dimension_supported_in_swot(dimension, swot, evidence_by_id)
-        ]
-        if unsupported_dimensions:
-            issues.append(
-                self._swot_issue(
-                    error_type="swot_dimension_gap",
-                    target_agent="AnalystAgent",
-                    competitor=None,
-                    quadrant=None,
-                    fix_type="recompute_swot",
-                    reason=f"SWOT does not reflect planner-selected dimensions: {', '.join(unsupported_dimensions[:3])}.",
-                    suggested_action="Recompute SWOT so planner-selected dimensions are reflected conservatively in the items.",
-                    query_focus=[],
-                    focus_dimensions=unsupported_dimensions,
-                )
-            )
-
-        return issues[:5]
-
-    def _swot_issue(
-        self,
-        *,
-        error_type: str,
-        target_agent: str,
-        competitor: str | None,
-        quadrant: str | None,
-        fix_type: str,
-        reason: str,
-        suggested_action: str,
-        query_focus: list[str],
-        focus_dimensions: list[str],
-    ) -> dict:
-        return {
-            "error_type": error_type,
-            "target_agent": target_agent,
-            "competitor": competitor,
-            "quadrant": quadrant,
-            "fix_type": fix_type,
-            "reason": reason,
-            "suggested_action": suggested_action,
-            "query_focus": query_focus,
-            "focus_dimensions": focus_dimensions,
-        }
-
-    def _dimension_supported_in_swot(self, dimension: str, swot, evidence_by_id: dict) -> bool:
-        keywords = DIMENSION_KEYWORDS.get(dimension, [dimension])
-        searchable_parts: list[str] = []
-        for quadrant in SWOT_QUADRANTS:
-            for item in getattr(swot, quadrant):
-                searchable_parts.append(item.summary)
-                searchable_parts.extend(
-                    self._evidence_text(evidence_by_id[evidence_id])
-                    for evidence_id in item.evidence_ids
-                    if evidence_id in evidence_by_id
-                )
-        searchable_text = " ".join(searchable_parts).lower()
-        return any(keyword.lower() in searchable_text for keyword in keywords)
-
-    def _dimension_has_evidence_support(self, dimension: str, evidence: list) -> bool:
-        keywords = DIMENSION_KEYWORDS.get(dimension, [dimension])
-        searchable_text = " ".join(self._evidence_text(item) for item in evidence).lower()
-        return any(keyword.lower() in searchable_text for keyword in keywords)
-
-    def _query_focus(self, quadrant: str, selected_dimensions: list[str]) -> list[str]:
-        dimension_queries = []
-        for dimension in selected_dimensions[:3]:
-            if dimension == "pricing":
-                dimension_queries.extend(["pricing official", "plan comparison"])
-            elif dimension == "feedback":
-                dimension_queries.extend(["reviews", "complaints", "pain points"])
-            elif dimension == "ux":
-                dimension_queries.extend(["usability", "workflow pain points"])
-            elif dimension == "feature":
-                dimension_queries.extend(["features documentation", "product capabilities"])
-        return self._dedupe([*SWOT_QUERY_FOCUS.get(quadrant, []), *dimension_queries])
-
-    def _unrelated_evidence_claim_issue(self, input_data: QaInput) -> QaResult | None:
-        if input_data.report_output is None or input_data.report_output.report is None:
-            return None
-        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
-        for claim in input_data.report_output.report.claims:
-            for evidence_id in claim.evidence_ids:
-                evidence = evidence_by_id.get(evidence_id)
-                if evidence and evidence.relevance_level == "unrelated":
-                    return self._result(
-                        input_data.task.task_id,
-                        input_data.task.rework_count,
-                        "ReportWriterAgent",
-                        "bad_report_format",
-                        f"Claim {claim.claim_id} uses unrelated evidence {evidence_id}.",
-                        "Re-run ReportWriterAgent and bind claims only to high/medium relevance Evidence from the same competitor.",
-                        claim_id=claim.claim_id,
-                        failed_claim=claim.text,
-                        failed_schema="Claim.evidence_ids.relevance",
-                    )
-        return None
-
-    def _competitor_claim_coverage_issue(self, input_data: QaInput) -> QaResult | None:
-        if input_data.report_output is None or input_data.report_output.report is None:
-            return None
-        report = input_data.report_output.report
-        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
-        if not any(item.competitor for item in input_data.evidence) and not any(claim.competitor for claim in report.claims):
-            return None
-
-        claim_count_by_competitor = {
-            competitor: sum(1 for claim in report.claims if claim.competitor == competitor)
-            for competitor in input_data.task.competitors
-        }
-        missing_claims = [competitor for competitor, count in claim_count_by_competitor.items() if count == 0]
-        if missing_claims:
-            return self._result(
-                input_data.task.task_id,
-                input_data.task.rework_count,
-                "ReportWriterAgent",
-                "bad_report_format",
-                f"Missing competitor claim coverage: {', '.join(missing_claims)}.",
-                "Re-run ReportWriterAgent and generate at least one source-backed claim for each competitor with available Evidence.",
-                failed_schema="Report.claims.competitor",
-            )
-
-        for claim in report.claims:
-            if not claim.competitor:
-                continue
-            for evidence_id in claim.evidence_ids:
-                evidence = evidence_by_id.get(evidence_id)
-                if evidence and evidence.competitor and evidence.competitor != claim.competitor:
-                    return self._result(
-                        input_data.task.task_id,
-                        input_data.task.rework_count,
-                        "ReportWriterAgent",
-                        "bad_report_format",
-                        (
-                            f"Claim evidence competitor mismatch: {claim.claim_id} belongs to "
-                            f"{claim.competitor} but uses Evidence {evidence_id} from {evidence.competitor}."
-                        ),
-                        "Re-run ReportWriterAgent and bind each claim only to Evidence from the same competitor.",
-                        claim_id=claim.claim_id,
-                        failed_claim=claim.text,
-                        failed_schema="Claim.evidence_ids",
-                        instruction_metadata={
-                            "kind": "claim_evidence_competitor_mismatch",
-                            "claim_id": claim.claim_id,
-                            "claim_competitor": claim.competitor,
-                            "failed_claim": claim.text,
-                            "evidence_id": evidence_id,
-                            "evidence_competitor": evidence.competitor,
-                            "evidence_source_domain": evidence.source_domain,
-                            "evidence_relevance_level": evidence.relevance_level,
-                            "evidence_source_quality": evidence.source_quality,
-                            "fix_type": "rebind_claim_evidence",
-                        },
-                    )
-        return None
-
-    def _quality_suggestions(self, input_data: QaInput) -> tuple[list[str], dict]:
-        suggestions: list[str] = []
-        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
-        low_confidence_claim_count = 0
-        evidence_count_by_competitor = {
-            competitor: sum(1 for item in input_data.evidence if item.competitor == competitor)
-            for competitor in input_data.task.competitors
-        }
-        claims = input_data.report_output.report.claims if input_data.report_output and input_data.report_output.report else []
-        claim_count_by_competitor = {
-            competitor: sum(1 for claim in claims if claim.competitor == competitor)
-            for competitor in input_data.task.competitors
-        }
-        missing_evidence_competitors = [competitor for competitor, count in evidence_count_by_competitor.items() if count == 0]
-        missing_relevant_evidence_competitors = [
-            competitor
-            for competitor in input_data.task.competitors
-            if not any(
-                item.competitor == competitor and item.relevance_level in {"high", "medium"}
-                for item in input_data.evidence
-            )
-        ]
-        missing_claim_competitors = [competitor for competitor, count in claim_count_by_competitor.items() if count == 0]
-        mismatched_evidence_claims = []
-        unrelated_evidence_claims = []
-        low_relevance_claims = []
-
-        if len(input_data.evidence) < 3:
-            suggestions.append("Evidence count is below 3; collect more public sources.")
-
-        missing_domain_count = sum(1 for item in input_data.evidence if not item.source_domain)
-        if missing_domain_count:
-            suggestions.append("Some Evidence items are missing source_domain; review source parsing.")
-
-        if input_data.report_output and input_data.report_output.report:
-            for claim in input_data.report_output.report.claims:
-                related = [evidence_by_id[item] for item in claim.evidence_ids if item in evidence_by_id]
-                if related and all(item.confidence < 0.5 for item in related):
-                    low_confidence_claim_count += 1
-                    suggestions.append("证据可信度较低，建议补充官方或高质量来源。")
-                if related and all(item.relevance_level == "low" for item in related):
-                    low_relevance_claims.append(claim.claim_id)
-                    suggestions.append("Some claims are only backed by low-relevance evidence; add clearer competitor-specific sources.")
-                for evidence_id in claim.evidence_ids:
-                    evidence = evidence_by_id.get(evidence_id)
-                    if claim.competitor and evidence and evidence.competitor and claim.competitor != evidence.competitor:
-                        mismatched_evidence_claims.append(
-                            {
-                                "claim_id": claim.claim_id,
-                                "claim_competitor": claim.competitor,
-                                "evidence_id": evidence_id,
-                                "evidence_competitor": evidence.competitor,
-                            }
-                        )
-                    if evidence and evidence.relevance_level == "unrelated":
-                        unrelated_evidence_claims.append(
-                            {
-                                "claim_id": claim.claim_id,
-                                "evidence_id": evidence_id,
-                                "competitor": claim.competitor,
-                                "relevance_level": evidence.relevance_level,
-                            }
-                        )
-
-        swot_issues = self._collect_swot_issues(input_data) if input_data.analysis is not None else []
-        if swot_issues:
-            suggestions.append("SWOT contains weakly supported items; collect stronger evidence or recompute the affected quadrants.")
-
-        diagnostics = {
-            "evidence_quality_checked": True,
-            "low_confidence_claim_count": low_confidence_claim_count,
-            "soft_suggestion_count": len(suggestions),
-            "competitor_coverage_checked": True,
-            "relevance_checked": True,
-            "missing_evidence_competitors": missing_evidence_competitors,
-            "missing_relevant_evidence_competitors": missing_relevant_evidence_competitors,
-            "missing_claim_competitors": missing_claim_competitors,
-            "mismatched_evidence_claims": mismatched_evidence_claims,
-            "unrelated_evidence_claims": unrelated_evidence_claims,
-            "low_relevance_claims": low_relevance_claims,
-            "swot_validation": {
-                "status": "failed" if swot_issues else "passed",
-                "issues": swot_issues,
-                "issue_count": len(swot_issues),
-            },
-            "competitor_coverage_result": {
-                competitor: {
-                    "evidence_count": evidence_count_by_competitor.get(competitor, 0),
-                    "relevant_evidence_count": sum(
-                        1
-                        for item in input_data.evidence
-                        if item.competitor == competitor and item.relevance_level in {"high", "medium"}
-                    ),
-                    "unrelated_evidence_count": sum(
-                        1
-                        for item in input_data.evidence
-                        if item.competitor == competitor and item.relevance_level == "unrelated"
-                    ),
-                    "claim_count": claim_count_by_competitor.get(competitor, 0),
-                }
-                for competitor in input_data.task.competitors
-            },
-            "dimension_coverage_result": self._dimension_coverage_result(input_data),
-        }
-        return suggestions, diagnostics
-
-    def _dimension_result_issue(self, input_data: QaInput) -> QaResult | None:
-        if input_data.analysis is None:
-            return None
-        selected_dimensions = self._selected_dimensions(input_data)
-        if not selected_dimensions:
-            return None
-        results = input_data.analysis.dimension_results
-        if not results:
-            return self._result(
-                input_data.task.task_id,
-                input_data.task.rework_count,
-                "AnalystAgent",
-                "invalid_extraction",
-                "AnalystAgent did not produce dimension_results for planner-selected dimensions.",
-                "Re-run AnalystAgent and extract DimensionResult records for each selected dimension and competitor.",
-                failed_schema="AnalystOutput.dimension_results",
-            )
-        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
-        for competitor in input_data.task.competitors:
-            for dimension_id in selected_dimensions:
-                candidates = [
-                    item
-                    for item in results
-                    if item.competitor == competitor and item.dimension_id == dimension_id
-                ]
-                if not candidates:
-                    return self._result(
-                        input_data.task.task_id,
-                        input_data.task.rework_count,
-                        "AnalystAgent",
-                        "invalid_extraction",
-                        f"Missing DimensionResult for competitor {competitor} and dimension {dimension_id}.",
-                        "Re-run AnalystAgent and produce dimension-level findings for every requested competitor and dimension.",
-                        failed_schema="DimensionResult",
-                        instruction_metadata={
-                            "competitor": competitor,
-                            "dimension_id": dimension_id,
-                            "fix_type": "extract_dimension_result",
-                        },
-                    )
-                for result in candidates:
-                    if result.insufficient_evidence:
-                        continue
-                    for evidence_id in result.evidence_ids:
-                        evidence = evidence_by_id.get(evidence_id)
-                        if evidence is None:
-                            return self._result(
-                                input_data.task.task_id,
-                                input_data.task.rework_count,
-                                "AnalystAgent",
-                                "invalid_extraction",
-                                f"DimensionResult {dimension_id}/{competitor} cites unknown evidence {evidence_id}.",
-                                "Re-run AnalystAgent and bind dimension findings only to existing Evidence.",
-                                failed_schema="DimensionResult.evidence_ids",
-                            )
-                        if evidence.relevance_level == "unrelated":
-                            return self._result(
-                                input_data.task.task_id,
-                                input_data.task.rework_count,
-                                "AnalystAgent",
-                                "invalid_extraction",
-                                f"DimensionResult {dimension_id}/{competitor} cites unrelated evidence {evidence_id}.",
-                                "Re-run AnalystAgent and remove unrelated Evidence from dimension findings.",
-                                failed_schema="DimensionResult.evidence_ids.relevance",
-                            )
-                        if evidence.competitor and evidence.competitor != competitor:
-                            return self._result(
-                                input_data.task.task_id,
-                                input_data.task.rework_count,
-                                "AnalystAgent",
-                                "invalid_extraction",
-                                f"DimensionResult {dimension_id}/{competitor} cites Evidence {evidence_id} from {evidence.competitor}.",
-                                "Re-run AnalystAgent and bind each dimension finding only to Evidence from the same competitor.",
-                                failed_schema="DimensionResult.evidence_ids.competitor",
-                                instruction_metadata={
-                                    "competitor": competitor,
-                                    "dimension_id": dimension_id,
-                                    "evidence_id": evidence_id,
-                                    "evidence_competitor": evidence.competitor,
-                                    "fix_type": "rebind_dimension_evidence",
-                                },
-                            )
-        return None
-
-    def _dimension_coverage_result(self, input_data: QaInput) -> dict:
-        if input_data.analysis is None:
-            return {}
-        selected_dimensions = self._selected_dimensions(input_data)
-        results = input_data.analysis.dimension_results
-        return {
-            competitor: {
-                dimension_id: {
-                    "result_count": sum(
-                        1 for item in results if item.competitor == competitor and item.dimension_id == dimension_id
-                    ),
-                    "insufficient_count": sum(
-                        1
-                        for item in results
-                        if item.competitor == competitor and item.dimension_id == dimension_id and item.insufficient_evidence
-                    ),
-                }
-                for dimension_id in selected_dimensions
-            }
-            for competitor in input_data.task.competitors
-        }
-
-    @staticmethod
-    def _analysis_suggestions(analysis) -> list[str]:
-        suggestions = []
-        objects = [analysis.product_profile, analysis.feature_tree, analysis.pricing_model, analysis.user_persona]
-        if any(not getattr(item, "evidence_ids", []) for item in objects):
-            suggestions.append("Some structured analysis fields are missing evidence_ids.")
-        if "Evidence is insufficient" in analysis.product_profile.positioning:
-            suggestions.append("结构化分析证据不足，建议补充更多来源。")
-        if not analysis.feature_tree.core_features or not analysis.pricing_model.tiers or not analysis.user_persona.goals:
-            suggestions.append("Some structured analysis sections remain sparse and may need more evidence.")
-        return suggestions
-
-    @staticmethod
-    def _has_unsupported_analysis(input_data: QaInput) -> bool:
-        text = " ".join(
-            [
-                input_data.analysis.product_profile.positioning if input_data.analysis else "",
-                " ".join(input_data.analysis.product_profile.strengths) if input_data.analysis else "",
-                input_data.analysis.pricing_model.pricing_notes if input_data.analysis else "",
-            ]
-        ).lower()
-        return "unsupported conclusion" in text
-
-    @staticmethod
-    def _selected_dimensions(input_data: QaInput) -> list[str]:
-        selected = []
-        if input_data.analysis is not None:
-            selected = input_data.analysis.product_profile.custom_dimensions.get("selected_dimensions", []) or []
-        return [str(item).strip().lower() for item in selected if str(item).strip()]
-
-    @staticmethod
-    def _evidence_text(evidence) -> str:
-        return evidence.content_excerpt or evidence.snippet
-
-    @staticmethod
-    def _dedupe(items: Iterable[str]) -> list[str]:
-        seen: set[str] = set()
-        output: list[str] = []
-        for item in items:
-            if not item or item in seen:
-                continue
-            seen.add(item)
-            output.append(item)
-        return output
-
     def run(self, input_data: QaInput) -> QaOutput:
         task = input_data.task
 
         def produce() -> QaOutput:
             result = self.evaluate(input_data)
-            _, diagnostics = self._quality_suggestions(input_data)
-            diagnostics["soft_suggestion_count"] = len(result.soft_suggestions)
-            diagnostics["qa_status"] = result.status
-            return QaOutput(qa_result=result, diagnostics=diagnostics)
+            return QaOutput(qa_result=result, diagnostics=self._diagnostics(input_data, result))
 
         return run_with_trace(
             trace_service=self.trace_service,
@@ -869,7 +30,455 @@ class QaAgent:
             to_agent="FinalReport",
             message_type="qa",
             schema_name="QaOutput",
-            input_summary="Validate schema, evidence coverage, report format, competitor coverage, and SWOT quality",
+            input_summary="Validate planner, Evidence, DimensionResult facts, and report fidelity",
             retry_count=input_data.retry_count,
             fn=produce,
         )
+
+    def evaluate(self, input_data: QaInput) -> QaResult:
+        for check in (
+            self._planner_issue,
+            self._evidence_issue,
+            self._structured_fact_issue,
+            self._report_issue,
+        ):
+            issue = check(input_data)
+            if issue is not None:
+                return issue
+
+        return QaResult(
+            task_id=input_data.task.task_id,
+            run_id=input_data.run_id,
+            status="passed",
+            soft_suggestions=self._soft_suggestions(input_data),
+            rework_count=input_data.retry_count,
+            metadata={
+                "qa_contract": "planner_evidence_structured_fact_report",
+                "claims_checked": False,
+                "dimension_coverage": self._dimension_coverage(input_data),
+            },
+        )
+
+    def _planner_issue(self, input_data: QaInput) -> QaResult | None:
+        if input_data.analysis_dimension_plan is None:
+            return None
+
+        selected = self._selected_dimensions(input_data)
+        missing_base = [dimension_id for dimension_id in fixed_dimension_ids() if dimension_id not in selected]
+        if missing_base:
+            return self._failure(
+                input_data,
+                target_agent="PlannerAgent",
+                error_type="invalid_planner_output",
+                reason=f"Planner 缺少固定基础维度：{', '.join(missing_base)}。",
+                suggested_action="重新运行 PlannerAgent，保留全部固定基础维度后再生成动态维度和采集计划。",
+                failed_schema="AnalysisDimensionPlan.selected_dimensions",
+                metadata={"missing_dimensions": missing_base, "fix_type": "restore_required_dimensions"},
+            )
+
+        plan = input_data.analysis_dimension_plan
+        search_plan = (plan.metadata or {}).get("collector_search_plan", {}) if plan else {}
+        missing: list[dict[str, str]] = []
+        for competitor in input_data.task.competitors:
+            by_dimension = search_plan.get(competitor, {}) if isinstance(search_plan, dict) else {}
+            for dimension_id in selected:
+                item = by_dimension.get(dimension_id, {}) if isinstance(by_dimension, dict) else {}
+                queries = item.get("queries", []) if isinstance(item, dict) else []
+                if not queries:
+                    missing.append({"competitor": competitor, "dimension_id": dimension_id})
+        if missing:
+            first = missing[0]
+            return self._failure(
+                input_data,
+                target_agent="PlannerAgent",
+                error_type="missing_dimension_search_plan",
+                reason=(
+                    f"Planner 未为 {first['competitor']} 的 {first['dimension_id']} 维度生成搜索词，"
+                    f"共缺少 {len(missing)} 个竞品维度组合。"
+                ),
+                suggested_action="为每个竞品和每个 selected_dimension 生成至少一个明确、可执行的搜索词。",
+                failed_schema="AnalysisDimensionPlan.metadata.collector_search_plan",
+                metadata={"missing_search_plan": missing, "fix_type": "rebuild_collector_search_plan"},
+            )
+        return None
+
+    def _evidence_issue(self, input_data: QaInput) -> QaResult | None:
+        if input_data.demo_mode == "qa_missing_evidence" or not input_data.evidence:
+            return self._failure(
+                input_data,
+                target_agent="CollectorAgent",
+                error_type="missing_evidence",
+                reason="当前没有可用于结构化事实抽取的 Evidence。",
+                suggested_action="按照 Planner 的竞品与维度采集计划补充公开证据。",
+                failed_schema="Evidence",
+            )
+
+        relevant = self._relevant_evidence(input_data)
+        missing_competitors = [
+            competitor
+            for competitor in input_data.task.competitors
+            if not any(item.competitor == competitor for item in relevant)
+        ]
+        if missing_competitors:
+            return self._failure(
+                input_data,
+                target_agent="CollectorAgent",
+                error_type="missing_relevant_evidence",
+                reason=f"以下竞品缺少 high/medium 相关 Evidence：{', '.join(missing_competitors)}。",
+                suggested_action="针对缺失竞品重新采集官方页面、文档、可靠媒体或明确包含竞品实体的公开来源。",
+                failed_schema="Evidence.relevance",
+                metadata={
+                    "missing_competitors": missing_competitors,
+                    "fix_type": "collect_more_relevant_evidence",
+                },
+            )
+        return None
+
+    def _structured_fact_issue(self, input_data: QaInput) -> QaResult | None:
+        analysis = input_data.analysis
+        if input_data.demo_mode == "qa_invalid_extraction":
+            return self._failure(
+                input_data,
+                target_agent="AnalystAgent",
+                error_type="invalid_extraction",
+                reason="DimensionResult 结构化抽取未通过校验。",
+                suggested_action="重新运行 AnalystAgent，并按竞品和维度生成可校验的结构化事实。",
+                failed_schema="AnalystOutput.dimension_results",
+            )
+        if analysis is None or not analysis.dimension_results:
+            return self._failure(
+                input_data,
+                target_agent="AnalystAgent",
+                error_type="invalid_extraction",
+                reason="AnalystAgent 未生成 DimensionResult 结构化事实。",
+                suggested_action="按竞品和 selected_dimensions 重新输出 DimensionResult。",
+                failed_schema="AnalystOutput.dimension_results",
+            )
+
+        evidence_by_id = {item.evidence_id: item for item in input_data.evidence}
+        results_by_key: dict[tuple[str | None, str], list[Any]] = defaultdict(list)
+        for result in analysis.dimension_results:
+            results_by_key[(result.competitor, result.dimension_id)].append(result)
+
+        for competitor in input_data.task.competitors:
+            for dimension_id in self._selected_dimensions(input_data):
+                results = results_by_key.get((competitor, dimension_id), [])
+                if not results:
+                    return self._fact_failure(
+                        input_data,
+                        "dimension_coverage_gap",
+                        competitor,
+                        dimension_id,
+                        f"缺少 {competitor} / {dimension_id} 的 DimensionResult。",
+                        "补齐该竞品维度的结构化事实；证据不足时也必须输出 insufficient_evidence=true。",
+                    )
+
+                result = results[0]
+                if result.insufficient_evidence:
+                    if result.evidence_ids or result.confidence > 0.4:
+                        return self._fact_failure(
+                            input_data,
+                            "invalid_insufficient_evidence_state",
+                            competitor,
+                            dimension_id,
+                            f"{result.dimension_result_id} 标记证据不足，但仍包含证据或置信度高于 0.4。",
+                            "清空 evidence_ids、将 confidence 降至 0.4 以下，并使用保守表述。",
+                            result.dimension_result_id,
+                        )
+                    continue
+
+                if not result.evidence_ids:
+                    return self._fact_failure(
+                        input_data,
+                        "fact_missing_evidence",
+                        competitor,
+                        dimension_id,
+                        f"{result.dimension_result_id} 没有绑定 evidence_ids。",
+                        "重新抽取该事实，并绑定同竞品、同维度的 Evidence。",
+                        result.dimension_result_id,
+                    )
+
+                for evidence_id in result.evidence_ids:
+                    evidence = evidence_by_id.get(evidence_id)
+                    if evidence is None:
+                        return self._fact_failure(
+                            input_data,
+                            "fact_evidence_not_found",
+                            competitor,
+                            dimension_id,
+                            f"{result.dimension_result_id} 引用了当前 run 中不存在的 Evidence {evidence_id}。",
+                            "只能从当前 run 的 Evidence 白名单中选择 evidence_ids。",
+                            result.dimension_result_id,
+                            evidence_id=evidence_id,
+                        )
+                    if evidence.competitor and evidence.competitor != competitor:
+                        return self._fact_failure(
+                            input_data,
+                            "fact_competitor_mismatch",
+                            competitor,
+                            dimension_id,
+                            f"{result.dimension_result_id} 属于 {competitor}，但引用了 {evidence.competitor} 的 {evidence_id}。",
+                            "重新运行 AnalystAgent，只绑定同一竞品的 Evidence。",
+                            result.dimension_result_id,
+                            evidence_id=evidence_id,
+                        )
+                    if evidence.relevance_level not in {"high", "medium"}:
+                        return self._fact_failure(
+                            input_data,
+                            "fact_evidence_not_found",
+                            competitor,
+                            dimension_id,
+                            f"{result.dimension_result_id} 引用了非 high/medium Evidence {evidence_id}。",
+                            "移除低相关或无关证据；没有有效证据时标记 insufficient_evidence。",
+                            result.dimension_result_id,
+                            evidence_id=evidence_id,
+                        )
+                    evidence_dimension = (evidence.entity_match_signals or {}).get("collector_dimension")
+                    if evidence_dimension and evidence_dimension != dimension_id:
+                        return self._fact_failure(
+                            input_data,
+                            "fact_dimension_mismatch",
+                            competitor,
+                            dimension_id,
+                            f"{result.dimension_result_id} 属于 {dimension_id}，但 {evidence_id} 的采集维度是 {evidence_dimension}。",
+                            "优先绑定同维度 Evidence；无法支撑时标记 insufficient_evidence。",
+                            result.dimension_result_id,
+                            evidence_id=evidence_id,
+                        )
+        return None
+
+    def _report_issue(self, input_data: QaInput) -> QaResult | None:
+        output = input_data.report_output
+        if output is None or output.report is None:
+            return self._failure(
+                input_data,
+                target_agent="ReportWriterAgent",
+                error_type="bad_report_format",
+                reason="ReportWriterAgent 没有生成 Report。",
+                suggested_action="基于已校验的 DimensionResult 重新生成 markdown 和 json_report。",
+                failed_schema="ReportWriterOutput.report",
+            )
+
+        report = output.report
+        if input_data.demo_mode == "qa_bad_report" or not report.markdown.strip().startswith("#"):
+            return self._failure(
+                input_data,
+                target_agent="ReportWriterAgent",
+                error_type="bad_report_format",
+                reason="Markdown 报告缺少一级标题或正文格式不完整。",
+                suggested_action="重新生成以一级标题开头的完整 Markdown 报告。",
+                failed_schema="Report.markdown",
+            )
+
+        analysis_results = input_data.analysis.dimension_results if input_data.analysis else []
+        expected_ids = {item.dimension_result_id for item in analysis_results}
+        report_ids = {item.dimension_result_id for item in report.dimension_results}
+        if expected_ids != report_ids:
+            return self._failure(
+                input_data,
+                target_agent="ReportWriterAgent",
+                error_type="report_fact_mismatch",
+                reason="Report 携带的 DimensionResult 与 AnalystAgent 输出不一致。",
+                suggested_action="不要重新生成或修改结构化事实，原样引用 AnalystAgent 的 dimension_results。",
+                failed_schema="Report.dimension_results",
+                metadata={
+                    "missing_fact_ids": sorted(expected_ids - report_ids),
+                    "unexpected_fact_ids": sorted(report_ids - expected_ids),
+                    "fix_type": "restore_validated_dimension_results",
+                },
+            )
+
+        markdown_lower = report.markdown.lower()
+        missing_competitors = [
+            competitor for competitor in input_data.task.competitors if competitor.lower() not in markdown_lower
+        ]
+        if missing_competitors:
+            return self._failure(
+                input_data,
+                target_agent="ReportWriterAgent",
+                error_type="report_competitor_gap",
+                reason=f"报告未覆盖竞品：{', '.join(missing_competitors)}。",
+                suggested_action="为每个输入竞品生成独立内容；证据不足时明确说明不足。",
+                failed_schema="Report.markdown.competitor_coverage",
+                metadata={"missing_competitors": missing_competitors},
+            )
+
+        supported = [item for item in report.dimension_results if not item.insufficient_evidence]
+        missing_citations = [
+            item.dimension_result_id
+            for item in supported
+            if item.dimension_result_id not in report.markdown
+            and not any(evidence_id in report.markdown for evidence_id in item.evidence_ids)
+        ]
+        if missing_citations:
+            return self._failure(
+                input_data,
+                target_agent="ReportWriterAgent",
+                error_type="report_missing_citations",
+                reason=f"报告中有 {len(missing_citations)} 条结构化事实缺少 fact/evidence 引用。",
+                suggested_action="在对应报告段落中保留 dimension_result_id 或 evidence_ids，确保可追溯。",
+                failed_schema="Report.markdown.citations",
+                metadata={"missing_fact_ids": missing_citations},
+            )
+        return None
+
+    def _failure(
+        self,
+        input_data: QaInput,
+        *,
+        target_agent: str,
+        error_type: str,
+        reason: str,
+        suggested_action: str,
+        failed_schema: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> QaResult:
+        instruction = ReworkInstruction(
+            target_agent=target_agent,
+            error_type=error_type,
+            reason=reason,
+            suggested_action=suggested_action,
+            failed_schema=failed_schema,
+            metadata=metadata or {},
+        )
+        next_count = max(input_data.retry_count, input_data.task.rework_count) + 1
+        if next_count >= MAX_REWORK:
+            instruction.suggested_action = "已达到最大返工次数，请转人工复核。"
+            return QaResult(
+                task_id=input_data.task.task_id,
+                run_id=input_data.run_id,
+                status="manual_review",
+                hard_errors=[reason],
+                rework_instructions=[instruction],
+                rework_count=next_count,
+                metadata={"qa_contract": "planner_evidence_structured_fact_report", **(metadata or {})},
+            )
+        return QaResult(
+            task_id=input_data.task.task_id,
+            run_id=input_data.run_id,
+            status="failed",
+            hard_errors=[reason],
+            rework_instructions=[instruction],
+            route_to=target_agent,
+            rework_count=next_count,
+            metadata={"qa_contract": "planner_evidence_structured_fact_report", **(metadata or {})},
+        )
+
+    def _fact_failure(
+        self,
+        input_data: QaInput,
+        error_type: str,
+        competitor: str,
+        dimension_id: str,
+        reason: str,
+        suggested_action: str,
+        dimension_result_id: str | None = None,
+        *,
+        evidence_id: str | None = None,
+    ) -> QaResult:
+        return self._failure(
+            input_data,
+            target_agent="AnalystAgent",
+            error_type=error_type,
+            reason=reason,
+            suggested_action=suggested_action,
+            failed_schema="DimensionResult",
+            metadata={
+                "kind": "structured_fact_issue",
+                "competitor": competitor,
+                "dimension_id": dimension_id,
+                "dimension_result_id": dimension_result_id,
+                "evidence_id": evidence_id,
+                "fix_type": "reextract_dimension_fact",
+            },
+        )
+
+    def _selected_dimensions(self, input_data: QaInput) -> list[str]:
+        selected = input_data.selected_dimensions
+        if not selected and input_data.analysis_dimension_plan is not None:
+            selected = input_data.analysis_dimension_plan.selected_dimensions
+        if not selected and input_data.analysis is not None:
+            selected = [item.dimension_id for item in input_data.analysis.dimension_results]
+        if not selected and input_data.analysis is not None:
+            selected = input_data.analysis.product_profile.custom_dimensions.get("selected_dimensions", []) or []
+        return self._dedupe([str(item).strip().lower() for item in selected if str(item).strip()])
+
+    def _relevant_evidence(self, input_data: QaInput) -> list[Any]:
+        return [
+            item
+            for item in input_data.evidence
+            if item.relevance_level in {"high", "medium"} and item.source_quality != "low_quality"
+        ]
+
+    def _dimension_evidence_gaps(self, input_data: QaInput) -> list[dict[str, str]]:
+        relevant = self._relevant_evidence(input_data)
+        gaps: list[dict[str, str]] = []
+        for competitor in input_data.task.competitors:
+            for dimension_id in self._selected_dimensions(input_data):
+                if not any(
+                    item.competitor == competitor
+                    and (item.entity_match_signals or {}).get("collector_dimension") == dimension_id
+                    for item in relevant
+                ):
+                    gaps.append({"competitor": competitor, "dimension_id": dimension_id})
+        return gaps
+
+    def _dimension_coverage(self, input_data: QaInput) -> dict[str, dict[str, dict[str, int]]]:
+        results = input_data.analysis.dimension_results if input_data.analysis else []
+        return {
+            competitor: {
+                dimension_id: {
+                    "result_count": sum(
+                        1 for item in results if item.competitor == competitor and item.dimension_id == dimension_id
+                    ),
+                    "supported_count": sum(
+                        1
+                        for item in results
+                        if item.competitor == competitor
+                        and item.dimension_id == dimension_id
+                        and not item.insufficient_evidence
+                    ),
+                }
+                for dimension_id in self._selected_dimensions(input_data)
+            }
+            for competitor in input_data.task.competitors
+        }
+
+    def _soft_suggestions(self, input_data: QaInput) -> list[str]:
+        suggestions: list[str] = []
+        gaps = self._dimension_evidence_gaps(input_data)
+        if gaps:
+            suggestions.append(f"{len(gaps)} 个竞品维度暂无直接 Evidence，报告应保留证据不足说明。")
+        if any(item.source_quality == "unknown" for item in input_data.evidence):
+            suggestions.append("部分 Evidence 的 source_quality 为 unknown，建议补充官方或文档来源交叉验证。")
+        if any(item.content_mode == "snippet" for item in input_data.evidence):
+            suggestions.append("部分事实仅基于搜索摘要，报告中应使用保守措辞。")
+        high_confidence_single_source = [
+            item
+            for item in (input_data.analysis.dimension_results if input_data.analysis else [])
+            if not item.insufficient_evidence and item.confidence >= 0.85 and len(item.evidence_ids) == 1
+        ]
+        if high_confidence_single_source:
+            suggestions.append(
+                f"{len(high_confidence_single_source)} 条结构化事实仅由单条 Evidence 支撑但置信度较高，建议补充交叉来源。"
+            )
+        if input_data.report_output and input_data.report_output.llm_fallback_reason:
+            suggestions.append(input_data.report_output.llm_fallback_reason)
+        return suggestions
+
+    def _diagnostics(self, input_data: QaInput, result: QaResult) -> dict[str, Any]:
+        return {
+            "qa_status": result.status,
+            "qa_contract": "planner_evidence_structured_fact_report",
+            "claims_checked": False,
+            "selected_dimensions": self._selected_dimensions(input_data),
+            "dimension_coverage": self._dimension_coverage(input_data),
+            "missing_dimension_evidence": self._dimension_evidence_gaps(input_data),
+            "evidence_count": len(input_data.evidence),
+            "dimension_result_count": len(input_data.analysis.dimension_results) if input_data.analysis else 0,
+            "soft_suggestion_count": len(result.soft_suggestions),
+        }
+
+    @staticmethod
+    def _dedupe(items: list[str]) -> list[str]:
+        return list(dict.fromkeys(item for item in items if item))

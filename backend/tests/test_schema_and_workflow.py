@@ -40,6 +40,7 @@ from app.schemas import (
     QaInput,
     QaResult,
     QaOutput,
+    RetrievedKnowledgeChunk,
     RetrievalResult,
     Report,
     ReportWriterInput,
@@ -412,15 +413,19 @@ def test_analyst_insufficient_evidence_is_conservative_and_qa_suggests(db_sessio
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     evidence = [
-        Evidence(source_type="public_web", url="https://example.com/brief", source_domain="example.com", source_quality="unknown", snippet="Brief public source.", confidence=0.6)
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alpha.example/brief", source_domain="alpha.example", source_quality="unknown", snippet="AlphaCI brief public source.", confidence=0.6),
+        Evidence(competitor="BetaIntel", source_type="public_web", url="https://beta.example/brief", source_domain="beta.example", source_quality="unknown", snippet="BetaIntel brief public source.", confidence=0.6),
     ]
     analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="evidence"))
     assert "Evidence is insufficient" in analysis.product_profile.positioning
-    claim = Claim(text="Conservative claim", category="recommendation", evidence_ids=[evidence[0].evidence_id], confidence=0.6)
-    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json")]}, claims=[claim])
-    qa_result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence, analysis=analysis, report_output=ReportWriterOutput(report=report))).qa_result
+    report_output = ReportWriterAgent(trace_service).run(
+        ReportWriterInput(task=task, knowledge=analysis, evidence=evidence)
+    )
+    qa_result = QaAgent(trace_service).run(
+        QaInput(task=task, evidence=evidence, analysis=analysis, report_output=report_output)
+    ).qa_result
     assert qa_result.status == "passed"
-    assert any("结构化分析证据不足" in suggestion for suggestion in qa_result.soft_suggestions)
+    assert any("暂无直接 Evidence" in suggestion for suggestion in qa_result.soft_suggestions)
 
 
 def test_analyst_trace_records_mode_and_counts(db_session):
@@ -470,6 +475,26 @@ def test_missing_evidence_routes_to_collector(db_session):
     assert result.rework_instructions[0].failed_schema == "Evidence"
 
 
+def test_invalid_planner_dimensions_route_to_planner(db_session):
+    task = make_task(db_session)
+    qa = QaAgent(TraceService(db_session))
+    plan = AnalysisDimensionPlan(
+        selected_dimensions=["feature"],
+        metadata={"collector_search_plan": {}},
+    )
+    result = qa.run(
+        QaInput(
+            task=task,
+            evidence=[],
+            selected_dimensions=["feature"],
+            analysis_dimension_plan=plan,
+        )
+    ).qa_result
+    assert result.status == "failed"
+    assert result.route_to == "PlannerAgent"
+    assert result.rework_instructions[0].error_type == "invalid_planner_output"
+
+
 def test_invalid_extraction_routes_to_analyst(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
@@ -488,7 +513,7 @@ def test_invalid_extraction_routes_to_analyst(db_session):
     assert result.status == "failed"
     assert result.route_to == "AnalystAgent"
     assert result.rework_instructions[0].error_type == "invalid_extraction"
-    assert result.rework_instructions[0].failed_schema == "ProductProfile"
+    assert result.rework_instructions[0].failed_schema == "AnalystOutput.dimension_results"
 
 
 def test_bad_report_format_routes_to_report_writer(db_session):
@@ -620,6 +645,36 @@ def test_llm_analyst_invalid_json_falls_back_to_evidence(db_session):
     assert output.diagnostics["fallback_used"] is True
     assert output.diagnostics["llm_schema_validation_success"] is False
     assert output.dimension_results
+
+
+def test_llm_analyst_can_cite_current_run_knowledge_base_evidence(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(
+            evidence_id="ev_kb_alpha001",
+            source_type="knowledge_base",
+            local_ref="kb_chunk_alpha001",
+            competitor="AlphaCI",
+            snippet="AlphaCI long-term knowledge says it supports AI workflow automation.",
+            confidence=0.82,
+            relevance_level="high",
+            relevance_score=0.86,
+        )
+    ]
+    client = FakeLlmClient(
+        '{"dimension_results":[{"dimension_id":"feature","competitor":"AlphaCI",'
+        '"summary":"AlphaCI 具备 AI 工作流自动化能力。","findings":["AI workflow automation"],'
+        '"evidence_ids":["ev_kb_alpha001"],"confidence":0.82,"insufficient_evidence":false,'
+        '"metadata":{"source":"knowledge_base_evidence"}}]}'
+    )
+    output = AnalystAgent(trace_service, llm_client=client).run(
+        AnalystInput(task=task, evidence=evidence, analyst_mode="llm", selected_dimensions=["feature"])
+    )
+
+    assert output.diagnostics["analyst_mode_used"] == "llm"
+    assert output.diagnostics["llm_schema_validation_success"] is True
+    assert output.dimension_results[0].evidence_ids == ["ev_kb_alpha001"]
 
 
 def test_llm_analyst_competitor_mismatch_falls_back_to_evidence(db_session):
@@ -833,9 +888,7 @@ def test_llm_writer_success_records_diagnostics_and_elapsed_time(db_session):
     writer = ReportWriterAgent(
         trace_service,
         llm_client=FakeLlmClient(
-            '{"markdown_report":"# LLM Report","json_report":{},"claims":[{"claim_id":"c1","text":"source-backed claim","evidence_ids":["'
-            + evidence[0].evidence_id
-            + '"]}]}'
+            '{"markdown_report":"# LLM Report","json_report":{}}'
         ),
     )
     writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
@@ -847,14 +900,40 @@ def test_llm_writer_success_records_diagnostics_and_elapsed_time(db_session):
     assert diagnostics["llm_call_success"] is True
     assert diagnostics["llm_schema_validation_success"] is True
     assert diagnostics["llm_schema_validation_errors"] == []
-    assert diagnostics["llm_category_normalization_count"] == 1
+    assert diagnostics["claims_generated"] is False
+    assert writer_output.report.claims == []
+    assert writer_output.report.dimension_results == analysis.dimension_results
     traces = [trace for trace in trace_service.list_for_task(task.task_id) if trace.agent_name == "ReportWriterAgent"]
     assert traces[-1].elapsed_time_ms > 0
     trace_diagnostics = json.loads(traces[-1].output_summary)
     assert trace_diagnostics["llm_schema_validation_success"] is True
 
 
-def test_llm_writer_normalizes_overall_claim_competitor(db_session):
+def test_report_writer_prompt_uses_dimension_results_and_forbids_claims(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    writer = ReportWriterAgent(trace_service)
+
+    messages = writer._messages(
+        ReportWriterInput(
+            task=task,
+            knowledge=analysis,
+            evidence=evidence,
+            selected_dimensions=["feature"],
+        )
+    )
+    prompt = "\n".join(item["content"] for item in messages)
+
+    assert "knowledge.dimension_results" in prompt
+    assert "不得生成 claims" in prompt
+    assert "markdown_report 和 json_report" in prompt
+    assert "dimension_result_id" in prompt
+    assert "evidence_ids" in prompt
+
+
+def test_llm_writer_ignores_legacy_claim_payload(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     evidence = [
@@ -879,12 +958,12 @@ def test_llm_writer_normalizes_overall_claim_competitor(db_session):
     )
     output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
     assert output.report is not None
-    overall = next(claim for claim in output.report.claims if claim.claim_id == "c_overall")
-    assert overall.competitor is None
-    assert output.report.json_report["writer_diagnostics"]["claim_competitor_normalization_count"] == 1
+    assert output.report.claims == []
+    assert output.report.dimension_results == analysis.dimension_results
+    assert "claims" not in output.report.json_report
 
 
-def test_llm_writer_rebinds_claim_to_same_competitor_evidence(db_session):
+def test_llm_writer_preserves_analyst_fact_evidence_bindings(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     evidence = [
@@ -906,11 +985,8 @@ def test_llm_writer_rebinds_claim_to_same_competitor_evidence(db_session):
     )
     output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
     assert output.report is not None
-    alpha_claim = next(claim for claim in output.report.claims if claim.claim_id == "c_alpha")
-    assert alpha_claim.evidence_ids == [evidence[0].evidence_id]
-    assert output.report.json_report["writer_diagnostics"]["claim_evidence_rebinding_count"] == 1
-    qa_result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence, analysis=analysis, report_output=output)).qa_result
-    assert qa_result.status == "passed"
+    assert output.report.claims == []
+    assert output.report.dimension_results == analysis.dimension_results
 
 
 def test_collector_mode_mock_workflow_still_passes(db_session):
@@ -1195,15 +1271,16 @@ def test_analyst_groups_structured_knowledge_by_competitor(db_session):
     assert output.diagnostics["evidence_count_by_competitor"] == {"AlphaCI": 2, "BetaIntel": 2}
 
 
-def test_report_writer_mock_claims_cover_all_competitors(db_session):
+def test_report_writer_mock_preserves_structured_facts(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
     analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
     output = ReportWriterAgent(trace_service).run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence))
     assert output.report is not None
-    assert {claim.competitor for claim in output.report.claims} == {"AlphaCI", "BetaIntel"}
-    assert output.diagnostics["missing_claim_competitors"] == []
+    assert output.report.claims == []
+    assert output.report.dimension_results == analysis.dimension_results
+    assert output.diagnostics["claims_generated"] is False
 
 
 def test_qa_detects_missing_competitor_evidence(db_session):
@@ -1215,42 +1292,61 @@ def test_qa_detects_missing_competitor_evidence(db_session):
     result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence)).qa_result
     assert result.status == "failed"
     assert result.route_to == "CollectorAgent"
-    assert result.rework_instructions[0].failed_schema == "Evidence.competitor"
+    assert result.rework_instructions[0].failed_schema == "Evidence.relevance"
 
 
-def test_qa_detects_missing_competitor_claim(db_session):
+def test_qa_detects_report_missing_competitor(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     evidence = [
-        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/pricing", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI pricing product features.", confidence=0.9),
-        Evidence(competitor="BetaIntel", source_type="public_web", url="https://betaintel.example/pricing", source_domain="betaintel.example", source_quality="official", snippet="BetaIntel pricing product features.", confidence=0.9),
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/features", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI product features.", confidence=0.9, entity_match_signals={"collector_dimension": "feature"}),
+        Evidence(competitor="BetaIntel", source_type="public_web", url="https://betaintel.example/features", source_domain="betaintel.example", source_quality="official", snippet="BetaIntel product features.", confidence=0.9, entity_match_signals={"collector_dimension": "feature"}),
     ]
-    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
-    claim = Claim(competitor="AlphaCI", text="AlphaCI supported claim", category="feature", evidence_ids=[evidence[0].evidence_id], confidence=0.8)
-    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json")]}, claims=[claim])
-    result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence, analysis=analysis, report_output=ReportWriterOutput(report=report))).qa_result
+    base_analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    facts = [
+        DimensionResult(dimension_id="feature", competitor="AlphaCI", summary="AlphaCI feature.", evidence_ids=[evidence[0].evidence_id], confidence=0.8),
+        DimensionResult(dimension_id="feature", competitor="BetaIntel", summary="BetaIntel feature.", evidence_ids=[evidence[1].evidence_id], confidence=0.8),
+    ]
+    analysis = base_analysis.model_copy(update={"dimension_results": facts})
+    report = Report(
+        task_id=task.task_id,
+        markdown=f"# Report\nAlphaCI\n{facts[0].dimension_result_id}\n{facts[1].dimension_result_id}",
+        json_report={},
+        dimension_results=facts,
+    )
+    result = QaAgent(trace_service).run(
+        QaInput(
+            task=task,
+            evidence=evidence,
+            analysis=analysis,
+            report_output=ReportWriterOutput(report=report),
+            selected_dimensions=["feature"],
+        )
+    ).qa_result
     assert result.status == "failed"
     assert result.route_to == "ReportWriterAgent"
-    assert result.rework_instructions[0].failed_schema == "Report.claims.competitor"
+    assert result.rework_instructions[0].error_type == "report_competitor_gap"
 
 
-def test_qa_detects_claim_using_other_competitor_evidence(db_session):
+def test_qa_detects_fact_using_other_competitor_evidence(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     evidence = [
-        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/pricing", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI pricing product features.", confidence=0.9),
-        Evidence(competitor="BetaIntel", source_type="public_web", url="https://betaintel.example/pricing", source_domain="betaintel.example", source_quality="official", snippet="BetaIntel pricing product features.", confidence=0.9),
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alphaci.example/features", source_domain="alphaci.example", source_quality="official", snippet="AlphaCI product features.", confidence=0.9, entity_match_signals={"collector_dimension": "feature"}),
+        Evidence(competitor="BetaIntel", source_type="public_web", url="https://betaintel.example/features", source_domain="betaintel.example", source_quality="official", snippet="BetaIntel product features.", confidence=0.9, entity_match_signals={"collector_dimension": "feature"}),
     ]
-    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
-    claims = [
-        Claim(competitor="AlphaCI", text="AlphaCI claim with wrong evidence", category="feature", evidence_ids=[evidence[1].evidence_id], confidence=0.8),
-        Claim(competitor="BetaIntel", text="BetaIntel supported claim", category="feature", evidence_ids=[evidence[1].evidence_id], confidence=0.8),
+    base_analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    facts = [
+        DimensionResult(dimension_id="feature", competitor="AlphaCI", summary="AlphaCI feature.", evidence_ids=[evidence[1].evidence_id], confidence=0.8),
+        DimensionResult(dimension_id="feature", competitor="BetaIntel", summary="BetaIntel feature.", evidence_ids=[evidence[1].evidence_id], confidence=0.8),
     ]
-    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json") for claim in claims]}, claims=claims)
-    result = QaAgent(trace_service).run(QaInput(task=task, evidence=evidence, analysis=analysis, report_output=ReportWriterOutput(report=report))).qa_result
+    analysis = base_analysis.model_copy(update={"dimension_results": facts})
+    result = QaAgent(trace_service).run(
+        QaInput(task=task, evidence=evidence, analysis=analysis, selected_dimensions=["feature"])
+    ).qa_result
     assert result.status == "failed"
-    assert result.route_to == "ReportWriterAgent"
-    assert result.rework_instructions[0].failed_schema == "Claim.evidence_ids"
+    assert result.route_to == "AnalystAgent"
+    assert result.rework_instructions[0].error_type == "fact_competitor_mismatch"
 
 
 def test_url_tracking_params_are_ignored():
@@ -1389,7 +1485,7 @@ def test_analyst_does_not_use_unrelated_evidence(db_session):
     assert "Evidence is insufficient" in output.product_profile.positioning
 
 
-def test_qa_detects_unrelated_evidence_used_by_claim(db_session):
+def test_qa_detects_unrelated_evidence_used_by_structured_fact(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     unrelated = apply_relevance(
@@ -1405,7 +1501,7 @@ def test_qa_detects_unrelated_evidence_used_by_claim(db_session):
         "AlphaCI",
         title="TaxJar pricing",
     )
-    # Add one relevant evidence per competitor so the claim-level relevance check is reached.
+    # Add one relevant evidence per competitor so structured-fact validation is reached.
     relevant_alpha = apply_relevance(
         Evidence(
             competitor="AlphaCI",
@@ -1432,19 +1528,22 @@ def test_qa_detects_unrelated_evidence_used_by_claim(db_session):
         "BetaIntel",
         title="BetaIntel pricing",
     )
-    claim = Claim(competitor="AlphaCI", text="Unsupported AlphaCI claim", category="feature", evidence_ids=[unrelated.evidence_id], confidence=0.8)
-    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json")]}, claims=[claim])
     evidence = [unrelated, relevant_alpha, relevant_beta]
-    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="mock"))
+    base_analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="mock"))
+    facts = [
+        DimensionResult(dimension_id="feature", competitor="AlphaCI", summary="Unsupported AlphaCI fact.", evidence_ids=[unrelated.evidence_id], confidence=0.8),
+        DimensionResult(dimension_id="feature", competitor="BetaIntel", summary="BetaIntel fact.", evidence_ids=[relevant_beta.evidence_id], confidence=0.8),
+    ]
+    analysis = base_analysis.model_copy(update={"dimension_results": facts})
     result = QaAgent(trace_service).run(
-        QaInput(task=task, evidence=evidence, analysis=analysis, report_output=ReportWriterOutput(report=report))
+        QaInput(task=task, evidence=evidence, analysis=analysis, selected_dimensions=["feature"])
     ).qa_result
     assert result.status == "failed"
-    assert result.route_to == "ReportWriterAgent"
-    assert result.rework_instructions[0].failed_schema == "Claim.evidence_ids.relevance"
+    assert result.route_to == "AnalystAgent"
+    assert result.rework_instructions[0].error_type == "fact_evidence_not_found"
 
 
-def test_report_writer_does_not_use_unrelated_evidence_for_competitor_claims(db_session):
+def test_report_writer_preserves_analyst_insufficient_fact_for_unrelated_evidence(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     unrelated = apply_relevance(
@@ -1460,10 +1559,12 @@ def test_report_writer_does_not_use_unrelated_evidence_for_competitor_claims(db_
         "AlphaCI",
         title="TaxJar pricing",
     )
-    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=[unrelated], analyst_mode="mock"))
+    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=[unrelated], analyst_mode="evidence"))
     output = ReportWriterAgent(trace_service).run(ReportWriterInput(task=task, knowledge=analysis, evidence=[unrelated]))
     assert output.report is not None
-    assert all(unrelated.evidence_id not in claim.evidence_ids for claim in output.report.claims)
+    assert output.report.claims == []
+    assert output.report.dimension_results == analysis.dimension_results
+    assert all(unrelated.evidence_id not in fact.evidence_ids for fact in output.report.dimension_results)
 
 
 def test_random_competitors_do_not_generate_strong_conclusions(db_session):
@@ -1502,26 +1603,36 @@ def test_random_competitors_do_not_generate_strong_conclusions(db_session):
     assert qa_result.rework_instructions[0].error_type == "missing_relevant_evidence"
 
 
-def test_low_confidence_claim_generates_soft_suggestion(db_session):
+def test_snippet_evidence_generates_soft_suggestion(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
-    low_evidence = Evidence(
-        source_type="public_web",
-        url="https://spam.example/click",
-        source_domain="example",
-        source_quality="low_quality",
-        snippet="short",
-        confidence=0.4,
+    evidence = [
+        Evidence(competitor="AlphaCI", source_type="public_web", url="https://alpha.example/features", source_domain="alpha.example", source_quality="official", snippet="AlphaCI features.", confidence=0.8, entity_match_signals={"collector_dimension": "feature"}),
+        Evidence(competitor="BetaIntel", source_type="public_web", url="https://beta.example/features", source_domain="beta.example", source_quality="official", snippet="BetaIntel features.", confidence=0.8, entity_match_signals={"collector_dimension": "feature"}),
+    ]
+    base_analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence))
+    facts = [
+        DimensionResult(dimension_id="feature", competitor="AlphaCI", summary="AlphaCI feature.", evidence_ids=[evidence[0].evidence_id], confidence=0.8),
+        DimensionResult(dimension_id="feature", competitor="BetaIntel", summary="BetaIntel feature.", evidence_ids=[evidence[1].evidence_id], confidence=0.8),
+    ]
+    analysis = base_analysis.model_copy(update={"dimension_results": facts})
+    report = Report(
+        task_id=task.task_id,
+        markdown=f"# Report\nAlphaCI {facts[0].dimension_result_id}\nBetaIntel {facts[1].dimension_result_id}",
+        json_report={},
+        dimension_results=facts,
     )
-    analysis = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=[low_evidence]))
-    claim = Claim(text="Low confidence claim", category="risk", evidence_ids=[low_evidence.evidence_id], confidence=0.4)
-    report = Report(task_id=task.task_id, markdown="# Report", json_report={"claims": [claim.model_dump(mode="json")]}, claims=[claim])
-    writer_output = ReportWriterOutput(report=report)
     qa_result = QaAgent(trace_service).run(
-        QaInput(task=task, evidence=[low_evidence], analysis=analysis, report_output=writer_output)
+        QaInput(
+            task=task,
+            evidence=evidence,
+            analysis=analysis,
+            report_output=ReportWriterOutput(report=report),
+            selected_dimensions=["feature"],
+        )
     ).qa_result
     assert qa_result.status == "passed"
-    assert any("证据可信度较低" in item for item in qa_result.soft_suggestions)
+    assert any("搜索摘要" in item for item in qa_result.soft_suggestions)
 
 
 def test_collector_web_timeout_does_not_crash_workflow(db_session):
@@ -1565,7 +1676,7 @@ def test_collector_mode_web_and_writer_mode_llm_parameters_both_pass(db_session,
     assert writer_diagnostics["writer_mode_requested"] == "llm"
 
 
-def test_llm_claim_missing_evidence_routes_to_report_writer(db_session):
+def test_llm_report_missing_competitor_routes_to_report_writer(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
@@ -1573,7 +1684,7 @@ def test_llm_claim_missing_evidence_routes_to_report_writer(db_session):
     writer = ReportWriterAgent(
         trace_service,
         llm_client=FakeLlmClient(
-            '{"markdown_report":"# Bad","json_report":{},"claims":[{"claim_id":"c1","text":"unsupported"}]}'
+            '{"markdown_report":"# Bad\\nOnly AlphaCI is covered.","json_report":{}}'
         ),
     )
     writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
@@ -1582,14 +1693,10 @@ def test_llm_claim_missing_evidence_routes_to_report_writer(db_session):
     ).qa_result
     assert qa_result.status == "failed"
     assert qa_result.route_to == "ReportWriterAgent"
-    assert any(trace.schema_validation_result == "failed" for trace in trace_service.list_for_task(task.task_id))
-    failed_trace = next(trace for trace in trace_service.list_for_task(task.task_id) if trace.agent_name == "ReportWriterAgent" and trace.schema_validation_result == "failed")
-    trace_diagnostics = json.loads(failed_trace.output_summary)
-    assert trace_diagnostics["llm_schema_validation_success"] is False
-    assert trace_diagnostics["llm_schema_validation_errors"]
+    assert qa_result.rework_instructions[0].error_type == "report_competitor_gap"
 
 
-def test_llm_claim_schema_failure_records_validation_diagnostics(db_session):
+def test_llm_report_schema_failure_falls_back_to_mock(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
     evidence = CollectorAgent(trace_service).run(CollectorInput(task=task)).evidence
@@ -1597,19 +1704,18 @@ def test_llm_claim_schema_failure_records_validation_diagnostics(db_session):
     writer = ReportWriterAgent(
         trace_service,
         llm_client=FakeLlmClient(
-            '{"markdown_report":"# Bad","json_report":{},"claims":[{"claim_id":"c1","text":"bad category","category":"任务基础信息","evidence_ids":["'
-            + evidence[0].evidence_id
-            + '"]}]}'
+            '{"markdown_report":"# Bad"}'
         ),
     )
     writer_output = writer.run(ReportWriterInput(task=task, knowledge=analysis, evidence=evidence, writer_mode="llm"))
-    assert writer_output.report is None
+    assert writer_output.report is not None
+    assert writer_output.writer_mode == "mock"
+    assert writer_output.report.claims == []
     traces = trace_service.list_for_task(task.task_id)
     failed_trace = next(trace for trace in traces if trace.agent_name == "ReportWriterAgent" and trace.schema_validation_result == "failed")
     trace_diagnostics = json.loads(failed_trace.output_summary)
     assert trace_diagnostics["llm_schema_validation_success"] is False
     assert trace_diagnostics["llm_schema_validation_errors"]
-    assert trace_diagnostics["llm_category_normalization_count"] == 0
 
 
 def test_mock_writer_schema_diagnostics_are_null(db_session):
@@ -1705,7 +1811,7 @@ def test_langgraph_normal_workflow_passes_and_finalizes(db_session):
     assert result["report"] is not None
     summary = result["workflow_summary"]
     assert summary["workflow_engine_used"] == "langgraph"
-    assert summary["selected_dimensions"] == fixed_dimension_ids()
+    assert set(fixed_dimension_ids()).issubset(summary["selected_dimensions"])
     for competitor in task.competitors:
         assert result["plan"].analysis_dimension_plan.query_hints[competitor]
     assert "evidence_gate" in summary["node_sequence"]
@@ -2005,22 +2111,73 @@ def test_langgraph_modes_and_competitor_coverage_still_work(db_session, monkeypa
     )
     assert result["qa_result"].status == "passed"
     assert result["report"] is not None
-    assert {claim.competitor for claim in result["report"].claims} == set(task.competitors)
+    assert result["report"].claims == []
+    assert {fact.competitor for fact in result["report"].dimension_results} == set(task.competitors)
     writer_trace = next(trace for trace in TraceService(db_session).list_for_task(task.task_id) if trace.agent_name == "ReportWriterAgent")
     writer_diagnostics = json.loads(writer_trace.output_summary)
     assert writer_diagnostics["writer_mode_requested"] == "llm"
 
 
-def test_langgraph_bypasses_qa_temporarily(db_session, monkeypatch):
+def test_langgraph_executes_structured_fact_qa(db_session, monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     task = make_task(db_session)
     result = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
 
-    assert result["report"] is not None
+    assert result["report"] is not None, {
+        "qa_status": result["qa_result"].status,
+        "route_to": result["qa_result"].route_to,
+        "hard_errors": result["qa_result"].hard_errors,
+        "rework_history": [item.model_dump(mode="json") for item in result["qa_result"].rework_history],
+        "workflow_summary": result["workflow_summary"],
+    }
     assert result["qa_result"].status == "passed"
-    assert result["qa_result"].metadata["qa_disabled"] is True
-    assert "qa" not in result["workflow_summary"]["node_sequence"]
+    assert result["qa_result"].metadata["qa_contract"] == "planner_evidence_structured_fact_report"
+    assert result["qa_result"].metadata["claims_checked"] is False
+    assert "qa" in result["workflow_summary"]["node_sequence"]
     assert result["workflow_summary"]["node_sequence"][-1] == "final_report"
+
+
+def test_langgraph_injects_retrieved_knowledge_as_current_run_evidence(db_session):
+    task = make_task(db_session)
+    runner = LangGraphWorkflowRunner(db_session)
+    current_evidence = [
+        Evidence(
+            evidence_id="ev_current_alpha",
+            run_id="run_test",
+            source_type="public_web",
+            url="https://alpha.example.com/current",
+            competitor="AlphaCI",
+            snippet="AlphaCI current public evidence.",
+            confidence=0.9,
+            relevance_level="high",
+        )
+    ]
+    chunk = RetrievedKnowledgeChunk(
+        chunk_id="kb_chunk_alpha001",
+        text="AlphaCI long-term knowledge supports AI workflow automation.",
+        text_preview="AlphaCI long-term knowledge supports AI workflow automation.",
+        score=0.86,
+        evidence_id="ev_old_alpha",
+        source_url="https://alpha.example.com/old",
+        source_domain="alpha.example.com",
+        source_quality="official",
+        metadata={
+            "competitor": "AlphaCI",
+            "evidence_id": "ev_old_alpha",
+            "confidence": 0.8,
+            "source_url": "https://alpha.example.com/old",
+        },
+    )
+
+    output = runner._inject_knowledge_evidence(task, "run_test", current_evidence, [chunk])
+    knowledge_evidence = [item for item in output if item.source_type == "knowledge_base"]
+
+    assert len(knowledge_evidence) == 1
+    assert knowledge_evidence[0].evidence_id.startswith("ev_kb_")
+    assert knowledge_evidence[0].run_id == "run_test"
+    assert knowledge_evidence[0].entity_match_signals["original_evidence_id"] == "ev_old_alpha"
+    saved = EvidenceService(db_session).list_for_task(task.task_id, run_id="run_test")
+    assert {item.evidence_id for item in saved} == {knowledge_evidence[0].evidence_id}
 
 
 def test_task_run_created_for_each_langgraph_run(db_session):

@@ -64,6 +64,18 @@ export type Claim = {
   confidence: number;
 };
 
+export type DimensionResult = {
+  dimension_result_id: string;
+  dimension_id: string;
+  competitor?: string | null;
+  summary: string;
+  findings: string[];
+  evidence_ids: string[];
+  confidence: number;
+  insufficient_evidence: boolean;
+  metadata?: Record<string, unknown>;
+};
+
 export type SwotItem = {
   summary: string;
   competitor?: string | null;
@@ -91,10 +103,12 @@ export type Report = {
       selected_dimensions?: string[];
       writer_guidance?: string[];
     };
+    dimension_results?: DimensionResult[];
     claims?: Claim[];
     writer_diagnostics?: WriterDiagnostics;
   };
-  claims: Claim[];
+  dimension_results?: DimensionResult[];
+  claims?: Claim[];
   qa_result?: QaResult;
 };
 

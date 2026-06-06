@@ -507,3 +507,19 @@ From Phase 9 onward, new capabilities must be developed on the LangGraph workflo
 9. 未来 RAG 节点只能索引 relevant Evidence / chunks。
 
 在完成有意义的代码改动后，应运行相关测试并报告结果。
+
+## Structured Fact QA Contract Override
+
+以下规则覆盖本文档中“ReportWriterAgent 必须生成 Claim”和“QA 必须检查 Claim”的旧要求，适用于新的 LangGraph 主流程：
+
+- `DimensionResult` 是结构化事实与证据溯源的主数据单元。
+- 每条 `DimensionResult` 使用 `dimension_result_id` 唯一标识，并通过 `evidence_ids` 绑定 Evidence。
+- `ReportWriterAgent` 只基于 AnalystAgent 已校验的 `dimension_results` 撰写报告，不再生成新的 Claim。
+- 新生成的 `Report.claims` 保持为空；该字段仅用于读取历史 run 和兼容旧数据。
+- QaAgent 按 Planner、Evidence、DimensionResult、Report 四层执行检查。
+- Planner 合约错误打回 `PlannerAgent`。
+- 竞品缺少有效 Evidence 时打回 `CollectorAgent`。
+- DimensionResult 缺失、引用不存在、竞品错配或维度错配时打回 `AnalystAgent`。
+- Report 遗漏竞品、修改结构化事实或缺少事实/证据引用时打回 `ReportWriterAgent`。
+- 证据不足是合法状态：必须设置 `insufficient_evidence=true`、使用低置信度、清空 `evidence_ids` 并输出保守说明。
+- QA 不再依赖 ReportWriterAgent 临时生成的 Claim 判断事实可信度。

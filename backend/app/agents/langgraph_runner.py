@@ -16,6 +16,7 @@ from app.schemas import (
     AnalystInput,
     CollectorInput,
     DemoMode,
+    Evidence,
     FinalReportInput,
     PlannerInput,
     QaInput,
@@ -154,7 +155,7 @@ class LangGraphWorkflowRunner:
             "run_cleanup_summary": {},
         }
         try:
-            final_state = self.graph.invoke(initial_state)
+            final_state = self.graph.invoke(initial_state, config={"recursion_limit": 24})
             elapsed = int((time.perf_counter() - started) * 1000)
             summary = self._workflow_summary(final_state, elapsed)
             self._save_workflow_trace(task_id, task_run.run_id, summary, elapsed)
@@ -210,7 +211,18 @@ class LangGraphWorkflowRunner:
         )
         graph.add_edge("page_fetcher", "analyst")
         graph.add_edge("analyst", "report_writer")
-        graph.add_edge("report_writer", "final_report")
+        graph.add_edge("report_writer", "qa")
+        graph.add_conditional_edges(
+            "qa",
+            self.route_after_qa,
+            {
+                "planner": "planner",
+                "collector": "collector",
+                "analyst": "analyst",
+                "report_writer": "report_writer",
+                "final_report": "final_report",
+            },
+        )
         graph.add_edge("final_report", END)
         return graph.compile()
 
@@ -456,11 +468,17 @@ class LangGraphWorkflowRunner:
             selected_dimensions=state.get("selected_dimensions", []),
             top_k=5,
         )
+        evidence_with_knowledge = self._inject_knowledge_evidence(
+            task,
+            state.get("run_id"),
+            state.get("evidence", []),
+            retrieved_chunks,
+        )
         output = self.analyst.run(
             AnalystInput(
                 task=task,
                 run_id=state.get("run_id"),
-                evidence=state.get("evidence", []),
+                evidence=evidence_with_knowledge,
                 retry_count=state["rework_count"],
                 force_invalid_extraction=state["demo_mode"] == "qa_invalid_extraction" and state["rework_count"] == 0,
                 analyst_mode=state["analyst_mode"],
@@ -474,8 +492,9 @@ class LangGraphWorkflowRunner:
             "task": task,
             "analyst_output": output,
             "dimension_results": output.dimension_results,
+            "evidence": evidence_with_knowledge,
             "retrieved_knowledge_chunks": retrieved_chunks,
-            "knowledge_hits": [self._knowledge_hit_payload(item) for item in retrieved_chunks],
+            "knowledge_hits": [self._knowledge_hit_payload(item, state.get("run_id")) for item in retrieved_chunks],
             "swot_analysis": output.swot,
             "node_sequence": [*state["node_sequence"], "analyst"],
         }
@@ -531,6 +550,8 @@ class LangGraphWorkflowRunner:
                 evidence=state.get("evidence", []),
                 analysis=state.get("analyst_output"),
                 report_output=state.get("report_writer_output"),
+                selected_dimensions=state.get("selected_dimensions", []),
+                analysis_dimension_plan=state.get("analysis_dimension_plan"),
                 retry_count=state["rework_count"],
                 demo_mode=state["demo_mode"],
             )
@@ -592,7 +613,7 @@ class LangGraphWorkflowRunner:
     def final_report_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
         writer_output = state.get("report_writer_output")
-        qa_result = state.get("qa_result") or self._skipped_qa_result(task, state.get("run_id"), state.get("rework_count", 0))
+        qa_result = state.get("qa_result")
         if qa_result and qa_result.status == "passed" and writer_output and writer_output.report:
             qa_result = self.report_service.save_qa(qa_result, run_id=state.get("run_id"))
             output = self.final_report.run(
@@ -621,17 +642,6 @@ class LangGraphWorkflowRunner:
         self.task_service.update_status(task.task_id, task_status, rework_count=qa_result.rework_count if qa_result else state["rework_count"])
         return {**state, "task": task, "report": None, "final_status": final_status, "node_sequence": [*state["node_sequence"], "final_report"]}
 
-    @staticmethod
-    def _skipped_qa_result(task: Task, run_id: str | None, rework_count: int = 0) -> QaResult:
-        return QaResult(
-            task_id=task.task_id,
-            run_id=run_id,
-            status="passed",
-            soft_suggestions=["QaAgent is temporarily disabled; report was not QA-validated."],
-            rework_count=rework_count,
-            metadata={"qa_disabled": True, "qa_mode": "bypassed"},
-        )
-
     def route_after_evidence_gate(self, state: WorkflowState) -> str:
         gate = state.get("evidence_gate_output", {})
         if gate.get("evidence_gate_passed"):
@@ -653,6 +663,8 @@ class LangGraphWorkflowRunner:
             return "final_report"
         if not state["auto_rework"]:
             return "final_report"
+        if qa_result.route_to == "PlannerAgent":
+            return "planner"
         if qa_result.route_to == "CollectorAgent":
             return "collector"
         if qa_result.route_to == "AnalystAgent":
@@ -781,6 +793,7 @@ class LangGraphWorkflowRunner:
     @staticmethod
     def _agent_to_node(agent_name: str) -> str:
         return {
+            "PlannerAgent": "planner",
             "CollectorAgent": "collector",
             "AnalystAgent": "analyst",
             "ReportWriterAgent": "report_writer",
@@ -971,7 +984,7 @@ class LangGraphWorkflowRunner:
         )
 
     @staticmethod
-    def _knowledge_hit_payload(item) -> dict:
+    def _knowledge_hit_payload(item, run_id: str | None = None) -> dict:
         return {
             "chunk_id": item.chunk_id,
             "text_preview": item.text_preview or item.text[:240],
@@ -979,6 +992,94 @@ class LangGraphWorkflowRunner:
             "source_domain": item.source_domain,
             "source_quality": item.source_quality,
             "score": item.score,
-            "evidence_id": item.evidence_id,
+            "evidence_id": LangGraphWorkflowRunner._knowledge_evidence_id(run_id, item.chunk_id),
+            "original_evidence_id": item.evidence_id,
             "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         }
+
+    def _inject_knowledge_evidence(
+        self,
+        task: Task,
+        run_id: str | None,
+        current_evidence: list[Evidence],
+        retrieved_chunks: list,
+    ) -> list[Evidence]:
+        if not retrieved_chunks:
+            return current_evidence
+
+        existing_ids = {item.evidence_id for item in current_evidence}
+        injected: list[Evidence] = []
+        for chunk in retrieved_chunks:
+            evidence_id = self._knowledge_evidence_id(run_id, chunk.chunk_id)
+            if evidence_id in existing_ids:
+                continue
+            metadata = chunk.metadata or {}
+            competitor = metadata.get("competitor") or chunk.competitor
+            if competitor and competitor not in task.competitors:
+                continue
+            confidence = self._knowledge_evidence_confidence(chunk)
+            relevance_level = self._knowledge_relevance_level(chunk.score)
+            injected.append(
+                Evidence(
+                    evidence_id=evidence_id,
+                    run_id=run_id,
+                    competitor=competitor,
+                    source_type="knowledge_base",
+                    url=chunk.source_url,
+                    local_ref=chunk.chunk_id if not chunk.source_url else None,
+                    snippet=chunk.text_preview or chunk.text[:500],
+                    confidence=confidence,
+                    source_domain=chunk.source_domain,
+                    source_quality=chunk.source_quality or "unknown",
+                    relevance_score=chunk.score,
+                    relevance_level=relevance_level,
+                    relevance_reason=(
+                        f"Long-term knowledge base chunk retrieved by cosine similarity score={chunk.score}; "
+                        "linked to original public Evidence through metadata."
+                    ),
+                    entity_match_signals={
+                        "source": "knowledge_base_retrieval",
+                        "kb_chunk_id": chunk.chunk_id,
+                        "original_evidence_id": chunk.evidence_id,
+                        "retrieval_score": chunk.score,
+                        "retrieval_strategy": "cosine_similarity_top_k",
+                        "knowledge_metadata": metadata,
+                    },
+                    content_mode="snippet",
+                    page_fetch_success=False,
+                    content_excerpt=chunk.text,
+                    content_chars=len(chunk.text),
+                )
+            )
+            existing_ids.add(evidence_id)
+
+        if not injected:
+            return current_evidence
+        saved = self.evidence_service.save_many(task.task_id, injected, run_id=run_id)
+        return [*current_evidence, *saved]
+
+    @staticmethod
+    def _knowledge_evidence_id(run_id: str | None, chunk_id: str) -> str:
+        import hashlib
+
+        raw = f"{run_id or 'run'}:{chunk_id}".encode("utf-8")
+        return f"ev_kb_{hashlib.sha1(raw).hexdigest()[:10]}"
+
+    @staticmethod
+    def _knowledge_relevance_level(score: float) -> str:
+        if score >= 0.75:
+            return "high"
+        if score >= 0.55:
+            return "medium"
+        if score >= 0.35:
+            return "low"
+        return "unrelated"
+
+    @staticmethod
+    def _knowledge_evidence_confidence(chunk) -> float:
+        source_confidence = chunk.metadata.get("confidence") if isinstance(chunk.metadata, dict) else None
+        try:
+            source_confidence_value = float(source_confidence)
+        except (TypeError, ValueError):
+            source_confidence_value = 0.7
+        return round(max(0.0, min(1.0, (source_confidence_value * 0.6) + (chunk.score * 0.4))), 2)

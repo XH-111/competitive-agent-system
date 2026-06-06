@@ -1,5 +1,6 @@
 export type {
   Claim,
+  DimensionResult,
   CollectorDiagnostics,
   CollectorStatus,
   Dag,

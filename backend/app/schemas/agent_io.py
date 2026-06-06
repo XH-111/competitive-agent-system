@@ -135,6 +135,8 @@ class QaInput(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
     analysis: AnalystOutput | None = None
     report_output: ReportWriterOutput | None = None
+    selected_dimensions: list[str] = Field(default_factory=list)
+    analysis_dimension_plan: AnalysisDimensionPlan | None = None
     retry_count: int = 0
     demo_mode: DemoMode = "normal"
 

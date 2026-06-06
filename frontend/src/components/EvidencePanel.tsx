@@ -1,15 +1,15 @@
 import { ExternalLink } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { Claim, Evidence } from "../types";
+import type { Evidence } from "../types";
 
 export function EvidencePanel({
-  claim,
   evidence,
   evidenceIds,
+  selectedFactId,
 }: {
-  claim?: Claim;
   evidence: Evidence[];
   evidenceIds?: string[];
+  selectedFactId?: string;
 }) {
   const [competitorFilter, setCompetitorFilter] = useState("all");
   const [relevanceFilter, setRelevanceFilter] = useState("all");
@@ -20,11 +20,9 @@ export function EvidencePanel({
     [evidence],
   );
 
-  const related = (claim
-    ? evidence.filter((item) => claim.evidence_ids.includes(item.evidence_id))
-    : selectedIds
-      ? evidence.filter((item) => selectedIds.includes(item.evidence_id))
-      : evidence
+  const related = (selectedIds
+    ? evidence.filter((item) => selectedIds.includes(item.evidence_id))
+    : evidence
   )
     .filter((item) => competitorFilter === "all" || item.competitor === competitorFilter)
     .filter((item) => relevanceFilter === "all" || item.relevance_level === relevanceFilter)
@@ -67,9 +65,9 @@ export function EvidencePanel({
         </div>
       </div>
 
-      {claim && !claim.evidence_ids.length && (
+      {selectedFactId && !selectedIds?.length && (
         <div className="mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm font-semibold text-danger">
-          当前 Claim 缺少 evidence_ids，无法完成证据溯源。
+          当前结构化事实缺少 evidence_ids，无法完成证据溯源。
         </div>
       )}
 

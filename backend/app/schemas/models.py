@@ -69,7 +69,7 @@ class Evidence(BaseModel):
     evidence_id: str = Field(default_factory=lambda: f"ev_{uuid4().hex[:10]}")
     run_id: str | None = None
     competitor: str | None = None
-    source_type: Literal["web", "public_web", "document", "pricing_page", "review", "interview", "survey"]
+    source_type: Literal["web", "public_web", "knowledge_base", "document", "pricing_page", "review", "interview", "survey"]
     url: str | None = None
     local_ref: str | None = None
     collected_at: datetime = Field(default_factory=datetime.utcnow)
@@ -257,6 +257,7 @@ class PlannerScopeSnapshot(BaseModel):
 
 
 class DimensionResult(BaseModel):
+    dimension_result_id: str = Field(default_factory=lambda: f"fact_{uuid4().hex[:10]}")
     dimension_id: str = Field(min_length=1)
     competitor: str | None = None
     summary: str = Field(min_length=1)
@@ -398,11 +399,27 @@ class AgentMessage(BaseModel):
 class ReworkInstruction(BaseModel):
     target_agent: AgentName
     error_type: Literal[
+        "invalid_planner_output",
+        "missing_dimension_search_plan",
         "missing_evidence",
         "missing_relevant_evidence",
+        "missing_dimension_evidence",
+        "page_fetch_insufficient",
         "invalid_extraction",
+        "dimension_coverage_gap",
+        "fact_missing_evidence",
+        "fact_evidence_not_found",
+        "fact_competitor_mismatch",
+        "fact_dimension_mismatch",
+        "fact_confidence_overstated",
+        "invalid_insufficient_evidence_state",
         "contradiction",
         "bad_report_format",
+        "report_dimension_gap",
+        "report_competitor_gap",
+        "report_fact_mismatch",
+        "report_unsupported_statement",
+        "report_missing_citations",
         "swot_missing_support",
         "swot_over_inference",
         "swot_competitor_mismatch",
@@ -467,7 +484,8 @@ class Report(BaseModel):
     run_id: str | None = None
     markdown: str
     json_report: dict[str, Any]
-    claims: list[Claim]
+    dimension_results: list[DimensionResult] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
     qa_result: QaResult | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

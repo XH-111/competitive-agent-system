@@ -78,7 +78,7 @@ flowchart LR
 2. 每个 Agent 都使用结构化 Input / Output Schema，避免自由文本在 Agent 之间失控传递。
 3. EvidenceGate 位于 Collector 后、PageFetcher 前，用于拦截缺少 high / medium relevance Evidence 的任务。
 4. PageFetcher 只对通过门禁的公开网页 Evidence 抓取短正文摘要，失败时 fallback 到搜索 snippet。
-5. ReportWriter 生成的每个 Claim 必须绑定 `evidence_ids`，从报告结论可以反查来源 Evidence。
+5. AnalystAgent 生成的每条 `DimensionResult` 必须绑定 `evidence_ids`；ReportWriter 只引用已校验事实，不再生成新的 Claim。
 
 ## 3. QA 自动返工流程图
 
@@ -87,10 +87,10 @@ flowchart TD
     QAStart[QaAgent 开始质检] --> CheckEvidence{是否缺少 Evidence?}
 
     CheckEvidence -->|是| RouteCollector[route_to = CollectorAgent<br/>missing_evidence]
-    CheckEvidence -->|否| CheckAnalysis{结构化抽取是否有效?}
+    CheckEvidence -->|否| CheckAnalysis{DimensionResult 是否完整且可溯源?}
 
-    CheckAnalysis -->|否| RouteAnalyst[route_to = AnalystAgent<br/>invalid_extraction / contradiction]
-    CheckAnalysis -->|是| CheckReport{报告格式和 Claim 是否合格?}
+    CheckAnalysis -->|否| RouteAnalyst[route_to = AnalystAgent<br/>fact binding / dimension coverage]
+    CheckAnalysis -->|是| CheckReport{报告是否忠实引用结构化事实?}
 
     CheckReport -->|否| RouteWriter[route_to = ReportWriterAgent<br/>bad_report_format]
     CheckReport -->|是| QualityCheck[Evidence 质量 soft check<br/>low confidence / source_domain / evidence_count]

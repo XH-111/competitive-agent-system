@@ -13,7 +13,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
+import type { CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
 export default function App() {
@@ -26,7 +26,7 @@ export default function App() {
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string>();
-  const [selectedClaim, setSelectedClaim] = useState<Claim>();
+  const [selectedFact, setSelectedFact] = useState<DimensionResult>();
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [demoMode, setDemoMode] = useState<DemoMode>("normal");
@@ -93,11 +93,16 @@ export default function App() {
     await qaRequest.then(setQa).catch(() => setQa(undefined));
     await reportRequest.then((nextReport) => {
       setReport(nextReport);
-      setSelectedClaim(nextReport.claims[0]);
+      const legacyKnowledge = nextReport.json_report.knowledge as { dimension_results?: DimensionResult[] } | undefined;
+      setSelectedFact(
+        nextReport.dimension_results?.[0]
+        ?? nextReport.json_report.dimension_results?.[0]
+        ?? legacyKnowledge?.dimension_results?.[0],
+      );
       setSelectedEvidenceIds([]);
     }).catch(() => {
       setReport(undefined);
-      setSelectedClaim(undefined);
+      setSelectedFact(undefined);
       setSelectedEvidenceIds([]);
     });
   }
@@ -111,7 +116,7 @@ export default function App() {
     setTraces([]);
     setRuns([]);
     setSelectedRunId(undefined);
-    setSelectedClaim(undefined);
+    setSelectedFact(undefined);
     setSelectedEvidenceIds([]);
     setWorkflowSummary(undefined);
     await refresh(nextTask.task_id);
@@ -134,7 +139,7 @@ export default function App() {
       }
       if (!result.report) {
         setReport(undefined);
-        setSelectedClaim(undefined);
+        setSelectedFact(undefined);
         setSelectedEvidenceIds([]);
       }
       if (demoMode === "qa_missing_evidence") {
@@ -463,15 +468,15 @@ export default function App() {
         <div className="space-y-4">
           <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} />
           <KnowledgeView report={report} evidence={evidence} onEvidenceIdsSelect={(ids) => {
-            setSelectedClaim(undefined);
+            setSelectedFact(undefined);
             setSelectedEvidenceIds(ids);
           }} />
           {!report && evidence.length > 0 && (
             <EvidencePanel evidence={evidence} evidenceIds={selectedEvidenceIds} />
           )}
-          <ReportView report={report} evidence={evidence} competitors={task?.competitors} selectedClaim={selectedClaim} selectedEvidenceIds={selectedEvidenceIds} onSelect={(claim) => {
-            setSelectedClaim(claim);
-            setSelectedEvidenceIds([]);
+          <ReportView report={report} evidence={evidence} competitors={task?.competitors} selectedFact={selectedFact} selectedEvidenceIds={selectedEvidenceIds} onSelect={(fact) => {
+            setSelectedFact(fact);
+            setSelectedEvidenceIds(fact.evidence_ids);
           }} />
           <QaPanel qa={qa} workflowSummary={workflowSummary} />
           <TraceViewer traces={traces} />
