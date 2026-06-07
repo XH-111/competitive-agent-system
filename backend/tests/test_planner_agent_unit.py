@@ -127,13 +127,24 @@ def test_planner_output_has_only_new_top_level_fields():
 def test_deterministic_fallback_generates_base_dimensions_and_collection_plan():
     output = run_planner(FakeLlmClient(available=False, fallback_reason="disabled"))
 
-    assert output.selected_dimensions[:7] == list(PlannerAgent.BASE_DIMENSIONS)
+    assert output.selected_dimensions == list(PlannerAgent.BASE_DIMENSIONS)
     assert output.diagnostics["planner_mode_used"] == "deterministic"
     assert output.diagnostics["llm_schema_validation_success"] is False
     assert output.diagnostics["fallback_used"] is True
+    assert output.diagnostics["llm_fallback_reason"] == "disabled"
     assert output.diagnostics["collection_plan_generated"] is True
     for competitor in make_task().competitors:
-        assert set(PlannerAgent.BASE_DIMENSIONS).issubset(output.collection_plan[competitor])
+        assert list(output.collection_plan[competitor]) == list(PlannerAgent.BASE_DIMENSIONS)
+        for dimension_id, template in PlannerAgent.FALLBACK_QUERY_TEMPLATES.items():
+            dimension = next(
+                item
+                for item in output.analysis_dimension_plan.dimension_plans
+                if item.dimension_id == dimension_id
+            )
+            assert dimension.query_templates == [template]
+            assert output.collection_plan[competitor][dimension_id].queries == [
+                template.replace("{competitor}", competitor)
+            ]
 
 
 def test_llm_simple_payload_is_normalized_into_full_planner_output():
@@ -175,6 +186,10 @@ def test_invalid_json_falls_back_and_keeps_debug_preview():
     assert output.diagnostics["llm_schema_validation_errors"]
     assert output.diagnostics["llm_response_preview"] == content
     assert output.diagnostics["llm_fallback_reason"]
+    assert output.selected_dimensions == list(PlannerAgent.BASE_DIMENSIONS)
+    assert output.collection_plan["绿联140w智显充"]["feature"].queries == [
+        "绿联140w智显充 功能 参数"
+    ]
 
 
 def test_prompt_requires_simple_strict_json_contract():

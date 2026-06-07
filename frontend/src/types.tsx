@@ -16,6 +16,7 @@ export type {
   LlmStatus,
   KnowledgeHit,
   KnowledgeRetrievalStrategy,
+  PlannerAttempt,
   PlannerRunResult,
   WriterDiagnostics,
   WorkflowSummary

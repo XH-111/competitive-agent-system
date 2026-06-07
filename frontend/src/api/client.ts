@@ -1,4 +1,4 @@
-import type { CollectorStatus, Dag, Evidence, LlmStatus, PlannerRunResult, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord } from "./types";
+import type { CollectorStatus, Dag, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord } from "./types";
 import { apiRecorder } from "./recorder";
 
 const baseUrl = "";
@@ -89,6 +89,7 @@ export const api = {
   runQa: (taskId: string, runId: string) => request<QaResult>(`/api/tasks/${taskId}/runs/${runId}/qa`, { label: "runQa", method: "GET" }),
   runReport: (taskId: string, runId: string) => request<Report>(`/api/tasks/${taskId}/runs/${runId}/report`, { label: "runReport", method: "GET" }),
   runTraces: (taskId: string, runId: string) => request<TraceRecord[]>(`/api/tasks/${taskId}/runs/${runId}/traces`, { label: "runTraces", method: "GET" }),
+  runPlannerAttempts: (taskId: string, runId: string) => request<PlannerAttempt[]>(`/api/tasks/${taskId}/runs/${runId}/planner-attempts`, { label: "runPlannerAttempts", method: "GET" }),
   llmStatus: () => request<LlmStatus>("/api/llm/status", { label: "llmStatus", method: "GET" }),
   testLlm: () => request<LlmStatus>("/api/llm/test", { label: "testLlm", method: "POST" }),
   collectorStatus: () => request<CollectorStatus>("/api/search/status", { label: "collectorStatus", method: "GET" }),

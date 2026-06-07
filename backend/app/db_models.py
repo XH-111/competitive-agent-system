@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -50,6 +50,21 @@ class TraceRecordRow(Base):
     run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     agent_name: Mapped[str] = mapped_column(String, index=True, nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PlannerAttemptRecord(Base):
+    __tablename__ = "planner_attempts"
+    __table_args__ = (UniqueConstraint("run_id", "attempt_no", name="uq_planner_attempt_run_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    planner_output_json: Mapped[str] = mapped_column(Text, nullable=False)
+    diagnostics_json: Mapped[str] = mapped_column(Text, nullable=False)
+    rework_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_llm_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 

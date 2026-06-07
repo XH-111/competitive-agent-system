@@ -13,7 +13,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, PlannerRunResult, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
+import type { CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
 export default function App() {
@@ -37,6 +37,7 @@ export default function App() {
   const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("langgraph");
   const [runStage, setRunStage] = useState<"full" | "planner_only">("full");
   const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
+  const [plannerAttempts, setPlannerAttempts] = useState<PlannerAttempt[]>([]);
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>();
   const [llmTesting, setLlmTesting] = useState(false);
@@ -77,14 +78,16 @@ export default function App() {
     setRuns(nextRuns);
     const activeRunId = runId ?? nextRuns[0]?.run_id;
     setSelectedRunId(activeRunId);
-    const [nextDag, nextEvidence, nextTraces] = await Promise.all([
+    const [nextDag, nextEvidence, nextTraces, nextPlannerAttempts] = await Promise.all([
       api.dag(taskId),
       activeRunId ? api.runEvidence(taskId, activeRunId) : api.evidence(taskId),
-      activeRunId ? api.runTraces(taskId, activeRunId) : api.traces(taskId)
+      activeRunId ? api.runTraces(taskId, activeRunId) : api.traces(taskId),
+      activeRunId ? api.runPlannerAttempts(taskId, activeRunId).catch(() => []) : Promise.resolve([]),
     ]);
     setDag(nextDag);
     setEvidence(nextEvidence);
     setTraces(nextTraces);
+    setPlannerAttempts(nextPlannerAttempts);
     const recoveredSummary = recoverWorkflowSummary(nextTraces);
     if (recoveredSummary) {
       setWorkflowSummary(recoveredSummary);
@@ -123,6 +126,7 @@ export default function App() {
     setSelectedFact(undefined);
     setSelectedEvidenceIds([]);
     setWorkflowSummary(undefined);
+    setPlannerAttempts([]);
     await refresh(nextTask.task_id);
   }
 
@@ -547,7 +551,7 @@ export default function App() {
           </div>
         )}
 
-        <PlannerSummaryCard workflowSummary={workflowSummary} collectorDiagnostics={collectorDiagnostics} />
+        <PlannerSummaryCard workflowSummary={workflowSummary} collectorDiagnostics={collectorDiagnostics} plannerAttempts={plannerAttempts} />
         {workflowSummary?.debug_stage !== "planner_only" && <KnowledgeHitsPanel workflowSummary={workflowSummary} />}
 
         <div className="space-y-4">

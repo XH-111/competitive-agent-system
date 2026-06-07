@@ -328,6 +328,17 @@ export type PlannerRunResult = {
   workflow_summary?: WorkflowSummary;
 };
 
+export type PlannerAttempt = {
+  run_id: string;
+  attempt_no: number;
+  status: "generated" | "fallback" | "failed";
+  planner_output: Record<string, unknown>;
+  diagnostics: Record<string, unknown>;
+  rework_context?: Record<string, unknown> | null;
+  raw_llm_response?: string | null;
+  created_at: string;
+};
+
 export type CollectorDiagnostics = {
   collector_mode_requested?: string;
   collector_mode_used?: string;

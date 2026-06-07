@@ -30,6 +30,15 @@ class PlannerAgent:
         "opportunity",
         "threat",
     )
+    FALLBACK_QUERY_TEMPLATES = {
+        "pricing": "{competitor} 价格",
+        "feature": "{competitor} 功能 参数",
+        "persona": "{competitor} 使用场景 用户评价",
+        "strength": "{competitor} 亮点 优势",
+        "weakness": "{competitor} 缺点 投诉",
+        "opportunity": "{competitor} 市场趋势 机会",
+        "threat": "{competitor} 竞品对比 替代",
+    }
     BASE_DIMENSION_DEFINITIONS = {
         "pricing": {
             "label": "定价与商业模式",
@@ -129,7 +138,9 @@ class PlannerAgent:
                     "llm_fallback_reason": reason,
                 }
             )
-            return self._deterministic_output(task, diagnostics, reason)
+            output = self._deterministic_output(task, diagnostics, reason)
+            output._raw_llm_response = response.content
+            return output
 
         try:
             payload = self._parse_planner_json(response.content or "")
@@ -140,7 +151,9 @@ class PlannerAgent:
                     "llm_schema_validation_errors": [],
                 }
             )
-            return self._build_planner_output(task, payload, diagnostics, source="llm")
+            output = self._build_planner_output(task, payload, diagnostics, source="llm")
+            output._raw_llm_response = response.content
+            return output
         except Exception as exc:  # noqa: BLE001 - planner must preserve the workflow fallback.
             reason = f"Planner LLM output validation failed: {exc}"
             diagnostics.update(
@@ -152,7 +165,9 @@ class PlannerAgent:
                     "llm_fallback_reason": reason,
                 }
             )
-            return self._deterministic_output(task, diagnostics, reason)
+            output = self._deterministic_output(task, diagnostics, reason)
+            output._raw_llm_response = response.content
+            return output
 
     def _deterministic_output(
         self,
@@ -353,10 +368,13 @@ class PlannerAgent:
         keywords = self._normalize_string_list(suggestion.get("keywords"))
         if not keywords:
             keywords = list(base.get("keywords", []))
-        templates = self._normalize_query_templates(
-            suggestion.get("query_templates"),
-            fallback=base.get("query_templates") or [f"{{competitor}} {label}"],
-        )
+        if source == "deterministic":
+            templates = [self.FALLBACK_QUERY_TEMPLATES[dimension_id]]
+        else:
+            templates = self._normalize_query_templates(
+                suggestion.get("query_templates"),
+                fallback=base.get("query_templates") or [f"{{competitor}} {label}"],
+            )
         research_goals = self._normalize_string_list(suggestion.get("research_goals"))
         if not research_goals:
             research_goals = list(

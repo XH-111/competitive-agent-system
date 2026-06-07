@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from app.schemas.models import (
     AnalysisDimensionPlan,
@@ -34,6 +34,8 @@ class PlannerInput(BaseModel):
 
 
 class PlannerOutput(BaseModel):
+    _raw_llm_response: str | None = PrivateAttr(default=None)
+
     planner_summary: PlannerSummary
     selected_dimensions: list[str] = Field(min_length=7)
     analysis_dimension_plan: AnalysisDimensionPlan

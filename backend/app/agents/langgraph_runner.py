@@ -32,6 +32,7 @@ from app.services.evidence_service import EvidenceService
 from app.services.entity_resolver_service import EntityResolverService
 from app.services.knowledge_base_service import KbIngestionService, KbRetrieverService
 from app.services.page_fetcher import PageFetcher
+from app.services.planner_attempt_service import PlannerAttemptService
 from app.services.report_service import ReportService
 from app.services.task_run_service import TaskRunService
 from app.services.task_service import TaskService
@@ -46,6 +47,7 @@ class LangGraphWorkflowRunner:
         self.evidence_service = EvidenceService(db)
         self.report_service = ReportService(db)
         self.task_run_service = TaskRunService(db)
+        self.planner_attempt_service = PlannerAttemptService(db)
         self.kb_ingestion_service = KbIngestionService(db)
         self.kb_retriever_service = KbRetrieverService(db)
         self.entity_resolver_service = EntityResolverService()
@@ -311,7 +313,35 @@ class LangGraphWorkflowRunner:
 
     def planner_node(self, state: WorkflowState) -> WorkflowState:
         task = state["task"]
-        output = self.planner.run(PlannerInput(task=task, run_id=state.get("run_id"), retry_count=state["rework_count"]))
+        run_id = state.get("run_id")
+        try:
+            output = self.planner.run(
+                PlannerInput(task=task, run_id=run_id, retry_count=state["rework_count"])
+            )
+        except Exception as exc:
+            if run_id:
+                self.planner_attempt_service.save(
+                    run_id=run_id,
+                    status="failed",
+                    planner_output=None,
+                    diagnostics={
+                        "planner_mode_used": "failed",
+                        "fallback_used": False,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                    rework_context=state.get("rework_context"),
+                )
+            raise
+        if run_id:
+            self.planner_attempt_service.save(
+                run_id=run_id,
+                status="fallback" if output.diagnostics.get("fallback_used") else "generated",
+                planner_output=output,
+                diagnostics=output.diagnostics,
+                rework_context=state.get("rework_context"),
+                raw_llm_response=output._raw_llm_response,
+            )
         analysis_dimension_plan = output.analysis_dimension_plan
         selected_dimensions = output.selected_dimensions
         entity_resolution = self.entity_resolver_service.resolve_for_task(task)

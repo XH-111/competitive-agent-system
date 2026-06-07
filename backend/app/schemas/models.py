@@ -65,6 +65,17 @@ class TaskRun(BaseModel):
     created_at: datetime
 
 
+class PlannerAttempt(BaseModel):
+    run_id: str = Field(min_length=1)
+    attempt_no: int = Field(ge=1)
+    status: Literal["generated", "fallback", "failed"]
+    planner_output: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    rework_context: dict[str, Any] | None = None
+    raw_llm_response: str | None = None
+    created_at: datetime
+
+
 class Evidence(BaseModel):
     evidence_id: str = Field(default_factory=lambda: f"ev_{uuid4().hex[:10]}")
     run_id: str | None = None

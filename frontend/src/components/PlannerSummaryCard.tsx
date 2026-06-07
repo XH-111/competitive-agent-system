@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { CollectorDiagnostics, WorkflowSummary } from "../types";
+import type { CollectorDiagnostics, PlannerAttempt, WorkflowSummary } from "../types";
 
 const DIMENSION_LABELS: Record<string, string> = {
   pricing: "价格",
@@ -38,9 +38,11 @@ type PlanQuery = {
 export function PlannerSummaryCard({
   workflowSummary,
   collectorDiagnostics,
+  plannerAttempts = [],
 }: {
   workflowSummary?: WorkflowSummary;
   collectorDiagnostics?: CollectorDiagnostics;
+  plannerAttempts?: PlannerAttempt[];
 }) {
   const dimensions = workflowSummary?.selected_dimensions ?? [];
   const dimensionPlans = workflowSummary?.analysis_dimension_plan?.dimension_plans ?? [];
@@ -220,6 +222,29 @@ export function PlannerSummaryCard({
         </Panel>
 
         <Panel title="Planner 运行诊断" className="xl:col-span-2">
+          {!!plannerAttempts.length && (
+            <div className="mb-3 space-y-2">
+              {plannerAttempts.map((attempt) => (
+                <details key={`${attempt.run_id}-${attempt.attempt_no}`} className="rounded border border-line bg-panel p-3">
+                  <summary className="cursor-pointer list-none">
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <span className="font-semibold">第 {attempt.attempt_no} 次规划</span>
+                      <span className={attempt.status === "generated" ? "text-success" : attempt.status === "fallback" ? "text-warning" : "text-danger"}>
+                        {attemptStatusLabel(attempt.status)}
+                      </span>
+                      <span>模式：{String(attempt.diagnostics.planner_mode_used ?? "-")}</span>
+                      <span>fallback：{attempt.diagnostics.fallback_used ? "是" : "否"}</span>
+                      <span>维度：{attemptDimensions(attempt).join("、") || "-"}</span>
+                      <span className="text-slate-500">{formatAttemptTime(attempt.created_at)}</span>
+                    </div>
+                  </summary>
+                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded border border-line bg-white p-3 text-xs leading-5 text-slate-700">
+                    {JSON.stringify(attempt.planner_output, null, 2)}
+                  </pre>
+                </details>
+              ))}
+            </div>
+          )}
           <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
             {JSON.stringify(workflowSummary?.diagnostics ?? {}, null, 2)}
           </pre>
@@ -239,6 +264,24 @@ export function PlannerSummaryCard({
       </div>
     </section>
   );
+}
+
+function attemptStatusLabel(status: PlannerAttempt["status"]) {
+  if (status === "generated") return "LLM 生成";
+  if (status === "fallback") return "确定性兜底";
+  return "失败";
+}
+
+function attemptDimensions(attempt: PlannerAttempt): string[] {
+  const dimensions = attempt.planner_output.selected_dimensions;
+  return Array.isArray(dimensions)
+    ? dimensions.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function formatAttemptTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function Panel({ title, className = "", children }: { title: string; className?: string; children: ReactNode }) {

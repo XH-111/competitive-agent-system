@@ -7,6 +7,7 @@ from app.database import get_db
 from app.schemas import CreateTaskRequest
 from app.services.evidence_service import EvidenceService
 from app.services.llm_client import LlmClient
+from app.services.planner_attempt_service import PlannerAttemptService
 from app.services.report_service import ReportService
 from app.services.task_run_service import TaskRunService
 from app.services.task_service import TaskService
@@ -247,6 +248,15 @@ def get_task_run_qa(task_id: str, run_id: str, db: Session = Depends(get_db)):
 @router.get("/tasks/{task_id}/runs/{run_id}/traces")
 def get_task_run_traces(task_id: str, run_id: str, db: Session = Depends(get_db)):
     return TraceService(db).list_for_task(task_id, run_id=run_id)
+
+
+@router.get("/tasks/{task_id}/runs/{run_id}/planner-attempts")
+def get_task_run_planner_attempts(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    try:
+        TaskRunService(db).get_run(task_id, run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
+    return PlannerAttemptService(db).list_for_run(run_id)
 
 
 def _latest_run_id_or_none(task_id: str, db: Session) -> str | None:

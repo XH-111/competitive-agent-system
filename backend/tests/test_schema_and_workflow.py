@@ -19,7 +19,7 @@ from app.agents.runner import MockWorkflowRunner
 from app.agents.runner_factory import resolve_workflow_engine
 from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan, fixed_dimension_ids, fixed_query_hints_for_competitor
 from app.database import Base
-from app.db_models import QaRecordRow
+from app.db_models import PlannerAttemptRecord, QaRecordRow
 from app.schemas import (
     AgentMessage,
     AnalysisDimension,
@@ -2212,6 +2212,17 @@ def test_langgraph_planner_only_executes_no_downstream_agents(db_session, monkey
         for trace in TraceService(db_session).list_for_task(task.task_id, run_id=result["run_id"])
     }
     assert trace_agents == {"PlannerAgent", "WorkflowEngine"}
+    attempts = (
+        db_session.query(PlannerAttemptRecord)
+        .filter_by(run_id=result["run_id"])
+        .order_by(PlannerAttemptRecord.attempt_no.asc())
+        .all()
+    )
+    assert len(attempts) == 1
+    assert attempts[0].attempt_no == 1
+    assert attempts[0].status == "fallback"
+    assert json.loads(attempts[0].planner_output_json)["selected_dimensions"]
+    assert attempts[0].raw_llm_response is None
 
 
 def test_langgraph_page_fetcher_trace_sequence_and_run_id(db_session):
