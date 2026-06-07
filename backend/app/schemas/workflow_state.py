@@ -63,6 +63,8 @@ class WorkflowState(TypedDict, total=False):
     rework_count: int
     max_rework: int
     planner_output: PlannerOutput | None
+    planner_summary: dict[str, Any]
+    collection_plan: dict[str, Any]
     collector_output: CollectorOutput | None
     analyst_output: AnalystOutput | None
     report_writer_output: ReportWriterOutput | None

@@ -11,7 +11,6 @@ from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import MAX_REWORK, QaAgent
 from app.agents.report_writer import ReportWriterAgent
-from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan
 from app.schemas import (
     AnalystInput,
     CollectorInput,
@@ -69,6 +68,7 @@ class LangGraphWorkflowRunner:
         analyst_mode: str = "evidence",
         workflow_engine_requested: str = "langgraph",
         content_mode: str | None = None,
+        debug_stage: str | None = None,
     ) -> dict:
         started = time.perf_counter()
         task_run = self.task_run_service.create_run(
@@ -155,6 +155,8 @@ class LangGraphWorkflowRunner:
             "run_cleanup_summary": {},
         }
         try:
+            if debug_stage == "planner_only":
+                return self._run_planner_only(initial_state, task_run, started)
             final_state = self.graph.invoke(initial_state, config={"recursion_limit": 24})
             elapsed = int((time.perf_counter() - started) * 1000)
             summary = self._workflow_summary(final_state, elapsed)
@@ -186,6 +188,87 @@ class LangGraphWorkflowRunner:
                 error_message=str(exc),
             )
             raise
+
+    def _run_planner_only(self, initial_state: WorkflowState, task_run, started: float) -> dict:
+        planner_state = self.planner_node(initial_state)
+        planner_output = planner_state["planner_output"]
+        elapsed = int((time.perf_counter() - started) * 1000)
+        planner_json = planner_output.model_dump(mode="json")
+        frozen_dag = {
+            "nodes": [
+                {"id": "PlannerAgent", "label": "规划分析维度与采集策略", "status": "completed"},
+                {"id": "CollectorAgent", "label": "已冻结，不执行证据采集", "status": "skipped"},
+                {"id": "AnalystAgent", "label": "已冻结，不执行事实抽取", "status": "skipped"},
+                {"id": "ReportWriterAgent", "label": "已冻结，不执行报告生成", "status": "skipped"},
+            ],
+            "edges": [],
+        }
+        summary = {
+            "run_id": task_run.run_id,
+            "task_id": initial_state["task_id"],
+            "workflow_engine_requested": initial_state["workflow_engine_requested"],
+            "workflow_engine_used": "langgraph",
+            "debug_stage": "planner_only",
+            "planner_summary": planner_output.planner_summary.model_dump(mode="json"),
+            "intent_summary": planner_output.planner_summary.task_goal,
+            "intent_classification": planner_output.planner_summary.intent_classification,
+            "selected_dimensions": planner_output.selected_dimensions,
+            "analysis_dimension_plan": (
+                planner_output.analysis_dimension_plan.model_dump(mode="json")
+                if planner_output.analysis_dimension_plan
+                else None
+            ),
+            "collection_plan": {
+                competitor: {
+                    dimension_id: item.model_dump(mode="json")
+                    for dimension_id, item in dimensions.items()
+                }
+                for competitor, dimensions in planner_output.collection_plan.items()
+            },
+            "downstream_guidance": (
+                planner_output.downstream_guidance.model_dump(mode="json")
+                if planner_output.downstream_guidance
+                else None
+            ),
+            "diagnostics": planner_output.diagnostics,
+            "planner_notes": planner_output.planner_notes,
+            "planner_output": planner_json,
+            "dag": frozen_dag,
+            "node_sequence": ["planner"],
+            "conditional_routes_taken": [],
+            "rework_count": initial_state["rework_count"],
+            "final_status": "planner_completed",
+            "elapsed_time_ms": elapsed,
+            "run_isolation_strategy": "run_id",
+        }
+        self._save_workflow_trace(initial_state["task_id"], task_run.run_id, summary, elapsed)
+        self.task_service.update_status(initial_state["task_id"], "completed", rework_count=initial_state["rework_count"])
+        finished_run = self.task_run_service.finish_run(
+            task_run.run_id,
+            status="completed",
+            final_status="planner_completed",
+            elapsed_time_ms=elapsed,
+        )
+        return {
+            "run": finished_run,
+            "run_id": task_run.run_id,
+            "plan": planner_output,
+            "planner_output": planner_json,
+            "planner_summary": summary["planner_summary"],
+            "intent_summary": planner_output.planner_summary.task_goal,
+            "intent_classification": planner_output.planner_summary.intent_classification,
+            "selected_dimensions": planner_output.selected_dimensions,
+            "analysis_dimension_plan": summary["analysis_dimension_plan"],
+            "collection_plan": summary["collection_plan"],
+            "downstream_guidance": summary["downstream_guidance"],
+            "diagnostics": planner_output.diagnostics,
+            "planner_notes": planner_output.planner_notes,
+            "dag": frozen_dag,
+            "qa_result": None,
+            "report": None,
+            "knowledge_hits": [],
+            "workflow_summary": summary,
+        }
 
     def _build_graph(self):
         graph = StateGraph(WorkflowState)
@@ -229,18 +312,8 @@ class LangGraphWorkflowRunner:
     def planner_node(self, state: WorkflowState) -> WorkflowState:
         task = state["task"]
         output = self.planner.run(PlannerInput(task=task, run_id=state.get("run_id"), retry_count=state["rework_count"]))
-        analysis_dimension_plan = apply_fixed_dimensions_to_plan(output.analysis_dimension_plan, task)
-        selected_dimensions = analysis_dimension_plan.selected_dimensions
-        output = output.model_copy(
-            update={
-                "selected_dimensions": selected_dimensions,
-                "analysis_dimension_plan": analysis_dimension_plan,
-                "planner_notes": [
-                    *output.planner_notes,
-                    "Collector/Analyst/Writer use Planner-selected base plus dynamic dimensions and the Planner collector_search_plan.",
-                ],
-            }
-        )
+        analysis_dimension_plan = output.analysis_dimension_plan
+        selected_dimensions = output.selected_dimensions
         entity_resolution = self.entity_resolver_service.resolve_for_task(task)
         competitor_aliases = {
             competitor: result.get("aliases", [])
@@ -249,31 +322,16 @@ class LangGraphWorkflowRunner:
         return {
             **state,
             "planner_output": output,
+            "planner_summary": output.planner_summary.model_dump(mode="json"),
+            "collection_plan": output.collection_plan,
             "entity_resolution": entity_resolution,
             "competitor_aliases": competitor_aliases,
-            "intent_summary": output.intent_summary,
-            "intent_classification": output.intent_classification,
-            "ambiguity_level": output.ambiguity_level,
-            "scope_type": output.scope_type,
-            "scope_size": output.scope_size,
-            "extracted_context": output.extracted_context,
+            "intent_summary": output.planner_summary.task_goal,
+            "intent_classification": output.planner_summary.intent_classification,
             "selected_dimensions": selected_dimensions,
             "analysis_dimension_plan": analysis_dimension_plan,
             "downstream_guidance": output.downstream_guidance,
-            "survey_needed": output.survey_needed,
-            "survey_recommended": output.survey_recommended,
-            "survey_objective": output.survey_objective,
-            "survey_inputs": output.survey_inputs,
-            "confirmed_scope": output.confirmed_scope,
-            "inferred_scope": output.inferred_scope,
-            "suggested_scope": output.suggested_scope,
-            "recommended_next_constraints": output.recommended_next_constraints,
-            "assumptions": output.assumptions,
-            "candidate_competitors": output.candidate_competitors,
-            "clarification_targets": output.clarification_targets,
-            "planning_stages": output.planning_stages,
             "planner_notes": output.planner_notes,
-            "planner_confidence": output.confidence,
             "node_sequence": [*state["node_sequence"], "planner"],
         }
 
@@ -281,14 +339,26 @@ class LangGraphWorkflowRunner:
         task = self._current_task(state)
         if state["demo_mode"] == "qa_missing_evidence" and state["rework_count"] == 0:
             return {**state, "task": task, "evidence": [], "collector_output": None, "node_sequence": [*state["node_sequence"], "collector"]}
-        planner_query_hints = (
-            state["analysis_dimension_plan"].query_hints if state.get("analysis_dimension_plan") is not None else {}
-        )
-        collector_search_plan = (
-            state["analysis_dimension_plan"].metadata.get("collector_search_plan", {})
-            if state.get("analysis_dimension_plan") is not None
-            else {}
-        )
+        collection_plan = state.get("collection_plan", {})
+        collector_search_plan = {
+            competitor: {
+                dimension_id: (
+                    item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                )
+                for dimension_id, item in dimensions.items()
+            }
+            for competitor, dimensions in collection_plan.items()
+        }
+        planner_query_hints = {
+            competitor: [
+                query
+                for item in dimensions.values()
+                for query in (
+                    item.queries if hasattr(item, "queries") else item.get("queries", [])
+                )
+            ]
+            for competitor, dimensions in collection_plan.items()
+        }
         output = self.collector.run(
             CollectorInput(
                 task=task,
@@ -325,8 +395,14 @@ class LangGraphWorkflowRunner:
             competitor: sum(1 for item in evidence if item.competitor == competitor and item.relevance_level == "unrelated")
             for competitor in task.competitors
         }
-        gate_details = self._evidence_gate_details(task, evidence, relevant_count, unrelated_count)
-        missing = [competitor for competitor, count in relevant_count.items() if count < 1]
+        gate_details = self._evidence_gate_details(
+            task,
+            evidence,
+            relevant_count,
+            unrelated_count,
+            state.get("selected_dimensions", []),
+        )
+        missing = gate_details["missing_competitors"]
         passed = not missing
         suggested_route = None if passed else "CollectorAgent"
         next_rework_count = state["rework_count"]
@@ -403,9 +479,13 @@ class LangGraphWorkflowRunner:
                         metadata={
                             "source_node": "EvidenceGate",
                             "missing_competitors": missing,
+                            "competitor": missing[0] if missing else None,
                             "evidence_gate_details": gate_details,
                             "query_focus": gate_details["query_focus"],
-                            "fix_type": "collect_more_relevant_evidence",
+                            "focus_dimensions": gate_details["missing_dimensions_by_competitor"].get(
+                                missing[0], []
+                            ) if missing else [],
+                            "fix_type": "collect_more_evidence",
                         },
                     )
                 ],
@@ -427,9 +507,13 @@ class LangGraphWorkflowRunner:
                         metadata={
                             "source_node": "EvidenceGate",
                             "missing_competitors": missing,
+                            "competitor": missing[0] if missing else None,
                             "evidence_gate_details": gate_details,
                             "query_focus": gate_details["query_focus"],
-                            "fix_type": "collect_more_relevant_evidence",
+                            "focus_dimensions": gate_details["missing_dimensions_by_competitor"].get(
+                                missing[0], []
+                            ) if missing else [],
+                            "fix_type": "collect_more_evidence",
                         },
                     ),
                 ]
@@ -442,6 +526,8 @@ class LangGraphWorkflowRunner:
             "missing_relevant_evidence_competitors": missing,
             "relevant_evidence_count_by_competitor": relevant_count,
             "unrelated_evidence_count_by_competitor": unrelated_count,
+            "dimension_coverage_by_competitor": gate_details["dimension_coverage_by_competitor"],
+            "missing_dimensions_by_competitor": gate_details["missing_dimensions_by_competitor"],
             "evidence_diagnostics_by_competitor": gate_details["by_competitor"],
             "failure_explanation": gate_details["failure_explanation"],
             "suggested_route": suggested_route,
@@ -615,7 +701,6 @@ class LangGraphWorkflowRunner:
         writer_output = state.get("report_writer_output")
         qa_result = state.get("qa_result")
         if qa_result and qa_result.status == "passed" and writer_output and writer_output.report:
-            qa_result = self.report_service.save_qa(qa_result, run_id=state.get("run_id"))
             output = self.final_report.run(
                 FinalReportInput(
                     task=task,
@@ -675,10 +760,20 @@ class LangGraphWorkflowRunner:
         return "final_report"
 
     @staticmethod
-    def _evidence_gate_details(task: Task, evidence: list, relevant_count: dict[str, int], unrelated_count: dict[str, int]) -> dict:
+    def _evidence_gate_details(
+        task: Task,
+        evidence: list,
+        relevant_count: dict[str, int],
+        unrelated_count: dict[str, int],
+        selected_dimensions: list[str] | None = None,
+    ) -> dict:
         by_competitor: dict[str, dict] = {}
         missing: list[str] = []
         query_focus: list[str] = []
+        selected_dimensions = list(dict.fromkeys(selected_dimensions or []))
+        minimum_coverage_ratio = 0.4
+        missing_dimensions_by_competitor: dict[str, list[str]] = {}
+        dimension_coverage_by_competitor: dict[str, dict] = {}
 
         for competitor in task.competitors:
             records = [item for item in evidence if item.competitor == competitor]
@@ -708,6 +803,37 @@ class LangGraphWorkflowRunner:
                     if (item.entity_match_signals or {}).get("collector_dimension")
                 }
             )
+            relevant_dimensions = sorted(
+                {
+                    str((item.entity_match_signals or {}).get("collector_dimension"))
+                    for item in relevant
+                    if (item.entity_match_signals or {}).get("collector_dimension")
+                }
+            )
+            has_dimension_tags = any(
+                (item.entity_match_signals or {}).get("collector_dimension") for item in records
+            )
+            missing_dimensions = [
+                dimension_id for dimension_id in selected_dimensions if dimension_id not in relevant_dimensions
+            ] if has_dimension_tags else []
+            covered_dimension_count = len(selected_dimensions) - len(missing_dimensions)
+            coverage_ratio = (
+                covered_dimension_count / len(selected_dimensions) if selected_dimensions else (1.0 if relevant else 0.0)
+            )
+            coverage_passed = bool(relevant) and (
+                not has_dimension_tags or coverage_ratio >= minimum_coverage_ratio
+            )
+            missing_dimensions_by_competitor[competitor] = missing_dimensions
+            dimension_coverage_by_competitor[competitor] = {
+                "selected_dimension_count": len(selected_dimensions),
+                "covered_dimension_count": covered_dimension_count,
+                "coverage_ratio": round(coverage_ratio, 3),
+                "minimum_coverage_ratio": minimum_coverage_ratio,
+                "covered_dimensions": relevant_dimensions,
+                "missing_dimensions": missing_dimensions,
+                "dimension_tags_available": has_dimension_tags,
+                "passed": coverage_passed,
+            }
             if not records:
                 reason = "no_evidence_collected"
                 explanation = f"{competitor} 没有采集到任何公开 Evidence。"
@@ -723,24 +849,27 @@ class LangGraphWorkflowRunner:
                     f"{competitor} 采集到 {len(records)} 条 Evidence，但 high/medium 相关证据为 0；"
                     f"low={len(low)}，unrelated={len(unrelated)}。"
                 )
+            elif not coverage_passed:
+                reason = "insufficient_dimension_coverage"
+                explanation = (
+                    f"{competitor} 有 {len(relevant)} 条 high/medium Evidence，但仅覆盖 "
+                    f"{covered_dimension_count}/{len(selected_dimensions)} 个分析维度，"
+                    f"低于 {int(minimum_coverage_ratio * 100)}% 的最低覆盖要求。"
+                )
             else:
                 reason = "passed"
-                explanation = f"{competitor} 已有 {len(relevant)} 条 high/medium 相关 Evidence。"
-
-            if not relevant:
-                missing.append(competitor)
-                query_focus.extend(
-                    [
-                        f"{competitor} official",
-                        f"{competitor} 官网",
-                        f"{competitor} 产品",
-                        f"{competitor} 评测",
-                    ]
+                explanation = (
+                    f"{competitor} 已有 {len(relevant)} 条 high/medium Evidence，"
+                    f"覆盖 {covered_dimension_count}/{len(selected_dimensions)} 个分析维度。"
                 )
+
+            if not coverage_passed:
+                missing.append(competitor)
+                query_focus.extend(missing_dimensions[:6] or ["official", "官网", "产品", "评测"])
 
             by_competitor[competitor] = {
                 "competitor": competitor,
-                "status": "passed" if relevant else "failed",
+                "status": "passed" if coverage_passed else "failed",
                 "reason_code": reason,
                 "explanation": explanation,
                 "total_evidence_count": len(records),
@@ -751,6 +880,9 @@ class LangGraphWorkflowRunner:
                 "unrelated_count": unrelated_count.get(competitor, len(unrelated)),
                 "alias_miss_count": alias_miss_count,
                 "collector_dimensions_seen": dimensions_seen,
+                "relevant_dimensions_seen": relevant_dimensions,
+                "missing_dimensions": missing_dimensions,
+                "dimension_coverage_ratio": round(coverage_ratio, 3),
                 "top_evidence": [
                     {
                         "evidence_id": item.evidence_id,
@@ -773,10 +905,11 @@ class LangGraphWorkflowRunner:
                 + "；".join(by_competitor[competitor]["explanation"] for competitor in missing)
             )
             suggested_action = (
-                "重新运行 CollectorAgent，优先补充缺失竞品的官方页、产品页、文档、评测或明确包含竞品别名的 high/medium Evidence。"
+                "重新运行 CollectorAgent，按照缺失维度定向补充官方页、参数页、可靠评测或市场资料，"
+                "直到达到最低维度覆盖率。"
             )
         else:
-            failure_explanation = "EvidenceGate 通过：所有竞品至少有 1 条 high/medium 相关 Evidence。"
+            failure_explanation = "EvidenceGate 通过：所有竞品均达到 high/medium Evidence 的最低维度覆盖率。"
             suggested_action = "Proceed to AnalystAgent."
 
         return {
@@ -785,6 +918,8 @@ class LangGraphWorkflowRunner:
             "suggested_action": suggested_action,
             "query_focus": list(dict.fromkeys(query_focus)),
             "by_competitor": by_competitor,
+            "missing_dimensions_by_competitor": missing_dimensions_by_competitor,
+            "dimension_coverage_by_competitor": dimension_coverage_by_competitor,
         }
 
     def _current_task(self, state: WorkflowState) -> Task:
@@ -816,6 +951,7 @@ class LangGraphWorkflowRunner:
             "task_id": state.get("task_id"),
             "workflow_engine_requested": state.get("workflow_engine_requested"),
             "workflow_engine_used": "langgraph",
+            "planner_summary": state.get("planner_summary", {}),
             "intent_summary": state.get("intent_summary"),
             "intent_classification": state.get("intent_classification"),
             "ambiguity_level": state.get("ambiguity_level"),
@@ -827,6 +963,26 @@ class LangGraphWorkflowRunner:
             "analysis_dimension_plan": state.get("analysis_dimension_plan").model_dump(mode="json")
             if state.get("analysis_dimension_plan")
             else None,
+            "collection_plan": {
+                competitor: {
+                    dimension_id: (
+                        item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                    )
+                    for dimension_id, item in dimensions.items()
+                }
+                for competitor, dimensions in state.get("collection_plan", {}).items()
+            },
+            "diagnostics": (
+                state.get("planner_output").diagnostics if state.get("planner_output") else {}
+            ),
+            "planner_notes": (
+                state.get("planner_output").planner_notes if state.get("planner_output") else []
+            ),
+            "planner_output": (
+                state.get("planner_output").model_dump(mode="json")
+                if state.get("planner_output")
+                else None
+            ),
             "entity_resolution": state.get("entity_resolution", {}),
             "competitor_aliases": state.get("competitor_aliases", {}),
             "downstream_guidance": state.get("downstream_guidance").model_dump(mode="json")

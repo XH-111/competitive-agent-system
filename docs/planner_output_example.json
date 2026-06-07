@@ -1,0 +1,279 @@
+{
+  "planner_summary": {
+    "intent_classification": "competitive_analysis",
+    "product_name": "充电器",
+    "industry": "充电器",
+    "region": "中国",
+    "competitors": [
+      "绿联140w智显充",
+      "Anker140w充电器"
+    ],
+    "product_type": "140W 多口快充充电器",
+    "task_goal": "比较绿联140w智显充与Anker140w充电器在中国市场的功能、价格、目标用户和竞争表现。"
+  },
+  "selected_dimensions": [
+    "pricing",
+    "feature",
+    "persona",
+    "strength",
+    "weakness",
+    "opportunity",
+    "threat"
+  ],
+  "analysis_dimension_plan": {
+    "selected_dimensions": [
+      "pricing",
+      "feature",
+      "persona",
+      "strength",
+      "weakness",
+      "opportunity",
+      "threat"
+    ],
+    "dimension_plans": [
+      {
+        "dimension_id": "pricing",
+        "label": "定价与商业模式",
+        "description": "调研价格、套餐、计费方式、商业模式和购买门槛。",
+        "required": true,
+        "priority": 1,
+        "keywords": ["价格", "定价"],
+        "query_templates": ["{competitor} 官方 价格"],
+        "research_goals": ["确认公开价格与销售版本"],
+        "source": "base",
+        "metadata": {}
+      },
+      {
+        "dimension_id": "feature",
+        "label": "功能能力",
+        "description": "调研核心功能、产品能力、参数和差异化能力。",
+        "required": true,
+        "priority": 2,
+        "keywords": ["功能", "参数"],
+        "query_templates": ["{competitor} 官方 功能 参数"],
+        "research_goals": ["确认端口、功率和快充协议"],
+        "source": "base",
+        "metadata": {}
+      },
+      {
+        "dimension_id": "persona",
+        "label": "用户画像与目标场景",
+        "description": "调研目标用户、典型场景、使用需求和购买动机。",
+        "required": true,
+        "priority": 3,
+        "keywords": ["目标用户", "使用场景"],
+        "query_templates": ["{competitor} 目标用户 使用场景"],
+        "research_goals": ["识别目标用户和典型使用场景"],
+        "source": "base",
+        "metadata": {}
+      },
+      {
+        "dimension_id": "strength",
+        "label": "优势",
+        "description": "调研产品相对竞品的核心优势、口碑亮点和竞争壁垒。",
+        "required": true,
+        "priority": 4,
+        "keywords": ["优势", "亮点"],
+        "query_templates": ["{competitor} 核心优势 评测"],
+        "research_goals": ["识别有证据支持的竞争优势"],
+        "source": "base",
+        "metadata": {}
+      },
+      {
+        "dimension_id": "weakness",
+        "label": "劣势",
+        "description": "调研产品缺点、限制、投诉、风险和用户痛点。",
+        "required": true,
+        "priority": 5,
+        "keywords": ["缺点", "不足"],
+        "query_templates": ["{competitor} 缺点 不足 评测"],
+        "research_goals": ["识别公开可验证的产品短板"],
+        "source": "base",
+        "metadata": {}
+      },
+      {
+        "dimension_id": "opportunity",
+        "label": "机会",
+        "description": "调研市场增长、需求变化、技术趋势和潜在扩展空间。",
+        "required": true,
+        "priority": 6,
+        "keywords": ["市场机会", "增长趋势"],
+        "query_templates": ["{competitor} 市场机会 增长趋势"],
+        "research_goals": ["识别市场和技术带来的增长机会"],
+        "source": "base",
+        "metadata": {}
+      },
+      {
+        "dimension_id": "threat",
+        "label": "威胁",
+        "description": "调研竞争压力、替代品、监管变化和外部风险。",
+        "required": true,
+        "priority": 7,
+        "keywords": ["竞争威胁", "替代品"],
+        "query_templates": ["{competitor} 竞争威胁 替代产品"],
+        "research_goals": ["识别主要竞争和替代威胁"],
+        "source": "base",
+        "metadata": {}
+      }
+    ],
+    "research_goals": [
+      "确认公开价格与销售版本",
+      "确认端口、功率和快充协议",
+      "识别目标用户和典型使用场景",
+      "识别有证据支持的竞争优势",
+      "识别公开可验证的产品短板",
+      "识别市场和技术带来的增长机会",
+      "识别主要竞争和替代威胁"
+    ],
+    "query_hints": {
+      "绿联140w智显充": [
+        "绿联140w智显充 官方 价格",
+        "绿联140w智显充 官方 功能 参数",
+        "绿联140w智显充 目标用户 使用场景",
+        "绿联140w智显充 核心优势 评测",
+        "绿联140w智显充 缺点 不足 评测",
+        "绿联140w智显充 市场机会 增长趋势",
+        "绿联140w智显充 竞争威胁 替代产品"
+      ],
+      "Anker140w充电器": [
+        "Anker140w充电器 官方 价格",
+        "Anker140w充电器 官方 功能 参数",
+        "Anker140w充电器 目标用户 使用场景",
+        "Anker140w充电器 核心优势 评测",
+        "Anker140w充电器 缺点 不足 评测",
+        "Anker140w充电器 市场机会 增长趋势",
+        "Anker140w充电器 竞争威胁 替代产品"
+      ]
+    },
+    "metadata": {
+      "collection_plan_source": "PlannerOutput.collection_plan"
+    }
+  },
+  "collection_plan": {
+    "绿联140w智显充": {
+      "pricing": {
+        "dimension_id": "pricing",
+        "label": "定价与商业模式",
+        "queries": ["绿联140w智显充 官方 价格"],
+        "research_goals": ["确认公开价格与销售版本"],
+        "source": "base"
+      },
+      "feature": {
+        "dimension_id": "feature",
+        "label": "功能能力",
+        "queries": ["绿联140w智显充 官方 功能 参数"],
+        "research_goals": ["确认端口、功率和快充协议"],
+        "source": "base"
+      },
+      "persona": {
+        "dimension_id": "persona",
+        "label": "用户画像与目标场景",
+        "queries": ["绿联140w智显充 目标用户 使用场景"],
+        "research_goals": ["识别目标用户和典型使用场景"],
+        "source": "base"
+      },
+      "strength": {
+        "dimension_id": "strength",
+        "label": "优势",
+        "queries": ["绿联140w智显充 核心优势 评测"],
+        "research_goals": ["识别有证据支持的竞争优势"],
+        "source": "base"
+      },
+      "weakness": {
+        "dimension_id": "weakness",
+        "label": "劣势",
+        "queries": ["绿联140w智显充 缺点 不足 评测"],
+        "research_goals": ["识别公开可验证的产品短板"],
+        "source": "base"
+      },
+      "opportunity": {
+        "dimension_id": "opportunity",
+        "label": "机会",
+        "queries": ["绿联140w智显充 市场机会 增长趋势"],
+        "research_goals": ["识别市场和技术带来的增长机会"],
+        "source": "base"
+      },
+      "threat": {
+        "dimension_id": "threat",
+        "label": "威胁",
+        "queries": ["绿联140w智显充 竞争威胁 替代产品"],
+        "research_goals": ["识别主要竞争和替代威胁"],
+        "source": "base"
+      }
+    },
+    "Anker140w充电器": {
+      "pricing": {
+        "dimension_id": "pricing",
+        "label": "定价与商业模式",
+        "queries": ["Anker140w充电器 官方 价格"],
+        "research_goals": ["确认公开价格与销售版本"],
+        "source": "base"
+      },
+      "feature": {
+        "dimension_id": "feature",
+        "label": "功能能力",
+        "queries": ["Anker140w充电器 官方 功能 参数"],
+        "research_goals": ["确认端口、功率和快充协议"],
+        "source": "base"
+      },
+      "persona": {
+        "dimension_id": "persona",
+        "label": "用户画像与目标场景",
+        "queries": ["Anker140w充电器 目标用户 使用场景"],
+        "research_goals": ["识别目标用户和典型使用场景"],
+        "source": "base"
+      },
+      "strength": {
+        "dimension_id": "strength",
+        "label": "优势",
+        "queries": ["Anker140w充电器 核心优势 评测"],
+        "research_goals": ["识别有证据支持的竞争优势"],
+        "source": "base"
+      },
+      "weakness": {
+        "dimension_id": "weakness",
+        "label": "劣势",
+        "queries": ["Anker140w充电器 缺点 不足 评测"],
+        "research_goals": ["识别公开可验证的产品短板"],
+        "source": "base"
+      },
+      "opportunity": {
+        "dimension_id": "opportunity",
+        "label": "机会",
+        "queries": ["Anker140w充电器 市场机会 增长趋势"],
+        "research_goals": ["识别市场和技术带来的增长机会"],
+        "source": "base"
+      },
+      "threat": {
+        "dimension_id": "threat",
+        "label": "威胁",
+        "queries": ["Anker140w充电器 竞争威胁 替代产品"],
+        "research_goals": ["识别主要竞争和替代威胁"],
+        "source": "base"
+      }
+    }
+  },
+  "downstream_guidance": {
+    "collector": ["严格按 collection_plan 中的 competitor × dimension 搜索计划采集公开信息。"],
+    "analyst": ["按 selected_dimensions 抽取结构化事实，证据不足时明确标记。"],
+    "writer": ["按 selected_dimensions 组织中文竞品分析报告。"],
+    "qa": ["检查基础维度和每个竞品的采集计划是否齐全。"],
+    "survey": []
+  },
+  "missing_information": [],
+  "planner_notes": [
+    "LLM 仅提供任务理解和维度建议；完整维度计划、搜索计划与下游指导由后端规范化生成。"
+  ],
+  "diagnostics": {
+    "planner_mode_requested": "llm",
+    "planner_mode_used": "llm",
+    "llm_call_attempted": true,
+    "llm_call_success": true,
+    "llm_schema_validation_success": true,
+    "llm_schema_validation_errors": [],
+    "fallback_used": false,
+    "llm_fallback_reason": null,
+    "selected_dimension_count": 7,
+    "collection_plan_generated": true
+  }
+}

@@ -1,4 +1,4 @@
-import type { CollectorStatus, Dag, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord } from "./types";
+import type { CollectorStatus, Dag, Evidence, LlmStatus, PlannerRunResult, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord } from "./types";
 import { apiRecorder } from "./recorder";
 
 const baseUrl = "";
@@ -74,8 +74,10 @@ export const api = {
   createTask: (payload: { product_name: string; competitors: string[]; region: string; industry: string }) =>
     request<Task>("/api/tasks", { label: "createTask", method: "POST", body: JSON.stringify(payload) }),
   listTasks: () => request<Task[]>("/api/tasks", { label: "listTasks", method: "GET" }),
-  runTask: (taskId: string, demoMode = "normal", autoRework = false, writerMode = "mock", collectorMode = "mock", analystMode = "evidence", workflowEngine = "custom") =>
-    request(`/api/tasks/${taskId}/run?demo_mode=${encodeURIComponent(demoMode)}&auto_rework=${autoRework}&writer_mode=${encodeURIComponent(writerMode)}&collector_mode=${encodeURIComponent(collectorMode)}&analyst_mode=${encodeURIComponent(analystMode)}&workflow_engine=${encodeURIComponent(workflowEngine)}`, { label: "runTask", method: "POST" }),
+  runTask: (taskId: string, demoMode = "normal", autoRework = false, writerMode = "mock", collectorMode = "mock", analystMode = "evidence", workflowEngine = "custom", debugStage?: "planner_only") => {
+    const debugQuery = debugStage ? `&debug_stage=${encodeURIComponent(debugStage)}` : "";
+    return request<PlannerRunResult>(`/api/tasks/${taskId}/run?demo_mode=${encodeURIComponent(demoMode)}&auto_rework=${autoRework}&writer_mode=${encodeURIComponent(writerMode)}&collector_mode=${encodeURIComponent(collectorMode)}&analyst_mode=${encodeURIComponent(analystMode)}&workflow_engine=${encodeURIComponent(workflowEngine)}${debugQuery}`, { label: "runTask", method: "POST" });
+  },
   dag: (taskId: string) => request<Dag>(`/api/tasks/${taskId}/dag`, { label: "dag", method: "GET" }),
   evidence: (taskId: string) => request<Evidence[]>(`/api/tasks/${taskId}/evidence`, { label: "evidence", method: "GET" }),
   qa: (taskId: string) => request<QaResult>(`/api/tasks/${taskId}/qa`, { label: "qa", method: "GET" }),

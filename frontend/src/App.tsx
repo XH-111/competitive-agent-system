@@ -13,7 +13,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
+import type { CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, PlannerRunResult, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
 export default function App() {
@@ -35,6 +35,7 @@ export default function App() {
   const [collectorMode, setCollectorMode] = useState<"mock" | "web">("web");
   const [analystMode, setAnalystMode] = useState<"mock" | "evidence" | "llm">("llm");
   const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("langgraph");
+  const [runStage, setRunStage] = useState<"full" | "planner_only">("full");
   const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>();
@@ -87,6 +88,9 @@ export default function App() {
     const recoveredSummary = recoverWorkflowSummary(nextTraces);
     if (recoveredSummary) {
       setWorkflowSummary(recoveredSummary);
+      if (recoveredSummary.debug_stage === "planner_only" && recoveredSummary.dag) {
+        setDag(recoveredSummary.dag);
+      }
     }
     const qaRequest = activeRunId ? api.runQa(taskId, activeRunId) : api.qa(taskId);
     const reportRequest = activeRunId ? api.runReport(taskId, activeRunId) : api.report(taskId);
@@ -128,14 +132,52 @@ export default function App() {
 
   async function run() {
     if (!task) return;
+    const knownRunIds = new Set(runs.map((item) => item.run_id));
+    let stopProgressPolling = false;
     setBusy(true);
+    setTraces([]);
+    setQa(undefined);
+    const progressPolling = pollRunProgress(
+      task.task_id,
+      knownRunIds,
+      () => stopProgressPolling,
+      runStage === "planner_only",
+    );
     try {
-      const result = await api.runTask(task.task_id, demoMode, autoRework, writerMode, collectorMode, analystMode, workflowEngine) as { report?: Report | null; workflow_summary?: WorkflowSummary };
+      const result = await api.runTask(
+        task.task_id,
+        demoMode,
+        autoRework,
+        writerMode,
+        collectorMode,
+        analystMode,
+        workflowEngine,
+        runStage === "planner_only" ? "planner_only" : undefined,
+      ) as PlannerRunResult;
       setWorkflowSummary(result.workflow_summary);
       const runId = result.workflow_summary?.run_id ?? result.report?.run_id;
-      await loadTasks(task.task_id);
-      if (runId) {
-        await refresh(task.task_id, runId);
+      if (runStage === "planner_only") {
+        setDag(result.dag ?? result.workflow_summary?.dag);
+        setEvidence([]);
+        setQa(undefined);
+        setReport(undefined);
+        setSelectedFact(undefined);
+        setSelectedEvidenceIds([]);
+        const [nextTasks, nextRuns, nextTraces] = await Promise.all([
+          api.listTasks(),
+          api.runs(task.task_id),
+          runId ? api.runTraces(task.task_id, runId) : Promise.resolve([]),
+        ]);
+        setTasks(nextTasks);
+        setTask(nextTasks.find((item) => item.task_id === task.task_id) ?? task);
+        setRuns(nextRuns);
+        setSelectedRunId(runId ?? undefined);
+        setTraces(nextTraces);
+      } else {
+        await loadTasks(task.task_id);
+        if (runId) {
+          await refresh(task.task_id, runId);
+        }
       }
       if (!result.report) {
         setReport(undefined);
@@ -146,7 +188,38 @@ export default function App() {
         setEvidence([]);
       }
     } finally {
+      stopProgressPolling = true;
+      await progressPolling;
       setBusy(false);
+    }
+  }
+
+  async function pollRunProgress(
+    taskId: string,
+    knownRunIds: Set<string>,
+    shouldStop: () => boolean,
+    plannerOnly = false,
+  ) {
+    let activeRunId: string | undefined;
+    while (!shouldStop()) {
+      try {
+        const nextRuns = await api.runs(taskId);
+        setRuns(nextRuns);
+        activeRunId = activeRunId
+          ?? nextRuns.find((item) => !knownRunIds.has(item.run_id))?.run_id
+          ?? nextRuns.find((item) => item.status === "running")?.run_id;
+        if (activeRunId) {
+          setSelectedRunId(activeRunId);
+          const nextTraces = await api.runTraces(taskId, activeRunId);
+          setTraces(nextTraces);
+          if (!plannerOnly) {
+            await api.runQa(taskId, activeRunId).then(setQa).catch(() => undefined);
+          }
+        }
+      } catch {
+        // The workflow POST may briefly hold backend resources; retry on the next interval.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
     }
   }
 
@@ -313,6 +386,18 @@ export default function App() {
             <option value="custom">Custom Runner</option>
             <option value="langgraph">LangGraph Runner</option>
           </select>
+          <select
+            className="rounded border border-line bg-white px-3 py-2 text-sm"
+            value={runStage}
+            onChange={(event) => {
+              const nextStage = event.target.value as "full" | "planner_only";
+              setRunStage(nextStage);
+              if (nextStage === "planner_only") setWorkflowEngine("langgraph");
+            }}
+          >
+            <option value="full">完整工作流</option>
+            <option value="planner_only">只测试 Planner</option>
+          </select>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
           </span>
@@ -336,7 +421,7 @@ export default function App() {
             {searchTesting ? "测试中..." : "测试搜索连接"}
           </button>
           <button onClick={run} disabled={!task || busy} className="inline-flex items-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50">
-            <Play size={16} /> 运行 Demo 工作流
+            <Play size={16} /> {runStage === "planner_only" ? "只运行 PlannerAgent" : "运行 Demo 工作流"}
           </button>
           <label className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm">
             <input
@@ -463,22 +548,26 @@ export default function App() {
         )}
 
         <PlannerSummaryCard workflowSummary={workflowSummary} collectorDiagnostics={collectorDiagnostics} />
-        <KnowledgeHitsPanel workflowSummary={workflowSummary} />
+        {workflowSummary?.debug_stage !== "planner_only" && <KnowledgeHitsPanel workflowSummary={workflowSummary} />}
 
         <div className="space-y-4">
-          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} />
-          <KnowledgeView report={report} evidence={evidence} onEvidenceIdsSelect={(ids) => {
-            setSelectedFact(undefined);
-            setSelectedEvidenceIds(ids);
-          }} />
-          {!report && evidence.length > 0 && (
-            <EvidencePanel evidence={evidence} evidenceIds={selectedEvidenceIds} />
+          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? (runStage === "planner_only" ? "planner_only" : undefined)} />
+          {workflowSummary?.debug_stage !== "planner_only" && (
+            <>
+              <KnowledgeView report={report} evidence={evidence} onEvidenceIdsSelect={(ids) => {
+                setSelectedFact(undefined);
+                setSelectedEvidenceIds(ids);
+              }} />
+              {!report && evidence.length > 0 && (
+                <EvidencePanel evidence={evidence} evidenceIds={selectedEvidenceIds} />
+              )}
+              <ReportView report={report} evidence={evidence} competitors={task?.competitors} selectedFact={selectedFact} selectedEvidenceIds={selectedEvidenceIds} onSelect={(fact) => {
+                setSelectedFact(fact);
+                setSelectedEvidenceIds(fact.evidence_ids);
+              }} />
+              <QaPanel qa={qa} workflowSummary={workflowSummary} />
+            </>
           )}
-          <ReportView report={report} evidence={evidence} competitors={task?.competitors} selectedFact={selectedFact} selectedEvidenceIds={selectedEvidenceIds} onSelect={(fact) => {
-            setSelectedFact(fact);
-            setSelectedEvidenceIds(fact.evidence_ids);
-          }} />
-          <QaPanel qa={qa} workflowSummary={workflowSummary} />
           <TraceViewer traces={traces} />
         </div>
       </div>

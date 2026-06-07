@@ -155,18 +155,41 @@ class AnalysisDimension(BaseModel):
     dimension_id: str = Field(min_length=1)
     label: str = Field(min_length=1)
     description: str = ""
-    keywords: list[str] = Field(default_factory=list)
     required: bool = False
     priority: int = Field(default=0, ge=0)
+    keywords: list[str] = Field(default_factory=list)
+    query_templates: list[str] = Field(default_factory=list)
+    research_goals: list[str] = Field(default_factory=list)
+    source: str = "deterministic"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AnalysisDimensionPlan(BaseModel):
     selected_dimensions: list[str] = Field(default_factory=list)
     dimension_plans: list[AnalysisDimension] = Field(default_factory=list)
+    # Retained for compatibility with existing downstream contracts. New
+    # PlannerOutput stores executable searches in top-level collection_plan.
     research_goals: list[str] = Field(default_factory=list)
     query_hints: dict[str, list[str]] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerSummary(BaseModel):
+    intent_classification: str = "competitive_analysis"
+    product_name: str = Field(min_length=1)
+    industry: str = Field(min_length=1)
+    region: str = Field(min_length=1)
+    competitors: list[str] = Field(min_length=1)
+    product_type: str = Field(min_length=1)
+    task_goal: str = Field(min_length=1)
+
+
+class PlannerCollectionPlanItem(BaseModel):
+    dimension_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    queries: list[str] = Field(min_length=1)
+    research_goals: list[str] = Field(default_factory=list)
+    source: str = "planner"
 
 
 PlannerAmbiguityLevel = Literal["low", "medium", "high"]

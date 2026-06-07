@@ -188,6 +188,16 @@ export type WorkflowSummary = {
   task_id?: string;
   workflow_engine_requested?: string;
   workflow_engine_used?: string;
+  debug_stage?: "planner_only" | null;
+  planner_summary?: {
+    intent_classification?: string;
+    product_name?: string;
+    industry?: string;
+    region?: string;
+    competitors?: string[];
+    product_type?: string;
+    task_goal?: string;
+  };
   intent_summary?: string | null;
   intent_classification?: string | null;
   ambiguity_level?: string | null;
@@ -223,6 +233,9 @@ export type WorkflowSummary = {
       keywords?: string[];
       required?: boolean;
       priority?: number;
+      query_templates?: string[];
+      research_goals?: string[];
+      source?: string;
       metadata?: Record<string, unknown>;
     }>;
     research_goals?: string[];
@@ -236,6 +249,19 @@ export type WorkflowSummary = {
       collector_search_plan?: Record<string, Record<string, unknown>>;
     };
   } | null;
+  collection_plan?: Record<
+    string,
+    Record<
+      string,
+      {
+        dimension_id?: string;
+        label?: string;
+        queries?: string[];
+        research_goals?: string[];
+        source?: string;
+      }
+    >
+  >;
   recommended_next_constraints?: string[];
   clarification_targets?: string[];
   candidate_competitors?: Array<{
@@ -257,6 +283,10 @@ export type WorkflowSummary = {
     qa?: string[];
     survey?: string[];
   } | null;
+  diagnostics?: Record<string, unknown>;
+  planner_notes?: string[];
+  planner_output?: Record<string, unknown>;
+  dag?: Dag;
   swot_analysis?: SwotAnalysis | null;
   page_fetch_output?: {
     page_fetch_provider?: string;
@@ -276,6 +306,26 @@ export type WorkflowSummary = {
   knowledge_hits?: KnowledgeHit[];
   retrieved_knowledge_chunk_count?: number;
   knowledge_retrieval_strategy?: KnowledgeRetrievalStrategy;
+};
+
+export type PlannerRunResult = {
+  run?: TaskRun;
+  run_id?: string;
+  plan?: Record<string, unknown>;
+  planner_output?: Record<string, unknown>;
+  planner_summary?: WorkflowSummary["planner_summary"];
+  intent_summary?: string | null;
+  intent_classification?: string;
+  selected_dimensions?: string[];
+  analysis_dimension_plan?: WorkflowSummary["analysis_dimension_plan"];
+  collection_plan?: WorkflowSummary["collection_plan"];
+  downstream_guidance?: WorkflowSummary["downstream_guidance"];
+  diagnostics?: Record<string, unknown>;
+  planner_notes?: string[];
+  dag?: Dag;
+  report?: Report | null;
+  qa_result?: null;
+  workflow_summary?: WorkflowSummary;
 };
 
 export type CollectorDiagnostics = {

@@ -35,7 +35,7 @@ export function TraceViewer({ traces }: { traces: TraceRecord[] }) {
               <th className="p-2">agent_name</th>
               <th className="p-2">trace_id</th>
               <th className="p-2">task_id</th>
-              <th className="p-2">Schema 校验</th>
+              <th className="p-2">Agent 输出校验</th>
               <th className="p-2">耗时</th>
               <th className="p-2">重试</th>
               <th className="p-2">model_name</th>
@@ -115,9 +115,17 @@ function AnalystLlmPreview({ output }: { output: Record<string, unknown> }) {
   const callSuccess = boolValue(output.llm_call_success);
   const schemaSuccess = output.llm_schema_validation_success;
   const fallbackUsed = boolValue(output.fallback_used);
+  const batchCount = numberValue(output.llm_batch_count);
+  const batchSuccessCount = numberValue(output.llm_batch_success_count);
+  const batchFailureCount = numberValue(output.llm_batch_failure_count);
   const rawPreview = stringValue(output.llm_response_text_preview) ?? stringValue(output.llm_response_preview);
   const responseLength = typeof output.llm_response_text_length === "number" ? output.llm_response_text_length : undefined;
   const errors = Array.isArray(output.llm_schema_validation_errors) ? output.llm_schema_validation_errors.map(String) : [];
+  const batchValidationLabel = schemaSuccess === true
+    ? `全部通过（${batchSuccessCount ?? batchCount ?? 0}/${batchCount ?? batchSuccessCount ?? 0}）`
+    : schemaSuccess === false
+      ? `部分失败（成功 ${batchSuccessCount ?? 0}，失败 ${batchFailureCount ?? errors.length}）`
+      : "-";
 
   return (
     <section className={`rounded border p-3 ${fallbackUsed ? "border-amber-300 bg-amber-50" : "border-green-300 bg-green-50"}`}>
@@ -126,11 +134,11 @@ function AnalystLlmPreview({ output }: { output: Record<string, unknown> }) {
         <TraceMetric label="请求模式" value={requested ?? "-"} />
         <TraceMetric label="实际模式" value={used ?? "-"} />
         <TraceMetric label="LLM 调用" value={callAttempted ? (callSuccess ? "成功" : "失败") : "未调用"} />
-        <TraceMetric label="Schema 校验" value={schemaSuccess === true ? "通过" : schemaSuccess === false ? "失败" : "-"} />
+        <TraceMetric label="LLM 批次事实校验" value={batchValidationLabel} />
       </div>
       {errors.length > 0 && (
         <div className="mt-2 rounded border border-amber-300 bg-white p-2 text-xs text-warning">
-          <div className="font-semibold">校验失败原因</div>
+          <div className="font-semibold">部分 LLM 批次未通过，已对失败批次使用 Evidence 规则降级</div>
           {errors.slice(0, 3).map((item) => <div key={item}>{item}</div>)}
         </div>
       )}
@@ -172,4 +180,8 @@ function stringValue(value: unknown): string | undefined {
 
 function boolValue(value: unknown): boolean {
   return value === true;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
 }

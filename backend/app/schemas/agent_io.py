@@ -4,19 +4,14 @@ from pydantic import BaseModel, Field
 
 from app.schemas.models import (
     AnalysisDimensionPlan,
-    Dag,
     DimensionResult,
     Evidence,
     FeatureTree,
-    PlannerAmbiguityLevel,
-    PlannerCompetitorCandidate,
+    PlannerCollectionPlanItem,
     PlannerDownstreamGuidance,
     PlannerExtractedContext,
-    PlannerScopeSnapshot,
-    PlannerScopeSize,
-    PlannerScopeType,
-    PlannerStage,
     PlannerSurveyInput,
+    PlannerSummary,
     PricingModel,
     ProductProfile,
     QaResult,
@@ -39,32 +34,13 @@ class PlannerInput(BaseModel):
 
 
 class PlannerOutput(BaseModel):
-    dag: Dag
-    plan: list[str] = Field(min_length=1)
-    intent_summary: str | None = None
-    intent_classification: str = "competitive_analysis"
-    ambiguity_level: PlannerAmbiguityLevel = "low"
-    scope_type: PlannerScopeType = "specific_product_benchmark"
-    scope_size: PlannerScopeSize = "narrow"
-    extracted_context: PlannerExtractedContext | None = None
-    selected_dimensions: list[str] = Field(default_factory=list)
-    analysis_dimension_plan: AnalysisDimensionPlan | None = None
-    survey_needed: bool = False
-    survey_recommended: bool = False
-    survey_objective: str | None = None
-    survey_inputs: PlannerSurveyInput | None = None
-    confirmed_scope: PlannerScopeSnapshot | None = None
-    inferred_scope: PlannerScopeSnapshot | None = None
-    suggested_scope: PlannerScopeSnapshot | None = None
-    recommended_next_constraints: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
-    candidate_competitors: list[PlannerCompetitorCandidate] = Field(default_factory=list)
-    clarification_targets: list[str] = Field(default_factory=list)
-    planning_stages: list[PlannerStage] = Field(default_factory=list)
+    planner_summary: PlannerSummary
+    selected_dimensions: list[str] = Field(min_length=7)
+    analysis_dimension_plan: AnalysisDimensionPlan
+    collection_plan: dict[str, dict[str, PlannerCollectionPlanItem]]
+    downstream_guidance: PlannerDownstreamGuidance
     missing_information: list[str] = Field(default_factory=list)
     planner_notes: list[str] = Field(default_factory=list)
-    confidence: float = Field(default=0.0, ge=0, le=1)
-    downstream_guidance: PlannerDownstreamGuidance | None = None
     diagnostics: dict = Field(default_factory=dict)
 
 

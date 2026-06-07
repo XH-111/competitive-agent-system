@@ -6,7 +6,6 @@ from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import QaAgent
 from app.agents.report_writer import ReportWriterAgent
-from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan
 from app.schemas import (
     AnalystInput,
     AnalystOutput,
@@ -60,19 +59,22 @@ class MockWorkflowRunner:
         self.trace_service.set_run_context(run_id)
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task, run_id=run_id))
-        analysis_dimension_plan = apply_fixed_dimensions_to_plan(plan.analysis_dimension_plan, task)
-        plan = plan.model_copy(
-            update={
-                "selected_dimensions": analysis_dimension_plan.selected_dimensions,
-                "analysis_dimension_plan": analysis_dimension_plan,
-                "planner_notes": [
-                    *plan.planner_notes,
-                    "Collector/Analyst/Writer use Planner-selected base plus dynamic dimensions and the Planner collector_search_plan.",
-                ],
+        analysis_dimension_plan = plan.analysis_dimension_plan
+        collector_search_plan = {
+            competitor: {
+                dimension_id: item.model_dump(mode="json")
+                for dimension_id, item in dimensions.items()
             }
-        )
-        planner_query_hints = plan.analysis_dimension_plan.query_hints if plan.analysis_dimension_plan else {}
-        collector_search_plan = plan.analysis_dimension_plan.metadata.get("collector_search_plan", {}) if plan.analysis_dimension_plan else {}
+            for competitor, dimensions in plan.collection_plan.items()
+        }
+        planner_query_hints = {
+            competitor: [
+                query
+                for item in dimensions.values()
+                for query in item.queries
+            ]
+            for competitor, dimensions in plan.collection_plan.items()
+        }
         competitor_aliases = self.entity_resolver_service.aliases_for_task(task)
         history: list[ReworkHistoryItem] = []
 
@@ -198,7 +200,7 @@ class MockWorkflowRunner:
                 writer_mode=writer_mode,
                 selected_dimensions=plan.selected_dimensions,
                 writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
-                intent_classification=plan.intent_classification,
+                intent_classification=plan.planner_summary.intent_classification,
                 rework_context=rework_context,
             )
         )
@@ -292,7 +294,7 @@ class MockWorkflowRunner:
                         writer_mode=writer_mode,
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
-                        intent_classification=plan.intent_classification,
+                        intent_classification=plan.planner_summary.intent_classification,
                         rework_context=rework_context,
                     )
                 )
@@ -318,7 +320,7 @@ class MockWorkflowRunner:
                         writer_mode=writer_mode,
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
-                        intent_classification=plan.intent_classification,
+                        intent_classification=plan.planner_summary.intent_classification,
                         rework_context=rework_context,
                     )
                 )
@@ -345,7 +347,7 @@ class MockWorkflowRunner:
                         writer_mode=writer_mode,
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
-                        intent_classification=plan.intent_classification,
+                        intent_classification=plan.planner_summary.intent_classification,
                         rework_context=rework_context,
                     )
                 )

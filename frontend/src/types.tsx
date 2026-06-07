@@ -16,6 +16,7 @@ export type {
   LlmStatus,
   KnowledgeHit,
   KnowledgeRetrievalStrategy,
+  PlannerRunResult,
   WriterDiagnostics,
   WorkflowSummary
 } from "./api/types";
@@ -37,6 +38,7 @@ export const statusClass: Record<string, string> = {
   manual_review: "bg-amber-100 text-warning border-amber-300",
   running: "bg-blue-100 text-accent border-blue-300",
   pending: "bg-white text-slate-500 border-line",
+  skipped: "bg-slate-100 text-slate-500 border-slate-300",
   created: "bg-white text-slate-500 border-line"
 };
 
@@ -48,6 +50,7 @@ export const statusLabel: Record<string, string> = {
   manual_review: "需要人工复核",
   running: "运行中",
   pending: "待执行",
+  skipped: "已冻结",
   created: "已创建"
 };
 

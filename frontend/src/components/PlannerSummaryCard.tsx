@@ -44,13 +44,24 @@ export function PlannerSummaryCard({
 }) {
   const dimensions = workflowSummary?.selected_dimensions ?? [];
   const dimensionPlans = workflowSummary?.analysis_dimension_plan?.dimension_plans ?? [];
-  const researchGoals = workflowSummary?.analysis_dimension_plan?.research_goals ?? [];
-  const collectorPlan = normalizeCollectorPlan(workflowSummary?.analysis_dimension_plan?.metadata?.collector_search_plan);
+  const researchGoals = dimensionPlans.flatMap((dimension) => dimension.research_goals ?? []);
+  const collectorPlan = normalizeCollectorPlan(
+    workflowSummary?.collection_plan ??
+      workflowSummary?.analysis_dimension_plan?.metadata?.collector_search_plan,
+  );
+  const queryHints = Object.fromEntries(
+    Object.entries(collectorPlan).map(([competitor, byDimension]) => [
+      competitor,
+      Object.values(byDimension).flatMap((item) => item.queries ?? []),
+    ]),
+  );
   const guidance = workflowSummary?.downstream_guidance;
   const candidates = workflowSummary?.candidate_competitors ?? [];
   const hasContent = Boolean(
-    workflowSummary?.intent_summary ||
+    workflowSummary?.planner_summary?.task_goal ||
+      workflowSummary?.intent_summary ||
       dimensions.length ||
+      Object.keys(queryHints).length ||
       Object.keys(collectorPlan).length ||
       collectorDiagnostics?.effective_queries_preview_by_competitor ||
       guidance,
@@ -74,8 +85,21 @@ export function PlannerSummaryCard({
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="任务理解摘要">
           <div className="rounded border border-line bg-panel p-3 text-sm leading-6 text-slate-800">
-            {workflowSummary?.intent_summary || "暂无 Planner 任务理解摘要。"}
+            {workflowSummary?.planner_summary?.task_goal ||
+              workflowSummary?.intent_summary ||
+              "暂无 Planner 任务理解摘要。"}
           </div>
+          {workflowSummary?.planner_summary ? (
+            <div className="mt-3 grid gap-2 text-xs text-slate-700 sm:grid-cols-2">
+              <div>产品：{workflowSummary.planner_summary.product_name ?? "-"}</div>
+              <div>产品类型：{workflowSummary.planner_summary.product_type ?? "-"}</div>
+              <div>行业：{workflowSummary.planner_summary.industry ?? "-"}</div>
+              <div>地区：{workflowSummary.planner_summary.region ?? "-"}</div>
+              <div className="sm:col-span-2">
+                竞品：{workflowSummary.planner_summary.competitors?.join("、") || "-"}
+              </div>
+            </div>
+          ) : null}
           {!!candidates.length && (
             <div className="mt-3">
               <SubTitle>候选竞品</SubTitle>
@@ -178,6 +202,12 @@ export function PlannerSummaryCard({
                 )}
               </div>
             ))}
+            {!Object.keys(collectorPlan).length && Object.entries(queryHints).map(([competitor, queries]) => (
+              <div key={competitor} className="rounded border border-line bg-panel p-3">
+                <div className="mb-2 font-semibold">{competitor}</div>
+                <TagGroup values={queries} limit={12} />
+              </div>
+            ))}
           </div>
         </Panel>
 
@@ -188,6 +218,24 @@ export function PlannerSummaryCard({
             <GuidanceBlock title="ReportWriterAgent" items={guidance?.writer} />
           </div>
         </Panel>
+
+        <Panel title="Planner 运行诊断" className="xl:col-span-2">
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
+            {JSON.stringify(workflowSummary?.diagnostics ?? {}, null, 2)}
+          </pre>
+          {!!workflowSummary?.planner_notes?.length && (
+            <div className="mt-3 space-y-1 text-xs leading-5 text-slate-700">
+              {workflowSummary.planner_notes.map((note) => <div key={note}>- {note}</div>)}
+            </div>
+          )}
+        </Panel>
+
+        <details className="xl:col-span-2 rounded border border-line bg-white p-3">
+          <summary className="cursor-pointer text-sm font-semibold">原始 PlannerOutput JSON</summary>
+          <pre className="mt-3 max-h-[32rem] overflow-auto whitespace-pre-wrap rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
+            {JSON.stringify(workflowSummary?.planner_output ?? {}, null, 2)}
+          </pre>
+        </details>
       </div>
     </section>
   );

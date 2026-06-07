@@ -19,6 +19,7 @@ from app.agents.runner import MockWorkflowRunner
 from app.agents.runner_factory import resolve_workflow_engine
 from app.constants.analysis_dimensions import apply_fixed_dimensions_to_plan, fixed_dimension_ids, fixed_query_hints_for_competitor
 from app.database import Base
+from app.db_models import QaRecordRow
 from app.schemas import (
     AgentMessage,
     AnalysisDimension,
@@ -556,7 +557,7 @@ def test_final_report_agent_creates_trace(db_session):
 def test_normal_workflow_still_passes(db_session):
     task = make_task(db_session)
     result = MockWorkflowRunner(db_session).run(task.task_id, demo_mode="normal")
-    assert result["qa_result"].status == "passed"
+    assert result["qa_result"].status == "passed", result["qa_result"].model_dump(mode="json")
     assert result["report"] is not None
     traces = TraceService(db_session).list_for_task(task.task_id)
     assert {trace.agent_name for trace in traces} >= {
@@ -606,6 +607,19 @@ class FakeLlmClient:
         )
 
 
+class SequenceFakeLlmClient(FakeLlmClient):
+    def __init__(self, contents: list[str]):
+        super().__init__(contents[0])
+        self.contents = contents
+        self.calls: list[list[dict[str, str]]] = []
+
+    def chat_json(self, messages, timeout: float = 30.0):
+        self.calls.append(messages)
+        index = min(len(self.calls) - 1, len(self.contents) - 1)
+        self.content = self.contents[index]
+        return super().chat_json(messages, timeout=timeout)
+
+
 def test_llm_analyst_extracts_dimension_results(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
@@ -613,14 +627,17 @@ def test_llm_analyst_extracts_dimension_results(db_session):
         Evidence(source_type="public_web", url="https://alpha.example.com", competitor="AlphaCI", snippet="AlphaCI supports AI automation workflow.", confidence=0.9, relevance_level="high"),
         Evidence(source_type="public_web", url="https://beta.example.com", competitor="BetaIntel", snippet="BetaIntel offers enterprise pricing plan.", confidence=0.85, relevance_level="high"),
     ]
-    client = FakeLlmClient(
-        '{"dimension_results":['
-        '{"dimension_id":"feature","competitor":"AlphaCI","summary":"AlphaCI has AI workflow capability.",'
-        '"findings":["AI automation workflow"],"evidence_ids":["'
-        + evidence[0].evidence_id
-        + '"],"confidence":0.82,"insufficient_evidence":false,"metadata":{"reason":"high relevance evidence"}},'
-        '{"dimension_id":"feature","competitor":"BetaIntel","summary":"BetaIntel feature evidence is thin.",'
-        '"findings":[],"evidence_ids":[],"confidence":0.35,"insufficient_evidence":true,"metadata":{}}]}'
+    client = SequenceFakeLlmClient(
+        [
+            '{"dimension_results":[{"dimension_id":"feature","competitor":"AlphaCI",'
+            '"summary":"AlphaCI has AI workflow capability.","findings":["AI automation workflow"],'
+            '"evidence_ids":["'
+            + evidence[0].evidence_id
+            + '"],"confidence":0.82,"insufficient_evidence":false,"metadata":{"reason":"high relevance evidence"}}]}',
+            '{"dimension_results":[{"dimension_id":"feature","competitor":"BetaIntel",'
+            '"summary":"BetaIntel feature evidence is thin.","findings":[],"evidence_ids":[],'
+            '"confidence":0.35,"insufficient_evidence":true,"metadata":{}}]}',
+        ]
     )
     output = AnalystAgent(trace_service, llm_client=client).run(
         AnalystInput(task=task, evidence=evidence, analyst_mode="llm", selected_dimensions=["feature"])
@@ -630,6 +647,8 @@ def test_llm_analyst_extracts_dimension_results(db_session):
     assert len(output.dimension_results) == 2
     assert output.dimension_results[0].dimension_id == "feature"
     assert output.dimension_results[0].evidence_ids == [evidence[0].evidence_id]
+    assert output.diagnostics["llm_batch_count"] == 2
+    assert output.diagnostics["llm_batch_failure_count"] == 0
 
 
 def test_llm_analyst_invalid_json_falls_back_to_evidence(db_session):
@@ -662,11 +681,16 @@ def test_llm_analyst_can_cite_current_run_knowledge_base_evidence(db_session):
             relevance_score=0.86,
         )
     ]
-    client = FakeLlmClient(
-        '{"dimension_results":[{"dimension_id":"feature","competitor":"AlphaCI",'
-        '"summary":"AlphaCI 具备 AI 工作流自动化能力。","findings":["AI workflow automation"],'
-        '"evidence_ids":["ev_kb_alpha001"],"confidence":0.82,"insufficient_evidence":false,'
-        '"metadata":{"source":"knowledge_base_evidence"}}]}'
+    client = SequenceFakeLlmClient(
+        [
+            '{"dimension_results":[{"dimension_id":"feature","competitor":"AlphaCI",'
+            '"summary":"AlphaCI 具备 AI 工作流自动化能力。","findings":["AI workflow automation"],'
+            '"evidence_ids":["ev_kb_alpha001"],"confidence":0.82,"insufficient_evidence":false,'
+            '"metadata":{"source":"knowledge_base_evidence"}}]}',
+            '{"dimension_results":[{"dimension_id":"feature","competitor":"BetaIntel",'
+            '"summary":"当前公开证据不足，暂不做强结论。","findings":[],"evidence_ids":[],'
+            '"confidence":0.3,"insufficient_evidence":true,"metadata":{}}]}',
+        ]
     )
     output = AnalystAgent(trace_service, llm_client=client).run(
         AnalystInput(task=task, evidence=evidence, analyst_mode="llm", selected_dimensions=["feature"])
@@ -675,6 +699,206 @@ def test_llm_analyst_can_cite_current_run_knowledge_base_evidence(db_session):
     assert output.diagnostics["analyst_mode_used"] == "llm"
     assert output.diagnostics["llm_schema_validation_success"] is True
     assert output.dimension_results[0].evidence_ids == ["ev_kb_alpha001"]
+
+
+def test_llm_analyst_batches_dimensions_and_filters_low_relevance_evidence(db_session, monkeypatch):
+    monkeypatch.setenv("ANALYST_LLM_DIMENSION_BATCH_SIZE", "2")
+    monkeypatch.setenv("ANALYST_LLM_EVIDENCE_PER_DIMENSION", "1")
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    feature_evidence = Evidence(
+        source_type="public_web",
+        url="https://alpha.example.com/features",
+        competitor="AlphaCI",
+        snippet="AlphaCI AI workflow feature.",
+        confidence=0.9,
+        relevance_level="high",
+        entity_match_signals={"collector_dimension": "feature"},
+    )
+    pricing_evidence = Evidence(
+        source_type="public_web",
+        url="https://alpha.example.com/pricing",
+        competitor="AlphaCI",
+        snippet="AlphaCI enterprise pricing plan.",
+        confidence=0.8,
+        relevance_level="medium",
+        entity_match_signals={"collector_dimension": "pricing"},
+    )
+    low_evidence = Evidence(
+        source_type="public_web",
+        url="https://alpha.example.com/noise",
+        competitor="AlphaCI",
+        snippet="AlphaCI unrelated noise.",
+        confidence=0.8,
+        relevance_level="low",
+        entity_match_signals={"collector_dimension": "feature"},
+    )
+    low_quality_evidence = Evidence(
+        source_type="public_web",
+        url="https://spam.example.com/features",
+        competitor="AlphaCI",
+        snippet="AlphaCI feature claims from a low-quality source.",
+        confidence=0.9,
+        relevance_level="high",
+        source_quality="low_quality",
+        entity_match_signals={"collector_dimension": "feature"},
+    )
+    client = SequenceFakeLlmClient(
+        [
+            '{"dimension_results":['
+            '{"dimension_id":"feature","competitor":"AlphaCI","summary":"功能事实","findings":["AI 工作流"],'
+            '"evidence_ids":["'
+            + feature_evidence.evidence_id
+            + '"],"confidence":0.8,"insufficient_evidence":false,"metadata":{}},'
+            '{"dimension_id":"pricing","competitor":"AlphaCI","summary":"定价事实","findings":["企业套餐"],'
+            '"evidence_ids":["'
+            + pricing_evidence.evidence_id
+            + '"],"confidence":0.75,"insufficient_evidence":false,"metadata":{}}]}',
+            '{"dimension_results":['
+            '{"dimension_id":"feature","competitor":"BetaIntel","summary":"当前公开证据不足，暂不做强结论。",'
+            '"findings":[],"evidence_ids":[],"confidence":0.3,"insufficient_evidence":true,"metadata":{}},'
+            '{"dimension_id":"pricing","competitor":"BetaIntel","summary":"当前公开证据不足，暂不做强结论。",'
+            '"findings":[],"evidence_ids":[],"confidence":0.3,"insufficient_evidence":true,"metadata":{}}]}',
+        ]
+    )
+
+    output = AnalystAgent(trace_service, llm_client=client).run(
+        AnalystInput(
+            task=task,
+            evidence=[feature_evidence, pricing_evidence, low_evidence, low_quality_evidence],
+            analyst_mode="llm",
+            selected_dimensions=["feature", "pricing"],
+        )
+    )
+
+    first_prompt = "\n".join(item["content"] for item in client.calls[0])
+    assert feature_evidence.evidence_id in first_prompt
+    assert pricing_evidence.evidence_id in first_prompt
+    assert low_evidence.evidence_id not in first_prompt
+    assert low_quality_evidence.evidence_id not in first_prompt
+    assert output.diagnostics["llm_evidence_policy"] == "high_or_medium_relevance_non_low_quality"
+    assert output.diagnostics["llm_batch_count"] == 2
+
+
+def test_llm_analyst_invalid_batch_only_falls_back_for_that_batch(db_session, monkeypatch):
+    monkeypatch.setenv("ANALYST_LLM_DIMENSION_BATCH_SIZE", "1")
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(
+            source_type="public_web",
+            url="https://alpha.example.com/features",
+            competitor="AlphaCI",
+            snippet="AlphaCI AI workflow feature.",
+            confidence=0.9,
+            relevance_level="high",
+            entity_match_signals={"collector_dimension": "feature"},
+        ),
+        Evidence(
+            source_type="public_web",
+            url="https://alpha.example.com/pricing",
+            competitor="AlphaCI",
+            snippet="AlphaCI enterprise pricing plan.",
+            confidence=0.85,
+            relevance_level="high",
+            entity_match_signals={"collector_dimension": "pricing"},
+        ),
+    ]
+    client = SequenceFakeLlmClient(
+        [
+            '{"dimension_results":[{"dimension_id":"feature","competitor":"AlphaCI","summary":"功能事实",'
+            '"findings":["AI 工作流"],"evidence_ids":["'
+            + evidence[0].evidence_id
+            + '"],"confidence":0.8,"insufficient_evidence":false,"metadata":{}}]}',
+            '{"dimension_results":[',
+            '{"dimension_results":[{"dimension_id":"feature","competitor":"BetaIntel",'
+            '"summary":"当前公开证据不足，暂不做强结论。","findings":[],"evidence_ids":[],'
+            '"confidence":0.3,"insufficient_evidence":true,"metadata":{}}]}',
+            '{"dimension_results":[{"dimension_id":"pricing","competitor":"BetaIntel",'
+            '"summary":"当前公开证据不足，暂不做强结论。","findings":[],"evidence_ids":[],'
+            '"confidence":0.3,"insufficient_evidence":true,"metadata":{}}]}',
+        ]
+    )
+
+    output = AnalystAgent(trace_service, llm_client=client).run(
+        AnalystInput(
+            task=task,
+            evidence=evidence,
+            analyst_mode="llm",
+            selected_dimensions=["feature", "pricing"],
+        )
+    )
+
+    alpha_feature = next(
+        item for item in output.dimension_results
+        if item.competitor == "AlphaCI" and item.dimension_id == "feature"
+    )
+    alpha_pricing = next(
+        item for item in output.dimension_results
+        if item.competitor == "AlphaCI" and item.dimension_id == "pricing"
+    )
+    assert alpha_feature.metadata == {}
+    assert alpha_feature.summary == "功能事实"
+    assert alpha_pricing.metadata["source"] == "evidence"
+    assert output.diagnostics["analyst_mode_used"] == "llm"
+    assert output.diagnostics["partial_fallback_used"] is True
+    assert output.diagnostics["llm_batch_failure_count"] == 1
+
+
+def test_llm_analyst_invalid_dimension_only_falls_back_for_that_dimension(db_session, monkeypatch):
+    monkeypatch.setenv("ANALYST_LLM_DIMENSION_BATCH_SIZE", "4")
+    task = make_custom_task(db_session, competitors=["AlphaCI"], industry="B2B SaaS")
+    trace_service = TraceService(db_session)
+    feature_evidence = Evidence(
+        source_type="public_web",
+        url="https://alpha.example.com/features",
+        competitor="AlphaCI",
+        snippet="AlphaCI provides workflow automation and API integration.",
+        confidence=0.9,
+        relevance_level="high",
+        entity_match_signals={"collector_dimension": "feature"},
+    )
+    pricing_evidence = Evidence(
+        source_type="public_web",
+        url="https://alpha.example.com/pricing",
+        competitor="AlphaCI",
+        snippet="AlphaCI provides an enterprise subscription pricing plan.",
+        confidence=0.85,
+        relevance_level="high",
+        entity_match_signals={"collector_dimension": "pricing"},
+    )
+    client = SequenceFakeLlmClient(
+        [
+            '{"dimension_results":['
+            '{"dimension_id":"feature","competitor":"AlphaCI","summary":"AlphaCI 支持工作流自动化。",'
+            '"findings":["支持 API 集成"],"evidence_ids":["'
+            + feature_evidence.evidence_id
+            + '"],"confidence":0.82,"insufficient_evidence":false,"metadata":{}},'
+            '{"dimension_id":"pricing","competitor":"AlphaCI","summary":"AlphaCI 采用企业订阅定价。",'
+            '"findings":["提供企业套餐"],"evidence_ids":["'
+            + feature_evidence.evidence_id
+            + '"],"confidence":0.8,"insufficient_evidence":false,"metadata":{}}]}'
+        ]
+    )
+
+    output = AnalystAgent(trace_service, llm_client=client).run(
+        AnalystInput(
+            task=task,
+            evidence=[feature_evidence, pricing_evidence],
+            analyst_mode="llm",
+            selected_dimensions=["feature", "pricing"],
+        )
+    )
+
+    feature_result = next(item for item in output.dimension_results if item.dimension_id == "feature")
+    pricing_result = next(item for item in output.dimension_results if item.dimension_id == "pricing")
+    assert feature_result.summary == "AlphaCI 支持工作流自动化。"
+    assert feature_result.metadata == {}
+    assert pricing_result.metadata["source"] == "evidence"
+    assert output.diagnostics["analyst_mode_used"] == "llm"
+    assert output.diagnostics["partial_fallback_used"] is True
+    assert output.diagnostics["llm_batch_partial_failure_count"] == 1
+    assert output.diagnostics["llm_result_accepted_count"] == 1
 
 
 def test_llm_analyst_competitor_mismatch_falls_back_to_evidence(db_session):
@@ -725,6 +949,32 @@ class FakeWebSearchClient:
             results=[
                 SearchResult(title=f"{competitor} official pricing", url=f"https://{competitor.lower()}.example.com/pricing", snippet=f"{competitor} official pricing and features summary."),
                 SearchResult(title=f"{competitor} docs", url=f"https://docs.{competitor.lower()}.example.com/features", snippet=f"{competitor} documentation describes collaboration features."),
+            ],
+        )
+
+
+class RecordingUnrelatedSearchClient:
+    provider = "fake-search"
+    api_key = "fake-key"
+    base_url = "https://fake-search.local"
+
+    def __init__(self):
+        self.queries: list[str] = []
+
+    def search(self, query: str, limit: int = 5):
+        self.queries.append(query)
+        call_index = len(self.queries)
+        return WebSearchResponse(
+            available=True,
+            attempted=True,
+            success=True,
+            results=[
+                SearchResult(
+                    title=f"Generic hardware article {call_index}-{result_index}",
+                    url=f"https://noise.example.com/{call_index}/{result_index}",
+                    snippet="General hardware market discussion without the requested competitor.",
+                )
+                for result_index in range(3)
             ],
         )
 
@@ -1255,6 +1505,42 @@ def test_web_collector_generates_queries_and_evidence_per_competitor(db_session)
     assert output.diagnostics["evidence_count_by_competitor"]["BetaIntel"] >= 2
 
 
+def test_web_collector_unrelated_results_do_not_exhaust_later_dimension_queries(db_session):
+    task = make_custom_task(db_session, competitors=["AlphaCI"], industry="Hardware")
+    dimensions = [f"dimension_{index}" for index in range(12)]
+    search_plan = {
+        "AlphaCI": {
+            dimension_id: {
+                "dimension_id": dimension_id,
+                "queries": [
+                    f"AlphaCI {dimension_id} query one",
+                    f"AlphaCI {dimension_id} query two",
+                ],
+                "intent": f"Collect {dimension_id} evidence.",
+                "preferred_sources": ["official", "review"],
+            }
+            for dimension_id in dimensions
+        }
+    }
+    client = RecordingUnrelatedSearchClient()
+
+    output = CollectorAgent(TraceService(db_session), web_search_client=client).run(
+        CollectorInput(
+            task=task,
+            collector_mode="web",
+            collector_search_plan=search_plan,
+        )
+    )
+
+    assert len(client.queries) == 24
+    assert output.diagnostics["effective_query_count_by_competitor"]["AlphaCI"] == 24
+    assert output.diagnostics["relevant_evidence_count_by_competitor"]["AlphaCI"] == 0
+    assert not any(
+        item["reason"] == "max_evidence_per_competitor_reached"
+        for item in output.diagnostics["skipped_queries_by_competitor"]["AlphaCI"]
+    )
+
+
 def test_analyst_groups_structured_knowledge_by_competitor(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)
@@ -1326,6 +1612,58 @@ def test_qa_detects_report_missing_competitor(db_session):
     assert result.status == "failed"
     assert result.route_to == "ReportWriterAgent"
     assert result.rework_instructions[0].error_type == "report_competitor_gap"
+
+
+def test_qa_rejects_strong_report_statement_for_insufficient_dimension(db_session):
+    task = make_custom_task(db_session, competitors=["AlphaCI"], industry="B2B SaaS")
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(
+            competitor="AlphaCI",
+            source_type="public_web",
+            url="https://alphaci.example/features",
+            source_domain="alphaci.example",
+            source_quality="official",
+            snippet="AlphaCI product features.",
+            confidence=0.9,
+            relevance_level="high",
+            entity_match_signals={"collector_dimension": "feature"},
+        )
+    ]
+    base_analysis = AnalystAgent(trace_service).run(
+        AnalystInput(task=task, evidence=evidence, selected_dimensions=["opportunity"])
+    )
+    insufficient_result = DimensionResult(
+        dimension_id="opportunity",
+        competitor="AlphaCI",
+        summary="当前公开证据不足，暂不做强结论。",
+        findings=[],
+        evidence_ids=[],
+        confidence=0.3,
+        insufficient_evidence=True,
+    )
+    analysis = base_analysis.model_copy(update={"dimension_results": [insufficient_result]})
+    report = Report(
+        task_id=task.task_id,
+        markdown="# 竞品分析报告\n\n## 市场机会\nAlphaCI 可以快速拓展企业市场并获得增长。",
+        json_report={},
+        dimension_results=[insufficient_result],
+    )
+
+    result = QaAgent(trace_service).run(
+        QaInput(
+            task=task,
+            evidence=evidence,
+            analysis=analysis,
+            report_output=ReportWriterOutput(report=report),
+            selected_dimensions=["opportunity"],
+        )
+    ).qa_result
+
+    assert result.status == "failed"
+    assert result.route_to == "ReportWriterAgent"
+    assert result.rework_instructions[0].error_type == "report_unsupported_statement"
+    assert result.rework_instructions[0].failed_schema == "Report.markdown.fact_fidelity"
 
 
 def test_qa_detects_fact_using_other_competitor_evidence(db_session):
@@ -1807,7 +2145,7 @@ def test_workflow_engine_resolve_priority(monkeypatch):
 def test_langgraph_normal_workflow_passes_and_finalizes(db_session):
     task = make_task(db_session)
     result = LangGraphWorkflowRunner(db_session).run(task.task_id, workflow_engine_requested="langgraph")
-    assert result["qa_result"].status == "passed"
+    assert result["qa_result"].status == "passed", result["qa_result"].model_dump(mode="json")
     assert result["report"] is not None
     summary = result["workflow_summary"]
     assert summary["workflow_engine_used"] == "langgraph"
@@ -1817,8 +2155,63 @@ def test_langgraph_normal_workflow_passes_and_finalizes(db_session):
     assert "evidence_gate" in summary["node_sequence"]
     assert summary["evidence_gate_output"]["evidence_gate_passed"] is True
     assert summary["node_sequence"][-1] == "final_report"
+    assert result["plan"].diagnostics["selected_dimension_count"] == len(summary["selected_dimensions"])
+    assert result["plan"].diagnostics["selected_dimensions"] == summary["selected_dimensions"]
+    assert db_session.query(QaRecordRow).filter_by(run_id=result["run_id"]).count() == 1
     traces = TraceService(db_session).list_for_task(task.task_id)
     assert {trace.agent_name for trace in traces} >= {"PlannerAgent", "CollectorAgent", "EvidenceGate", "PageFetcher", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport", "WorkflowEngine"}
+
+
+def test_langgraph_planner_only_executes_no_downstream_agents(db_session, monkeypatch):
+    task = make_task(db_session)
+    runner = LangGraphWorkflowRunner(db_session)
+
+    class UnavailablePlannerLlm:
+        is_available = False
+        provider = "test"
+        model = "test-model"
+        base_url = None
+
+        def chat_json(self, messages, timeout: float = 30.0):
+            return LlmResponse(
+                available=False,
+                attempted=False,
+                success=False,
+                fallback_reason="disabled for planner_only test",
+            )
+
+    runner.planner.llm_client = UnavailablePlannerLlm()
+    for agent in (runner.collector, runner.analyst, runner.writer, runner.qa, runner.final_report):
+        monkeypatch.setattr(
+            agent,
+            "run",
+            lambda *_args, **_kwargs: pytest.fail("planner_only executed a downstream agent"),
+        )
+
+    result = runner.run(
+        task.task_id,
+        workflow_engine_requested="langgraph",
+        debug_stage="planner_only",
+    )
+
+    assert result["workflow_summary"]["debug_stage"] == "planner_only"
+    assert result["workflow_summary"]["node_sequence"] == ["planner"]
+    assert result["workflow_summary"]["final_status"] == "planner_completed"
+    assert result["planner_output"]["planner_summary"]["intent_classification"]
+    assert result["planner_output"]["analysis_dimension_plan"]
+    assert result["report"] is None
+    assert result["qa_result"] is None
+    assert [node["status"] for node in result["dag"]["nodes"]] == [
+        "completed",
+        "skipped",
+        "skipped",
+        "skipped",
+    ]
+    trace_agents = {
+        trace.agent_name
+        for trace in TraceService(db_session).list_for_task(task.task_id, run_id=result["run_id"])
+    }
+    assert trace_agents == {"PlannerAgent", "WorkflowEngine"}
 
 
 def test_langgraph_page_fetcher_trace_sequence_and_run_id(db_session):
@@ -2466,6 +2859,45 @@ def test_collector_query_budget_round_robins_dimensions_before_extra_queries():
     assert len(query_plan["all_candidate_queries"]) == 36
 
 
+def test_evidence_gate_requires_minimum_selected_dimension_coverage(db_session):
+    task = make_custom_task(db_session, competitors=["AlphaCI"], industry="Hardware")
+    selected_dimensions = ["feature", "pricing", "persona", "strength", "weakness"]
+    evidence = [
+        Evidence(
+            competitor="AlphaCI",
+            source_type="public_web",
+            url="https://alphaci.example/features",
+            source_domain="alphaci.example",
+            source_quality="official",
+            snippet="AlphaCI product feature documentation.",
+            confidence=0.9,
+            relevance_level="high",
+            entity_match_signals={"collector_dimension": "feature"},
+        )
+    ]
+
+    details = LangGraphWorkflowRunner._evidence_gate_details(
+        task,
+        evidence,
+        {"AlphaCI": 1},
+        {"AlphaCI": 0},
+        selected_dimensions,
+    )
+
+    coverage = details["dimension_coverage_by_competitor"]["AlphaCI"]
+    assert details["missing_competitors"] == ["AlphaCI"]
+    assert coverage["covered_dimension_count"] == 1
+    assert coverage["coverage_ratio"] == 0.2
+    assert coverage["passed"] is False
+    assert set(details["missing_dimensions_by_competitor"]["AlphaCI"]) == {
+        "pricing",
+        "persona",
+        "strength",
+        "weakness",
+    }
+    assert details["by_competitor"]["AlphaCI"]["reason_code"] == "insufficient_dimension_coverage"
+
+
 def test_planner_llm_dynamic_dimensions_and_search_plan_are_normalized(db_session):
     task = make_custom_task(
         db_session,
@@ -2474,33 +2906,21 @@ def test_planner_llm_dynamic_dimensions_and_search_plan_are_normalized(db_sessio
         industry="\u667a\u80fd\u624b\u673a",
     )
     payload = {
-        "intent_summary": "\u667a\u80fd\u624b\u673a\u7ade\u54c1\u5206\u6790",
-        "intent_classification": "competitive_analysis",
-        "industry": "\u667a\u80fd\u624b\u673a",
-        "domain": "\u667a\u80fd\u624b\u673a",
-        "product_name": "\u667a\u80fd\u624b\u673a\u7ade\u54c1\u5206\u6790",
-        "product_type": "\u65d7\u8230\u624b\u673a",
-        "target_users": ["\u6d88\u8d39\u8005"],
-        "region": "\u4e2d\u56fd",
-        "competitors_mentioned": ["iPhone", "\u5c0f\u7c73\u65d7\u8230\u673a"],
-        "analysis_focus_points": ["\u5f71\u50cf", "\u82af\u7247", "AI"],
-        "requested_outputs": ["\u7ade\u54c1\u5206\u6790\u62a5\u544a"],
-        "survey_needed": False,
-        "survey_reason": "",
+        "planner_summary": {
+            "intent_classification": "competitive_analysis",
+            "product_type": "\u65d7\u8230\u624b\u673a",
+            "task_goal": "\u667a\u80fd\u624b\u673a\u7ade\u54c1\u5206\u6790",
+        },
         "missing_information": [],
-        "confidence": 0.9,
-        "ambiguity_level": "low",
-        "scope_type": "specific_product_benchmark",
-        "scope_size": "narrow",
         "selected_dimensions": ["feature", "pricing", "persona", "strength", "weakness", "opportunity", "threat", "camera_capability"],
-        "dynamic_dimensions": [
+        "dimension_suggestions": [
             {
                 "dimension_id": "camera_capability",
                 "label": "\u5f71\u50cf\u80fd\u529b",
                 "description": "\u6bd4\u8f83\u6444\u50cf\u5934\u548c\u5f71\u50cf\u7b97\u6cd5\u3002",
                 "keywords": ["\u5f71\u50cf", "\u6444\u50cf\u5934", "camera"],
-                "reason": "\u624b\u673a\u7ade\u54c1\u9700\u8981\u6bd4\u8f83\u5f71\u50cf\u80fd\u529b\u3002",
-                "preferred_sources": ["official", "review"],
+                "query_templates": ["{competitor} \u5f71\u50cf\u80fd\u529b \u8bc4\u6d4b", "{competitor} \u6444\u50cf\u5934 \u5b98\u65b9"],
+                "research_goals": ["\u786e\u8ba4\u6444\u50cf\u5934\u548c\u5f71\u50cf\u7b97\u6cd5\u5dee\u5f02"],
             },
             {
                 "dimension_id": "\u4e2d\u6587\u5b57\u6bb5",
@@ -2508,44 +2928,12 @@ def test_planner_llm_dynamic_dimensions_and_search_plan_are_normalized(db_sessio
                 "keywords": ["bad"],
             },
         ],
-        "collector_search_plan": {
-            "iPhone": {
-                "camera_capability": {
-                    "queries": ["iPhone \u5f71\u50cf\u80fd\u529b \u8bc4\u6d4b", "iPhone \u6444\u50cf\u5934 \u5b98\u65b9"],
-                    "intent": "\u91c7\u96c6 iPhone \u5f71\u50cf\u8bc1\u636e\u3002",
-                    "preferred_sources": ["official", "review"],
-                },
-                "\u4e2d\u6587\u7ef4\u5ea6": {
-                    "queries": ["iPhone bad"],
-                    "intent": "bad",
-                    "preferred_sources": ["official"],
-                },
-            },
-            "NotInTask": {
-                "camera_capability": {
-                    "queries": ["NotInTask camera"],
-                    "intent": "bad",
-                    "preferred_sources": ["official"],
-                }
-            },
-        },
-        "survey_objective": "",
-        "survey_inputs": {"objective": "", "respondent_type": "", "question_themes": [], "hypotheses": []},
-        "recommended_next_constraints": [],
-        "assumptions": [],
-        "candidate_competitors": [],
-        "clarification_targets": [],
-        "planning_stages": [],
         "planner_notes": [],
-        "downstream_guidance": {"collector": [], "analyst": [], "writer": [], "qa": [], "survey": []},
     }
     planner_output = PlannerAgent(TraceService(db_session), llm_client=FakeLlmClient(json.dumps(payload, ensure_ascii=False))).run(
         PlannerInput(task=task)
     )
-    normalized = apply_fixed_dimensions_to_plan(planner_output.analysis_dimension_plan, task)
-
-    assert "camera_capability" in normalized.selected_dimensions
-    assert "\u4e2d\u6587\u5b57\u6bb5" not in normalized.selected_dimensions
-    assert normalized.metadata["llm_collector_search_plan_used"] is True
-    assert normalized.metadata["collector_search_plan"]["iPhone"]["camera_capability"]["queries"][0] == "iPhone \u5f71\u50cf\u80fd\u529b \u8bc4\u6d4b"
-    assert "NotInTask" not in normalized.metadata["collector_search_plan"]
+    assert "camera_capability" in planner_output.selected_dimensions
+    assert "\u4e2d\u6587\u5b57\u6bb5" not in planner_output.selected_dimensions
+    assert planner_output.collection_plan["iPhone"]["camera_capability"].queries[0] == "iPhone \u5f71\u50cf\u80fd\u529b \u8bc4\u6d4b"
+    assert set(planner_output.collection_plan) == {"iPhone", "\u5c0f\u7c73\u65d7\u8230\u673a"}

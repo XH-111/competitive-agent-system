@@ -70,10 +70,12 @@ def run_task(
     analyst_mode: str = Query("evidence", pattern="^(mock|evidence|llm)$"),
     workflow_engine: str | None = Query(None, pattern="^(custom|langgraph)$"),
     content_mode: str | None = Query(None),
+    debug_stage: str | None = Query(None, pattern="^(planner_only)$"),
     db: Session = Depends(get_db),
 ):
     try:
-        runner, engine = create_workflow_runner(db, workflow_engine)
+        effective_engine = "langgraph" if debug_stage == "planner_only" else workflow_engine
+        runner, engine = create_workflow_runner(db, effective_engine)
         if engine == "langgraph":
             return runner.run(
                 task_id,
@@ -84,6 +86,7 @@ def run_task(
                 analyst_mode=analyst_mode,
                 workflow_engine_requested=workflow_engine or "env/default",
                 content_mode=content_mode,
+                debug_stage=debug_stage,
             )
         run_service = TaskRunService(db)
         task_run = run_service.create_run(
@@ -108,7 +111,9 @@ def run_task(
         result["workflow_summary"] = {
             "workflow_engine_requested": workflow_engine or "env/default",
             "workflow_engine_used": "custom",
-            "intent_classification": result["plan"].intent_classification if result.get("plan") else None,
+            "intent_classification": (
+                result["plan"].planner_summary.intent_classification if result.get("plan") else None
+            ),
             "ambiguity_level": result["plan"].ambiguity_level if result.get("plan") else None,
             "scope_type": result["plan"].scope_type if result.get("plan") else None,
             "scope_size": result["plan"].scope_size if result.get("plan") else None,

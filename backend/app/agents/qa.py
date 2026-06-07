@@ -1,4 +1,5 @@
 from collections import defaultdict
+import re
 from typing import Any
 
 from app.agents.base import run_with_trace
@@ -303,6 +304,28 @@ class QaAgent:
                 metadata={"missing_competitors": missing_competitors},
             )
 
+        unsupported_statements = self._unsupported_report_statements(report.markdown, report.dimension_results)
+        if unsupported_statements:
+            first = unsupported_statements[0]
+            return self._failure(
+                input_data,
+                target_agent="ReportWriterAgent",
+                error_type="report_unsupported_statement",
+                reason=(
+                    f"报告在证据不足的 {first['competitor']} / {first['dimension_id']} 维度中"
+                    f"生成了强结论：{first['statement']}"
+                ),
+                suggested_action=(
+                    "删除证据不足维度中的推导性结论，只保留“当前公开证据不足，暂不做强结论。”，"
+                    "或先补充对应维度 Evidence。"
+                ),
+                failed_schema="Report.markdown.fact_fidelity",
+                metadata={
+                    "unsupported_statements": unsupported_statements[:10],
+                    "fix_type": "remove_unsupported_report_inference",
+                },
+            )
+
         supported = [item for item in report.dimension_results if not item.insufficient_evidence]
         missing_citations = [
             item.dimension_result_id
@@ -321,6 +344,70 @@ class QaAgent:
                 metadata={"missing_fact_ids": missing_citations},
             )
         return None
+
+    @staticmethod
+    def _unsupported_report_statements(markdown: str, dimension_results: list[Any]) -> list[dict[str, str]]:
+        insufficient_pairs = {
+            (item.competitor, item.dimension_id)
+            for item in dimension_results
+            if item.insufficient_evidence and item.competitor
+        }
+        if not insufficient_pairs:
+            return []
+
+        heading_keywords = {
+            "pricing": ["定价", "价格", "商业模式"],
+            "feature": ["产品特性", "功能能力", "功能"],
+            "persona": ["用户画像", "目标场景"],
+            "strength": ["产品优势", "优势", "strength"],
+            "weakness": ["产品劣势", "劣势", "weakness"],
+            "opportunity": ["市场机会", "机会", "opportunit"],
+            "threat": ["竞争威胁", "威胁", "threat"],
+            "gpu_performance": ["gpu性能", "gpu 性能", "核心性能"],
+            "cooling_design": ["散热设计", "散热"],
+            "power_consumption": ["功耗", "能耗"],
+            "gaming_performance": ["游戏性能", "游戏帧率"],
+            "after_sales_policy": ["售后政策", "售后", "质保"],
+        }
+        conservative_markers = (
+            "证据不足",
+            "暂不做强结论",
+            "无法形成",
+            "无法判断",
+            "尚未",
+            "未采集",
+            "缺少",
+            "不足以",
+        )
+        current_dimension: str | None = None
+        issues: list[dict[str, str]] = []
+        for raw_line in markdown.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                normalized_heading = re.sub(r"[\s#*（）()：:、.0-9一二三四五六七八九十]+", "", line).lower()
+                current_dimension = next(
+                    (
+                        dimension_id
+                        for dimension_id, keywords in heading_keywords.items()
+                        if any(keyword in normalized_heading for keyword in keywords)
+                    ),
+                    None,
+                )
+                continue
+            if current_dimension is None or any(marker in line for marker in conservative_markers):
+                continue
+            for competitor, dimension_id in insufficient_pairs:
+                if dimension_id == current_dimension and competitor in line:
+                    issues.append(
+                        {
+                            "competitor": competitor,
+                            "dimension_id": dimension_id,
+                            "statement": line[:240],
+                        }
+                    )
+        return issues
 
     def _failure(
         self,

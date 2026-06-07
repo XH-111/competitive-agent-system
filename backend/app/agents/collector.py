@@ -126,10 +126,6 @@ class CollectorAgent:
             competitor: self._dimension_ids_for_competitor(input_data.collector_search_plan, competitor)
             for competitor in task.competitors
         }
-        max_evidence_by_competitor = {
-            competitor: max(MAX_EVIDENCE_PER_COMPETITOR, len(dimensions) * MAX_EVIDENCE_PER_DIMENSION)
-            for competitor, dimensions in dimension_ids_by_competitor.items()
-        }
         evidence_count_by_dimension_by_competitor: dict[str, dict[str, int]] = {
             competitor: {dimension: 0 for dimension in dimensions}
             for competitor, dimensions in dimension_ids_by_competitor.items()
@@ -166,19 +162,21 @@ class CollectorAgent:
                     }
                 )
             for query_index, query in enumerate(query_plan["effective_queries"]):
-                if len(buckets[competitor]) >= max_evidence_by_competitor[competitor]:
-                    for skipped_query in query_plan["effective_queries"][query_index:]:
-                        skipped_queries_by_competitor[competitor].append(
-                            {
-                                "query": skipped_query,
-                                "dimension_id": query_plan["query_metadata_by_query"].get(skipped_query, {}).get("dimension_id")
-                                or dimension_for_query(skipped_query),
-                                "reason": "max_evidence_per_competitor_reached",
-                            }
-                        )
-                    break
                 query_metadata = query_plan["query_metadata_by_query"].get(query, {})
                 query_dimension = query_metadata.get("dimension_id") or dimension_for_query(query)
+                if (
+                    query_dimension in evidence_count_by_dimension_by_competitor[competitor]
+                    and evidence_count_by_dimension_by_competitor[competitor][query_dimension]
+                    >= MAX_EVIDENCE_PER_DIMENSION
+                ):
+                    skipped_queries_by_competitor[competitor].append(
+                        {
+                            "query": query,
+                            "dimension_id": query_dimension,
+                            "reason": "dimension_relevant_evidence_quota_reached",
+                        }
+                    )
+                    continue
                 query_dimensions_by_competitor[competitor].append(
                     {
                         "query": query,
@@ -241,7 +239,7 @@ class CollectorAgent:
                         evidence_count_by_dimension_by_competitor[competitor][query_dimension] += 1
                     buckets[competitor].append(candidate)
                     added_for_query += 1
-                    if added_for_query >= MAX_EVIDENCE_PER_QUERY or len(buckets[competitor]) >= max_evidence_by_competitor[competitor]:
+                    if added_for_query >= MAX_EVIDENCE_PER_QUERY:
                         break
                 if fallback_reason:
                     break
