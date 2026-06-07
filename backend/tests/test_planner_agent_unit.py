@@ -134,7 +134,7 @@ def test_deterministic_fallback_generates_base_dimensions_and_collection_plan():
     assert output.diagnostics["llm_fallback_reason"] == "disabled"
     assert output.diagnostics["collection_plan_generated"] is True
     for competitor in make_task().competitors:
-        assert list(output.collection_plan[competitor]) == list(PlannerAgent.BASE_DIMENSIONS)
+        assert list(output.collection_plan.collector_search_plan[competitor]) == list(PlannerAgent.BASE_DIMENSIONS)
         for dimension_id, template in PlannerAgent.FALLBACK_QUERY_TEMPLATES.items():
             dimension = next(
                 item
@@ -142,7 +142,7 @@ def test_deterministic_fallback_generates_base_dimensions_and_collection_plan():
                 if item.dimension_id == dimension_id
             )
             assert dimension.query_templates == [template]
-            assert output.collection_plan[competitor][dimension_id].queries == [
+            assert output.collection_plan.collector_search_plan[competitor][dimension_id].queries == [
                 template.replace("{competitor}", competitor)
             ]
 
@@ -158,7 +158,7 @@ def test_llm_simple_payload_is_normalized_into_full_planner_output():
         if item.dimension_id == "charging_protocol"
     )
     assert all("{competitor}" in template for template in dimension.query_templates)
-    assert output.collection_plan["绿联140w智显充"]["charging_protocol"].queries[0].startswith("绿联140w智显充")
+    assert output.collection_plan.collector_search_plan["绿联140w智显充"]["charging_protocol"].queries[0].startswith("绿联140w智显充")
 
 
 def test_parser_accepts_json_code_fence():
@@ -187,7 +187,7 @@ def test_invalid_json_falls_back_and_keeps_debug_preview():
     assert output.diagnostics["llm_response_preview"] == content
     assert output.diagnostics["llm_fallback_reason"]
     assert output.selected_dimensions == list(PlannerAgent.BASE_DIMENSIONS)
-    assert output.collection_plan["绿联140w智显充"]["feature"].queries == [
+    assert output.collection_plan.collector_search_plan["绿联140w智显充"]["feature"].queries == [
         "绿联140w智显充 功能 参数"
     ]
 
@@ -230,4 +230,4 @@ def test_documented_planner_output_example_is_valid_json_and_schema():
 
     output = PlannerOutput.model_validate(payload)
     assert output.planner_summary.product_name == "充电器"
-    assert output.collection_plan["Anker140w充电器"]["feature"].queries
+    assert output.collection_plan.collector_search_plan["Anker140w充电器"]["feature"].queries

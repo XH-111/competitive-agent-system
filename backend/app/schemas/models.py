@@ -203,6 +203,10 @@ class PlannerCollectionPlanItem(BaseModel):
     source: str = "planner"
 
 
+class PlannerCollectionPlan(BaseModel):
+    collector_search_plan: dict[str, dict[str, PlannerCollectionPlanItem]]
+
+
 PlannerAmbiguityLevel = Literal["low", "medium", "high"]
 PlannerScopeType = Literal[
     "specific_product_benchmark",

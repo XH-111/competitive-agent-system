@@ -48,8 +48,7 @@ export function PlannerSummaryCard({
   const dimensionPlans = workflowSummary?.analysis_dimension_plan?.dimension_plans ?? [];
   const researchGoals = dimensionPlans.flatMap((dimension) => dimension.research_goals ?? []);
   const collectorPlan = normalizeCollectorPlan(
-    workflowSummary?.collection_plan ??
-      workflowSummary?.analysis_dimension_plan?.metadata?.collector_search_plan,
+    workflowSummary?.collection_plan?.collector_search_plan,
   );
   const queryHints = Object.fromEntries(
     Object.entries(collectorPlan).map(([competitor, byDimension]) => [

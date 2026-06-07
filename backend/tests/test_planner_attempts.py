@@ -7,6 +7,7 @@ from app.schemas import (
     AnalysisDimension,
     AnalysisDimensionPlan,
     PlannerCollectionPlanItem,
+    PlannerCollectionPlan,
     PlannerDownstreamGuidance,
     PlannerOutput,
     PlannerSummary,
@@ -84,7 +85,7 @@ def make_planner_output(*, mode: str = "llm", fallback_used: bool = False) -> Pl
             selected_dimensions=list(BASE_DIMENSIONS),
             dimension_plans=dimensions,
         ),
-        collection_plan=collection_plan,
+        collection_plan=PlannerCollectionPlan(collector_search_plan=collection_plan),
         downstream_guidance=PlannerDownstreamGuidance(
             collector=["按计划采集"],
             analyst=["按维度分析"],
@@ -154,7 +155,7 @@ def test_all_statuses_and_normalized_payload_are_persisted(db_session):
         "failed",
     ]
     assert generated.planner_output["selected_dimensions"] == list(BASE_DIMENSIONS)
-    assert generated.planner_output["collection_plan"]["竞品A"]["pricing"]["queries"] == [
+    assert generated.planner_output["collection_plan"]["collector_search_plan"]["竞品A"]["pricing"]["queries"] == [
         "竞品A pricing"
     ]
     assert generated.diagnostics == generated_output.diagnostics

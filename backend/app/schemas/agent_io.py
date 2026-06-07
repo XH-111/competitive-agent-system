@@ -7,7 +7,7 @@ from app.schemas.models import (
     DimensionResult,
     Evidence,
     FeatureTree,
-    PlannerCollectionPlanItem,
+    PlannerCollectionPlan,
     PlannerDownstreamGuidance,
     PlannerExtractedContext,
     PlannerSurveyInput,
@@ -39,7 +39,7 @@ class PlannerOutput(BaseModel):
     planner_summary: PlannerSummary
     selected_dimensions: list[str] = Field(min_length=7)
     analysis_dimension_plan: AnalysisDimensionPlan
-    collection_plan: dict[str, dict[str, PlannerCollectionPlanItem]]
+    collection_plan: PlannerCollectionPlan
     downstream_guidance: PlannerDownstreamGuidance
     missing_information: list[str] = Field(default_factory=list)
     planner_notes: list[str] = Field(default_factory=list)
@@ -51,10 +51,11 @@ class CollectorInput(BaseModel):
     run_id: str | None = None
     retry_count: int = 0
     collector_mode: Literal["mock", "web"] = "mock"
-    planner_query_hints: dict[str, list[str]] = Field(default_factory=dict)
-    collector_search_plan: dict = Field(default_factory=dict)
+    collection_plan: PlannerCollectionPlan | None = None
+    selected_dimensions: list[str] = Field(default_factory=list)
+    analysis_dimension_plan: AnalysisDimensionPlan | None = None
+    rework_context: ReworkContext | None = None
     competitor_aliases: dict[str, list[str]] = Field(default_factory=dict)
-    gate_context: dict = Field(default_factory=dict)
 
 
 class CollectorOutput(BaseModel):

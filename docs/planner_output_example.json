@@ -150,7 +150,8 @@
     }
   },
   "collection_plan": {
-    "绿联140w智显充": {
+    "collector_search_plan": {
+      "绿联140w智显充": {
       "pricing": {
         "dimension_id": "pricing",
         "label": "定价与商业模式",
@@ -250,6 +251,7 @@
         "queries": ["Anker140w充电器 竞争威胁 替代产品"],
         "research_goals": ["识别主要竞争和替代威胁"],
         "source": "base"
+      }
       }
     }
   },

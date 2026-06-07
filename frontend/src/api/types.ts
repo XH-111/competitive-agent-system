@@ -249,19 +249,21 @@ export type WorkflowSummary = {
       collector_search_plan?: Record<string, Record<string, unknown>>;
     };
   } | null;
-  collection_plan?: Record<
-    string,
-    Record<
+  collection_plan?: {
+    collector_search_plan: Record<
       string,
-      {
-        dimension_id?: string;
-        label?: string;
-        queries?: string[];
-        research_goals?: string[];
-        source?: string;
-      }
-    >
-  >;
+      Record<
+        string,
+        {
+          dimension_id?: string;
+          label?: string;
+          queries?: string[];
+          research_goals?: string[];
+          source?: string;
+        }
+      >
+    >;
+  };
   recommended_next_constraints?: string[];
   clarification_targets?: string[];
   candidate_competitors?: Array<{

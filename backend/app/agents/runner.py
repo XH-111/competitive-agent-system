@@ -60,21 +60,7 @@ class MockWorkflowRunner:
         task = self.task_service.update_status(task_id, "running")
         plan = self.planner.run(PlannerInput(task=task, run_id=run_id))
         analysis_dimension_plan = plan.analysis_dimension_plan
-        collector_search_plan = {
-            competitor: {
-                dimension_id: item.model_dump(mode="json")
-                for dimension_id, item in dimensions.items()
-            }
-            for competitor, dimensions in plan.collection_plan.items()
-        }
-        planner_query_hints = {
-            competitor: [
-                query
-                for item in dimensions.values()
-                for query in item.queries
-            ]
-            for competitor, dimensions in plan.collection_plan.items()
-        }
+        collection_plan = plan.collection_plan
         competitor_aliases = self.entity_resolver_service.aliases_for_task(task)
         history: list[ReworkHistoryItem] = []
 
@@ -95,8 +81,7 @@ class MockWorkflowRunner:
                 writer_mode=writer_mode,
                 collector_mode=collector_mode,
                 analyst_mode=analyst_mode,
-                planner_query_hints=planner_query_hints,
-                collector_search_plan=collector_search_plan,
+                collection_plan=collection_plan,
                 competitor_aliases=competitor_aliases,
             )
 
@@ -108,8 +93,7 @@ class MockWorkflowRunner:
             writer_mode=writer_mode,
             collector_mode=collector_mode,
             analyst_mode=analyst_mode,
-            planner_query_hints=planner_query_hints,
-            collector_search_plan=collector_search_plan,
+            collection_plan=collection_plan,
             competitor_aliases=competitor_aliases,
         )
 
@@ -132,8 +116,7 @@ class MockWorkflowRunner:
                 writer_mode=writer_mode,
                 collector_mode=collector_mode,
                 analyst_mode=analyst_mode,
-                planner_query_hints=planner_query_hints,
-                collector_search_plan=collector_search_plan,
+                collection_plan=collection_plan,
                 competitor_aliases=competitor_aliases,
             )
 
@@ -149,8 +132,7 @@ class MockWorkflowRunner:
         writer_mode: str,
         collector_mode: str,
         analyst_mode: str,
-        planner_query_hints: dict[str, list[str]] | None = None,
-        collector_search_plan: dict | None = None,
+        collection_plan=None,
         competitor_aliases: dict[str, list[str]] | None = None,
         evidence: list[Evidence] | None = None,
         analysis: AnalystOutput | None = None,
@@ -163,13 +145,11 @@ class MockWorkflowRunner:
                     run_id=self.run_id,
                     retry_count=retry_count,
                     collector_mode=collector_mode,
-                    planner_query_hints=planner_query_hints or {},
-                    collector_search_plan=collector_search_plan or {},
+                    collection_plan=collection_plan,
+                    selected_dimensions=plan.selected_dimensions,
+                    analysis_dimension_plan=plan.analysis_dimension_plan,
+                    rework_context=rework_context,
                     competitor_aliases=competitor_aliases or {},
-                    gate_context={
-                        "rework_context": rework_context.model_dump(mode="json") if rework_context else None,
-                        "targeted_recollection": self._targeted_recollection_summary(rework_context),
-                    },
                 )
             )
             evidence = collector_output.evidence
@@ -219,8 +199,7 @@ class MockWorkflowRunner:
         writer_mode: str,
         collector_mode: str,
         analyst_mode: str,
-        planner_query_hints: dict[str, list[str]] | None,
-        collector_search_plan: dict | None,
+        collection_plan,
         competitor_aliases: dict[str, list[str]] | None,
     ) -> dict:
         current_task = task
@@ -262,13 +241,11 @@ class MockWorkflowRunner:
                         run_id=self.run_id,
                         retry_count=current_qa.rework_count,
                         collector_mode=collector_mode,
-                        planner_query_hints=planner_query_hints or {},
-                        collector_search_plan=collector_search_plan or {},
+                        collection_plan=collection_plan,
+                        selected_dimensions=plan.selected_dimensions,
+                        analysis_dimension_plan=plan.analysis_dimension_plan,
+                        rework_context=rework_context,
                         competitor_aliases=competitor_aliases or {},
-                        gate_context={
-                            "rework_context": rework_context.model_dump(mode="json") if rework_context else None,
-                            "targeted_recollection": self._targeted_recollection_summary(rework_context),
-                        },
                     )
                 )
                 current_evidence = collector_output.evidence

@@ -220,13 +220,7 @@ class LangGraphWorkflowRunner:
                 if planner_output.analysis_dimension_plan
                 else None
             ),
-            "collection_plan": {
-                competitor: {
-                    dimension_id: item.model_dump(mode="json")
-                    for dimension_id, item in dimensions.items()
-                }
-                for competitor, dimensions in planner_output.collection_plan.items()
-            },
+            "collection_plan": planner_output.collection_plan.model_dump(mode="json"),
             "downstream_guidance": (
                 planner_output.downstream_guidance.model_dump(mode="json")
                 if planner_output.downstream_guidance
@@ -369,40 +363,17 @@ class LangGraphWorkflowRunner:
         task = self._current_task(state)
         if state["demo_mode"] == "qa_missing_evidence" and state["rework_count"] == 0:
             return {**state, "task": task, "evidence": [], "collector_output": None, "node_sequence": [*state["node_sequence"], "collector"]}
-        collection_plan = state.get("collection_plan", {})
-        collector_search_plan = {
-            competitor: {
-                dimension_id: (
-                    item.model_dump(mode="json") if hasattr(item, "model_dump") else item
-                )
-                for dimension_id, item in dimensions.items()
-            }
-            for competitor, dimensions in collection_plan.items()
-        }
-        planner_query_hints = {
-            competitor: [
-                query
-                for item in dimensions.values()
-                for query in (
-                    item.queries if hasattr(item, "queries") else item.get("queries", [])
-                )
-            ]
-            for competitor, dimensions in collection_plan.items()
-        }
         output = self.collector.run(
             CollectorInput(
                 task=task,
                 run_id=state.get("run_id"),
                 retry_count=state["rework_count"],
                 collector_mode=state["collector_mode"],
-                planner_query_hints=planner_query_hints,
-                collector_search_plan=collector_search_plan,
+                collection_plan=state.get("collection_plan"),
+                selected_dimensions=state.get("selected_dimensions", []),
+                analysis_dimension_plan=state.get("analysis_dimension_plan"),
+                rework_context=state.get("rework_context"),
                 competitor_aliases=state.get("competitor_aliases", {}),
-                gate_context={
-                    **state.get("evidence_gate_output", {}),
-                    "rework_context": state.get("rework_context").model_dump(mode="json") if state.get("rework_context") else None,
-                    "targeted_recollection": self._targeted_recollection_summary(state.get("rework_context")),
-                },
             )
         )
         evidence = self.evidence_service.save_many(task.task_id, output.evidence, run_id=state.get("run_id"))
@@ -993,15 +964,11 @@ class LangGraphWorkflowRunner:
             "analysis_dimension_plan": state.get("analysis_dimension_plan").model_dump(mode="json")
             if state.get("analysis_dimension_plan")
             else None,
-            "collection_plan": {
-                competitor: {
-                    dimension_id: (
-                        item.model_dump(mode="json") if hasattr(item, "model_dump") else item
-                    )
-                    for dimension_id, item in dimensions.items()
-                }
-                for competitor, dimensions in state.get("collection_plan", {}).items()
-            },
+            "collection_plan": (
+                state.get("collection_plan").model_dump(mode="json")
+                if state.get("collection_plan")
+                else None
+            ),
             "diagnostics": (
                 state.get("planner_output").diagnostics if state.get("planner_output") else {}
             ),

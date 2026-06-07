@@ -8,6 +8,7 @@ from app.agents.base import run_with_trace
 from app.schemas import (
     AnalysisDimension,
     AnalysisDimensionPlan,
+    PlannerCollectionPlan,
     PlannerCollectionPlanItem,
     PlannerDownstreamGuidance,
     PlannerInput,
@@ -231,13 +232,6 @@ class PlannerAgent:
             for index, dimension_id in enumerate(selected_dimensions)
         ]
         collection_plan = self._build_collection_plan(task.competitors, dimensions)
-        serialized_collection_plan = {
-            competitor: {
-                dimension_id: item.model_dump(mode="json")
-                for dimension_id, item in by_dimension.items()
-            }
-            for competitor, by_dimension in collection_plan.items()
-        }
         analysis_dimension_plan = AnalysisDimensionPlan(
             selected_dimensions=selected_dimensions,
             dimension_plans=dimensions,
@@ -246,18 +240,6 @@ class PlannerAgent:
                 for dimension in dimensions
                 for goal in dimension.research_goals
             ],
-            query_hints={
-                competitor: [
-                    query
-                    for item in by_dimension.values()
-                    for query in item.queries
-                ]
-                for competitor, by_dimension in collection_plan.items()
-            },
-            metadata={
-                "collector_search_plan": serialized_collection_plan,
-                "collection_plan_source": "PlannerOutput.collection_plan",
-            },
         )
         diagnostics.update(
             {
@@ -275,7 +257,7 @@ class PlannerAgent:
             planner_summary=planner_summary,
             selected_dimensions=selected_dimensions,
             analysis_dimension_plan=analysis_dimension_plan,
-            collection_plan=collection_plan,
+            collection_plan=PlannerCollectionPlan(collector_search_plan=collection_plan),
             downstream_guidance=self._build_downstream_guidance(selected_dimensions),
             missing_information=self._normalize_string_list(payload.get("missing_information")),
             planner_notes=self._dedupe(notes),
