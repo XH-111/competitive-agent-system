@@ -183,12 +183,47 @@ export type KnowledgeRetrievalStrategy = {
   current_run_evidence_priority?: boolean;
 };
 
+export type CollectionPlan = {
+  collector_search_plan: Record<
+    string,
+    Record<
+      string,
+      {
+        dimension_id?: string;
+        label?: string;
+        queries?: string[];
+        research_goals?: string[];
+        source?: string;
+      }
+    >
+  >;
+};
+
+export type CollectorConfig = {
+  default?: {
+    max_results_per_query?: number | null;
+    max_evidence_per_dimension?: number | null;
+    min_valid_evidence_required?: number | null;
+    include_domains?: string[];
+    exclude_domains?: string[];
+  };
+  overrides?: Array<{
+    competitor: string;
+    dimension_id: string;
+    max_results_per_query?: number | null;
+    max_evidence_per_dimension?: number | null;
+    min_valid_evidence_required?: number | null;
+    include_domains?: string[];
+    exclude_domains?: string[];
+  }>;
+};
+
 export type WorkflowSummary = {
   run_id?: string;
   task_id?: string;
   workflow_engine_requested?: string;
   workflow_engine_used?: string;
-  debug_stage?: "planner_only" | null;
+  debug_stage?: "planner_only" | "collector_only" | null;
   planner_summary?: {
     intent_classification?: string;
     product_name?: string;
@@ -249,20 +284,18 @@ export type WorkflowSummary = {
       collector_search_plan?: Record<string, Record<string, unknown>>;
     };
   } | null;
-  collection_plan?: {
-    collector_search_plan: Record<
-      string,
-      Record<
-        string,
-        {
-          dimension_id?: string;
-          label?: string;
-          queries?: string[];
-          research_goals?: string[];
-          source?: string;
-        }
-      >
-    >;
+  collection_plan?: CollectionPlan;
+  manual_collection_plan_override_used?: boolean;
+  planner_collection_plan_original?: CollectionPlan;
+  collector_config?: CollectorConfig | null;
+  collector_output?: {
+    evidence?: Evidence[];
+    diagnostics?: CollectorDiagnostics;
+  };
+  collector_diagnostics?: CollectorDiagnostics;
+  qa_output?: {
+    qa_result?: QaResult;
+    diagnostics?: Record<string, unknown>;
   };
   recommended_next_constraints?: string[];
   clarification_targets?: string[];
@@ -321,13 +354,27 @@ export type PlannerRunResult = {
   selected_dimensions?: string[];
   analysis_dimension_plan?: WorkflowSummary["analysis_dimension_plan"];
   collection_plan?: WorkflowSummary["collection_plan"];
+  collector_output?: {
+    evidence: Evidence[];
+    diagnostics: CollectorDiagnostics;
+  };
+  qa_output?: {
+    qa_result: QaResult;
+    diagnostics: Record<string, unknown>;
+  };
+  evidence?: Evidence[];
   downstream_guidance?: WorkflowSummary["downstream_guidance"];
   diagnostics?: Record<string, unknown>;
   planner_notes?: string[];
   dag?: Dag;
   report?: Report | null;
-  qa_result?: null;
+  qa_result?: QaResult | null;
   workflow_summary?: WorkflowSummary;
+};
+
+export type RunTaskOverrides = {
+  collection_plan_override?: CollectionPlan;
+  collector_config?: CollectorConfig;
 };
 
 export type PlannerAttempt = {
@@ -347,7 +394,14 @@ export type CollectorDiagnostics = {
   web_search_attempted?: boolean;
   web_search_success?: boolean;
   query_count?: number;
+  query_count_by_competitor?: Record<string, number>;
+  query_count_by_dimension?: Record<string, number>;
   evidence_count?: number;
+  evidence_count_by_dimension?: Record<string, number>;
+  failed_queries?: string[];
+  collection_plan_used?: boolean;
+  collector_search_plan_source?: string;
+  collector_search_plan_missing?: boolean;
   fallback_used?: boolean;
   fallback_reason?: string;
   elapsed_time_ms?: number;
@@ -376,7 +430,8 @@ export type CollectorDiagnostics = {
 export type QaResult = {
   task_id: string;
   run_id?: string | null;
-  status: "passed" | "failed" | "manual_review";
+  qa_stage?: "full" | "evidence";
+  status: "passed" | "warning" | "failed" | "manual_review";
   hard_errors: string[];
   soft_suggestions: string[];
   rework_instructions: Array<{
@@ -403,6 +458,10 @@ export type QaResult = {
     metadata?: Record<string, unknown>;
   }>;
   route_to?: string;
+  failed_queries?: string[];
+  failed_dimensions?: string[];
+  failed_competitors?: string[];
+  suggested_action?: string;
   rework_count: number;
   metadata?: {
     evidence_gate_details?: {

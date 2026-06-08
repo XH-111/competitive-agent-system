@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.agents.runner import default_dag
 from app.agents.runner_factory import create_workflow_runner
 from app.database import get_db
-from app.schemas import CreateTaskRequest
+from app.schemas import CollectorConfig, CreateTaskRequest, PlannerCollectionPlan
 from app.services.evidence_service import EvidenceService
 from app.services.llm_client import LlmClient
 from app.services.planner_attempt_service import PlannerAttemptService
@@ -15,6 +16,11 @@ from app.services.trace_service import TraceService
 from app.services.web_search_client import WebSearchClient
 
 router = APIRouter(prefix="/api")
+
+
+class RunTaskRequest(BaseModel):
+    collection_plan_override: PlannerCollectionPlan | None = None
+    collector_config: CollectorConfig | None = None
 
 
 @router.get("/llm/status")
@@ -64,6 +70,7 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
 @router.post("/tasks/{task_id}/run")
 def run_task(
     task_id: str,
+    request: RunTaskRequest | None = Body(default=None),
     demo_mode: str = Query("normal", pattern="^(normal|qa_missing_evidence|qa_invalid_extraction|qa_bad_report)$"),
     auto_rework: bool = Query(False),
     writer_mode: str = Query("mock", pattern="^(mock|llm)$"),
@@ -71,11 +78,11 @@ def run_task(
     analyst_mode: str = Query("evidence", pattern="^(mock|evidence|llm)$"),
     workflow_engine: str | None = Query(None, pattern="^(custom|langgraph)$"),
     content_mode: str | None = Query(None),
-    debug_stage: str | None = Query(None, pattern="^(planner_only)$"),
+    debug_stage: str | None = Query(None, pattern="^(planner_only|collector_only)$"),
     db: Session = Depends(get_db),
 ):
     try:
-        effective_engine = "langgraph" if debug_stage == "planner_only" else workflow_engine
+        effective_engine = "langgraph" if debug_stage in {"planner_only", "collector_only"} else workflow_engine
         runner, engine = create_workflow_runner(db, effective_engine)
         if engine == "langgraph":
             return runner.run(
@@ -88,6 +95,8 @@ def run_task(
                 workflow_engine_requested=workflow_engine or "env/default",
                 content_mode=content_mode,
                 debug_stage=debug_stage,
+                collection_plan_override=request.collection_plan_override if request else None,
+                collector_config=request.collector_config if request else None,
             )
         run_service = TaskRunService(db)
         task_run = run_service.create_run(

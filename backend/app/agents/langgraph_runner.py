@@ -6,6 +6,7 @@ from langgraph.graph import END, StateGraph
 from sqlalchemy.orm import Session
 
 from app.agents.analyst import AnalystAgent
+from app.agents.base import AgentExecutionError
 from app.agents.collector import CollectorAgent
 from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
@@ -14,10 +15,15 @@ from app.agents.report_writer import ReportWriterAgent
 from app.schemas import (
     AnalystInput,
     CollectorInput,
+    CollectorOutput,
+    CollectorConfig,
     DemoMode,
+    EvidenceCoverageGap,
     Evidence,
     FinalReportInput,
     PlannerInput,
+    PlannerIncrementalInput,
+    PlannerCollectionPlan,
     QaInput,
     QaResult,
     ReworkContext,
@@ -71,6 +77,8 @@ class LangGraphWorkflowRunner:
         workflow_engine_requested: str = "langgraph",
         content_mode: str | None = None,
         debug_stage: str | None = None,
+        collection_plan_override: PlannerCollectionPlan | None = None,
+        collector_config: CollectorConfig | None = None,
     ) -> dict:
         started = time.perf_counter()
         task_run = self.task_run_service.create_run(
@@ -103,6 +111,11 @@ class LangGraphWorkflowRunner:
             "rework_count": 0,
             "max_rework": MAX_REWORK,
             "planner_output": None,
+            "collection_plan_override": collection_plan_override,
+            "manual_collection_plan_override_used": False,
+            "collector_config": collector_config,
+            "planner_incremental_output": None,
+            "incremental_collection_plan": None,
             "collector_output": None,
             "analyst_output": None,
             "report_writer_output": None,
@@ -159,6 +172,8 @@ class LangGraphWorkflowRunner:
         try:
             if debug_stage == "planner_only":
                 return self._run_planner_only(initial_state, task_run, started)
+            if debug_stage == "collector_only":
+                return self._run_collector_only(initial_state, task_run, started)
             final_state = self.graph.invoke(initial_state, config={"recursion_limit": 24})
             elapsed = int((time.perf_counter() - started) * 1000)
             summary = self._workflow_summary(final_state, elapsed)
@@ -214,7 +229,7 @@ class LangGraphWorkflowRunner:
             "planner_summary": planner_output.planner_summary.model_dump(mode="json"),
             "intent_summary": planner_output.planner_summary.task_goal,
             "intent_classification": planner_output.planner_summary.intent_classification,
-            "selected_dimensions": planner_output.selected_dimensions,
+            "selected_dimensions": collector_state.get("selected_dimensions", planner_output.selected_dimensions),
             "analysis_dimension_plan": (
                 planner_output.analysis_dimension_plan.model_dump(mode="json")
                 if planner_output.analysis_dimension_plan
@@ -253,7 +268,7 @@ class LangGraphWorkflowRunner:
             "planner_summary": summary["planner_summary"],
             "intent_summary": planner_output.planner_summary.task_goal,
             "intent_classification": planner_output.planner_summary.intent_classification,
-            "selected_dimensions": planner_output.selected_dimensions,
+            "selected_dimensions": collector_state.get("selected_dimensions", planner_output.selected_dimensions),
             "analysis_dimension_plan": summary["analysis_dimension_plan"],
             "collection_plan": summary["collection_plan"],
             "downstream_guidance": summary["downstream_guidance"],
@@ -265,6 +280,261 @@ class LangGraphWorkflowRunner:
             "knowledge_hits": [],
             "workflow_summary": summary,
         }
+
+    def _run_collector_only(self, initial_state: WorkflowState, task_run, started: float) -> dict:
+        planner_state = self.planner_node(initial_state)
+        collector_error: str | None = None
+        try:
+            collector_state = self.collector_node(planner_state)
+        except AgentExecutionError as exc:
+            collector_error = str(exc)
+            diagnostics = (
+                exc.output.get("diagnostics", {})
+                if isinstance(exc.output, dict)
+                else {}
+            )
+            collector_output = CollectorOutput(evidence=[], diagnostics=diagnostics)
+            collector_state = {
+                **planner_state,
+                "collector_output": collector_output,
+                "evidence": [],
+                "node_sequence": [*planner_state["node_sequence"], "collector"],
+                "errors": [*planner_state.get("errors", []), collector_error],
+            }
+
+        planner_output = collector_state["planner_output"]
+        collector_output = collector_state["collector_output"]
+        qa_output = self.qa.run(
+            QaInput(
+                task=self._current_task(collector_state),
+                run_id=task_run.run_id,
+                qa_stage="evidence",
+                evidence=collector_state.get("evidence", []),
+                selected_dimensions=collector_state.get("selected_dimensions", []),
+                analysis_dimension_plan=collector_state.get("analysis_dimension_plan"),
+                collection_plan=collector_state.get("collection_plan"),
+                collector_config=collector_state.get("collector_config"),
+                collector_trace_summary=collector_output.diagnostics,
+                retry_count=0,
+            )
+        )
+        qa_result = self.report_service.save_qa(qa_output.qa_result, run_id=task_run.run_id)
+        initial_qa_output = qa_output
+        initial_qa_result = qa_result
+        incremental_output = None
+        incremental_collector_output = None
+        incremental_attempts: list[dict] = []
+        current_collector_diagnostics = collector_output.diagnostics
+        attempt_no = 0
+        while attempt_no < MAX_REWORK:
+            coverage_gap_payload = qa_result.metadata.get("coverage_gap") if qa_result.metadata else None
+            if not (qa_result.status == "failed" and isinstance(coverage_gap_payload, dict) and coverage_gap_payload.get("targets")):
+                break
+            attempt_no += 1
+            coverage_gap = EvidenceCoverageGap.model_validate(coverage_gap_payload)
+            attempts = self.planner_attempt_service.list_for_run(task_run.run_id)
+            base_attempt_no = attempts[-1].attempt_no if attempts else None
+            incremental_output = self.planner.plan_incremental_collection(
+                PlannerIncrementalInput(
+                    task=self._current_task(collector_state),
+                    run_id=task_run.run_id,
+                    retry_count=attempt_no,
+                    base_planner_output=planner_output,
+                    coverage_gap=coverage_gap,
+                    base_attempt_no=base_attempt_no,
+                )
+            )
+            self.planner_attempt_service.save(
+                run_id=task_run.run_id,
+                status="fallback" if incremental_output.diagnostics.get("fallback_used") else "generated",
+                planner_output=incremental_output.incremental_collection_plan,
+                diagnostics=incremental_output.diagnostics,
+                rework_context=None,
+                raw_llm_response=incremental_output._raw_llm_response,
+            )
+            incremental_collector_output = self.collector.run(
+                CollectorInput(
+                    task=self._current_task(collector_state),
+                    run_id=task_run.run_id,
+                    retry_count=attempt_no,
+                    collector_mode=collector_state["collector_mode"],
+                    collection_plan=collector_state.get("collection_plan"),
+                    incremental_collection_plan=incremental_output.incremental_collection_plan,
+                collector_config=collector_state.get("collector_config"),
+                partial_collection_plan_allowed=collector_state.get("manual_collection_plan_override_used", False),
+                selected_dimensions=collector_state.get("selected_dimensions", []),
+                    analysis_dimension_plan=collector_state.get("analysis_dimension_plan"),
+                    rework_context=collector_state.get("rework_context"),
+                    competitor_aliases=collector_state.get("competitor_aliases", {}),
+                )
+            )
+            incremental_evidence = self.evidence_service.save_many(
+                self._current_task(collector_state).task_id,
+                incremental_collector_output.evidence,
+                run_id=task_run.run_id,
+            )
+            merged_evidence = [*collector_state.get("evidence", []), *incremental_evidence]
+            merged_collector_diagnostics = {
+                **current_collector_diagnostics,
+                "collection_plan_used": True,
+                "collector_search_plan_missing": False,
+                "collector_search_plan_used": True,
+                "failed_queries": list(
+                    dict.fromkeys(
+                        [
+                            *current_collector_diagnostics.get("failed_queries", []),
+                            *incremental_collector_output.diagnostics.get("failed_queries", []),
+                        ]
+                    )
+                ),
+                "full": collector_output.diagnostics,
+                "incremental": incremental_collector_output.diagnostics,
+                "merged_evidence_count": len(merged_evidence),
+            }
+            qa_output = self.qa.run(
+                QaInput(
+                    task=self._current_task(collector_state),
+                    run_id=task_run.run_id,
+                    qa_stage="evidence",
+                    evidence=merged_evidence,
+                    selected_dimensions=collector_state.get("selected_dimensions", []),
+                    analysis_dimension_plan=collector_state.get("analysis_dimension_plan"),
+                    collection_plan=collector_state.get("collection_plan"),
+                    collector_config=collector_state.get("collector_config"),
+                    collector_trace_summary=merged_collector_diagnostics,
+                    retry_count=attempt_no,
+                )
+            )
+            qa_result = self.report_service.save_qa(qa_output.qa_result, run_id=task_run.run_id)
+            collector_state = {**collector_state, "evidence": merged_evidence}
+            current_collector_diagnostics = merged_collector_diagnostics
+            incremental_attempts.append(
+                {
+                    "attempt_no": attempt_no,
+                    "incremental_collection_plan": incremental_output.incremental_collection_plan.model_dump(mode="json"),
+                    "collector_output": incremental_collector_output.model_dump(mode="json"),
+                    "qa_result": qa_result.model_dump(mode="json"),
+                }
+            )
+        elapsed = int((time.perf_counter() - started) * 1000)
+        collector_failed = collector_error is not None
+        frozen_dag = {
+            "nodes": [
+                {"id": "PlannerAgent", "label": "规划分析维度与采集策略", "status": "completed"},
+                {
+                    "id": "CollectorAgent",
+                    "label": "按 Planner collection_plan 采集 Evidence",
+                    "status": "failed" if collector_failed else "completed",
+                },
+                {"id": "EvidenceGate", "label": "legacy：调试模式不执行", "status": "skipped"},
+                {"id": "PageFetcher", "label": "已冻结，不抓取正文", "status": "skipped"},
+                {"id": "AnalystAgent", "label": "已冻结，不抽取结构化事实", "status": "skipped"},
+                {"id": "ReportWriterAgent", "label": "已冻结，不生成报告", "status": "skipped"},
+                {"id": "QaAgent", "label": "EvidenceQA 证据质量检查", "status": "completed"},
+                {"id": "FinalReport", "label": "已冻结，不生成最终报告", "status": "skipped"},
+            ],
+            "edges": [
+                {"source": "PlannerAgent", "target": "CollectorAgent", "label": "collection_plan"},
+                {"source": "CollectorAgent", "target": "QaAgent", "label": "EvidenceQA"},
+            ],
+        }
+        summary = {
+            "run_id": task_run.run_id,
+            "task_id": initial_state["task_id"],
+            "workflow_engine_requested": initial_state["workflow_engine_requested"],
+            "workflow_engine_used": "langgraph",
+            "debug_stage": "collector_only",
+            "planner_summary": planner_output.planner_summary.model_dump(mode="json"),
+            "selected_dimensions": planner_output.selected_dimensions,
+            "analysis_dimension_plan": planner_output.analysis_dimension_plan.model_dump(mode="json"),
+            "manual_collection_plan_override_used": collector_state.get("manual_collection_plan_override_used", False),
+            "collector_config": (
+                collector_state.get("collector_config").model_dump(mode="json")
+                if collector_state.get("collector_config")
+                else None
+            ),
+            "collection_plan": collector_state.get("collection_plan").model_dump(mode="json"),
+            "planner_collection_plan_original": planner_output.collection_plan.model_dump(mode="json"),
+            "downstream_guidance": planner_output.downstream_guidance.model_dump(mode="json"),
+            "diagnostics": planner_output.diagnostics,
+            "planner_notes": planner_output.planner_notes,
+            "planner_output": planner_output.model_dump(mode="json"),
+            "collector_output": collector_output.model_dump(mode="json"),
+            "collector_diagnostics": collector_output.diagnostics,
+            "incremental_collector_output": (
+                incremental_collector_output.model_dump(mode="json")
+                if incremental_collector_output
+                else None
+            ),
+            "incremental_collector_diagnostics": (
+                incremental_collector_output.diagnostics
+                if incremental_collector_output
+                else None
+            ),
+            "initial_qa_output": initial_qa_output.model_dump(mode="json"),
+            "initial_qa_result": initial_qa_result.model_dump(mode="json"),
+            "qa_output": qa_output.model_dump(mode="json"),
+            "qa_result": qa_result.model_dump(mode="json"),
+            "incremental_collection_plan": (
+                incremental_output.incremental_collection_plan.model_dump(mode="json")
+                if incremental_output
+                else None
+            ),
+            "planner_incremental_output": incremental_output.model_dump(mode="json") if incremental_output else None,
+            "incremental_attempts": incremental_attempts,
+            "dag": frozen_dag,
+            "node_sequence": (
+                ["planner", "collector", "qa"]
+                + [
+                    node
+                    for _attempt in incremental_attempts
+                    for node in ["planner_incremental", "collector_incremental", "qa_incremental"]
+                ]
+            ),
+            "conditional_routes_taken": [],
+            "rework_count": attempt_no,
+            "final_status": f"evidence_qa_{qa_result.status}",
+            "elapsed_time_ms": elapsed,
+            "run_isolation_strategy": "run_id",
+        }
+        self._save_workflow_trace(initial_state["task_id"], task_run.run_id, summary, elapsed)
+        task_status = "qa_failed" if qa_result.status == "failed" else "completed"
+        run_status = "qa_failed" if qa_result.status == "failed" else "completed"
+        self.task_service.update_status(initial_state["task_id"], task_status, rework_count=attempt_no)
+        finished_run = self.task_run_service.finish_run(
+            task_run.run_id,
+            status=run_status,
+            final_status=summary["final_status"],
+            elapsed_time_ms=elapsed,
+            error_message=collector_error,
+        )
+        return {
+            "run": finished_run,
+            "run_id": task_run.run_id,
+            "plan": planner_output,
+            "planner_output": summary["planner_output"],
+            "collector_output": summary["collector_output"],
+            "qa_output": summary["qa_output"],
+            "evidence": collector_state.get("evidence", []),
+            "qa_result": qa_result,
+            "dag": frozen_dag,
+            "report": None,
+            "knowledge_hits": [],
+            "workflow_summary": summary,
+        }
+
+    @staticmethod
+    def _collection_plan_dimensions(collection_plan: PlannerCollectionPlan) -> list[str]:
+        seen: set[str] = set()
+        dimensions: list[str] = []
+        for by_dimension in collection_plan.collector_search_plan.values():
+            for dimension_id, item in by_dimension.items():
+                value = item.dimension_id or dimension_id
+                if value in seen:
+                    continue
+                seen.add(value)
+                dimensions.append(value)
+        return dimensions
 
     def _build_graph(self):
         graph = StateGraph(WorkflowState)
@@ -336,8 +606,14 @@ class LangGraphWorkflowRunner:
                 rework_context=state.get("rework_context"),
                 raw_llm_response=output._raw_llm_response,
             )
+        collection_plan = state.get("collection_plan_override") or output.collection_plan
+        collection_plan_override_used = state.get("collection_plan_override") is not None
         analysis_dimension_plan = output.analysis_dimension_plan
-        selected_dimensions = output.selected_dimensions
+        selected_dimensions = (
+            self._collection_plan_dimensions(collection_plan)
+            if collection_plan_override_used
+            else output.selected_dimensions
+        )
         entity_resolution = self.entity_resolver_service.resolve_for_task(task)
         competitor_aliases = {
             competitor: result.get("aliases", [])
@@ -347,7 +623,8 @@ class LangGraphWorkflowRunner:
             **state,
             "planner_output": output,
             "planner_summary": output.planner_summary.model_dump(mode="json"),
-            "collection_plan": output.collection_plan,
+            "collection_plan": collection_plan,
+            "manual_collection_plan_override_used": collection_plan_override_used,
             "entity_resolution": entity_resolution,
             "competitor_aliases": competitor_aliases,
             "intent_summary": output.planner_summary.task_goal,
@@ -370,6 +647,9 @@ class LangGraphWorkflowRunner:
                 retry_count=state["rework_count"],
                 collector_mode=state["collector_mode"],
                 collection_plan=state.get("collection_plan"),
+                incremental_collection_plan=state.get("incremental_collection_plan"),
+                collector_config=state.get("collector_config"),
+                partial_collection_plan_allowed=state.get("manual_collection_plan_override_used", False),
                 selected_dimensions=state.get("selected_dimensions", []),
                 analysis_dimension_plan=state.get("analysis_dimension_plan"),
                 rework_context=state.get("rework_context"),
@@ -427,7 +707,7 @@ class LangGraphWorkflowRunner:
                 next_task = self.task_service.update_status(task.task_id, "manual_review", rework_count=state["rework_count"])
             elif state["auto_rework"]:
                 next_rework_count = state["rework_count"] + 1
-                if next_rework_count >= state["max_rework"]:
+                if next_rework_count > state["max_rework"]:
                     final_status = "manual_review"
                     suggested_route = None
                     routes.append(
@@ -639,6 +919,7 @@ class LangGraphWorkflowRunner:
                 report_output=state.get("report_writer_output"),
                 selected_dimensions=state.get("selected_dimensions", []),
                 analysis_dimension_plan=state.get("analysis_dimension_plan"),
+                collector_config=state.get("collector_config"),
                 retry_count=state["rework_count"],
                 demo_mode=state["demo_mode"],
             )
@@ -744,7 +1025,7 @@ class LangGraphWorkflowRunner:
             return "final_report"
         if qa_result.status == "passed":
             return "final_report"
-        if qa_result.status == "manual_review" or qa_result.rework_count >= state["max_rework"]:
+        if qa_result.status == "manual_review" or qa_result.rework_count > state["max_rework"]:
             state["final_status"] = "manual_review"
             return "final_report"
         if not state["auto_rework"]:
@@ -961,12 +1242,23 @@ class LangGraphWorkflowRunner:
             "survey_needed": state.get("survey_needed"),
             "survey_recommended": state.get("survey_recommended"),
             "selected_dimensions": state.get("selected_dimensions", []),
+            "manual_collection_plan_override_used": state.get("manual_collection_plan_override_used", False),
+            "collector_config": (
+                state.get("collector_config").model_dump(mode="json")
+                if state.get("collector_config")
+                else None
+            ),
             "analysis_dimension_plan": state.get("analysis_dimension_plan").model_dump(mode="json")
             if state.get("analysis_dimension_plan")
             else None,
             "collection_plan": (
                 state.get("collection_plan").model_dump(mode="json")
                 if state.get("collection_plan")
+                else None
+            ),
+            "planner_collection_plan_original": (
+                state.get("planner_output").collection_plan.model_dump(mode="json")
+                if state.get("planner_output")
                 else None
             ),
             "diagnostics": (

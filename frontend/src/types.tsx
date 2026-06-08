@@ -1,5 +1,7 @@
 export type {
   Claim,
+  CollectionPlan,
+  CollectorConfig,
   DimensionResult,
   CollectorDiagnostics,
   CollectorStatus,
@@ -18,6 +20,7 @@ export type {
   KnowledgeRetrievalStrategy,
   PlannerAttempt,
   PlannerRunResult,
+  RunTaskOverrides,
   WriterDiagnostics,
   WorkflowSummary
 } from "./api/types";

@@ -13,8 +13,24 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
+import type { CollectionPlan, CollectorConfig, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
+
+type EditableCollectionPlanItem = {
+  enabled: boolean;
+  dimension_id: string;
+  label: string;
+  queries: string[];
+  research_goals: string[];
+  source?: string;
+  max_results_per_query: number;
+  max_evidence_per_dimension: number;
+  min_valid_evidence_required: number;
+  include_domains: string;
+  exclude_domains: string;
+};
+
+type EditableCollectionPlan = Record<string, Record<string, EditableCollectionPlanItem>>;
 
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -35,7 +51,7 @@ export default function App() {
   const [collectorMode, setCollectorMode] = useState<"mock" | "web">("web");
   const [analystMode, setAnalystMode] = useState<"mock" | "evidence" | "llm">("llm");
   const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("langgraph");
-  const [runStage, setRunStage] = useState<"full" | "planner_only">("full");
+  const [runStage, setRunStage] = useState<"full" | "planner_only" | "collector_only">("full");
   const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
   const [plannerAttempts, setPlannerAttempts] = useState<PlannerAttempt[]>([]);
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
@@ -44,6 +60,9 @@ export default function App() {
   const [searchTesting, setSearchTesting] = useState(false);
   const [searchTestResult, setSearchTestResult] = useState<SearchTestResult>();
   const [apiRecorderSnapshot, setApiRecorderSnapshot] = useState(getApiRecorderSnapshot());
+  const [useCollectionPlanOverride, setUseCollectionPlanOverride] = useState(false);
+  const [editableCollectionPlan, setEditableCollectionPlan] = useState<EditableCollectionPlan>();
+  const [collectionPlanOverrideError, setCollectionPlanOverrideError] = useState<string>();
 
   useEffect(() => {
     loadTasks();
@@ -91,7 +110,7 @@ export default function App() {
     const recoveredSummary = recoverWorkflowSummary(nextTraces);
     if (recoveredSummary) {
       setWorkflowSummary(recoveredSummary);
-      if (recoveredSummary.debug_stage === "planner_only" && recoveredSummary.dag) {
+      if (recoveredSummary.debug_stage && recoveredSummary.dag) {
         setDag(recoveredSummary.dag);
       }
     }
@@ -136,6 +155,17 @@ export default function App() {
 
   async function run() {
     if (!task) return;
+    let runOverrides: RunTaskOverrides | undefined;
+    if (useCollectionPlanOverride) {
+      try {
+        runOverrides = buildRunOverrides(editableCollectionPlan);
+        setCollectionPlanOverrideError(undefined);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCollectionPlanOverrideError(message);
+        return;
+      }
+    }
     const knownRunIds = new Set(runs.map((item) => item.run_id));
     let stopProgressPolling = false;
     setBusy(true);
@@ -156,14 +186,15 @@ export default function App() {
         collectorMode,
         analystMode,
         workflowEngine,
-        runStage === "planner_only" ? "planner_only" : undefined,
+        runStage === "full" ? undefined : runStage,
+        runOverrides,
       ) as PlannerRunResult;
       setWorkflowSummary(result.workflow_summary);
       const runId = result.workflow_summary?.run_id ?? result.report?.run_id;
-      if (runStage === "planner_only") {
+      if (runStage !== "full") {
         setDag(result.dag ?? result.workflow_summary?.dag);
-        setEvidence([]);
-        setQa(undefined);
+        setEvidence(runStage === "collector_only" ? (result.evidence ?? result.collector_output?.evidence ?? []) : []);
+        setQa(runStage === "collector_only" ? (result.qa_result ?? undefined) : undefined);
         setReport(undefined);
         setSelectedFact(undefined);
         setSelectedEvidenceIds([]);
@@ -248,7 +279,7 @@ export default function App() {
   }
 
   const writerDiagnostics = report?.json_report.writer_diagnostics as WriterDiagnostics | undefined;
-  const collectorDiagnostics = latestCollectorDiagnostics(traces);
+  const collectorDiagnostics = latestCollectorDiagnostics(traces) ?? workflowSummary?.collector_diagnostics;
   const llmStatusLabel = !llmStatus
     ? "LLM 状态未知"
     : !llmStatus.api_key_configured
@@ -394,13 +425,17 @@ export default function App() {
             className="rounded border border-line bg-white px-3 py-2 text-sm"
             value={runStage}
             onChange={(event) => {
-              const nextStage = event.target.value as "full" | "planner_only";
+              const nextStage = event.target.value as "full" | "planner_only" | "collector_only";
               setRunStage(nextStage);
-              if (nextStage === "planner_only") setWorkflowEngine("langgraph");
+              if (nextStage !== "full") {
+                setWorkflowEngine("langgraph");
+                setAutoRework(false);
+              }
             }}
           >
             <option value="full">完整工作流</option>
             <option value="planner_only">只测试 Planner</option>
+            <option value="collector_only">测试 Planner + Collector + EvidenceQA</option>
           </select>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
@@ -425,18 +460,85 @@ export default function App() {
             {searchTesting ? "测试中..." : "测试搜索连接"}
           </button>
           <button onClick={run} disabled={!task || busy} className="inline-flex items-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50">
-            <Play size={16} /> {runStage === "planner_only" ? "只运行 PlannerAgent" : "运行 Demo 工作流"}
+            <Play size={16} /> {runStage === "planner_only"
+              ? "只运行 PlannerAgent"
+              : runStage === "collector_only"
+                ? "运行采集与 EvidenceQA"
+                : "运行 Demo 工作流"}
           </button>
           <label className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm">
             <input
               type="checkbox"
               checked={autoRework}
               onChange={(event) => setAutoRework(event.target.checked)}
+              disabled={runStage !== "full"}
             />
-            auto_rework=true
+            auto_rework={autoRework ? "true" : "false"}
           </label>
           <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
         </div>
+
+        <section className="mb-4 rounded border border-line bg-white p-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <label className="inline-flex items-center gap-2 font-semibold">
+              <input
+                type="checkbox"
+                checked={useCollectionPlanOverride}
+                onChange={(event) => setUseCollectionPlanOverride(event.target.checked)}
+              />
+              手动覆盖 Collector collection_plan
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
+                onClick={() => {
+                  const plan = workflowSummary?.collection_plan ?? workflowSummary?.planner_collection_plan_original;
+                  if (plan) {
+                    setEditableCollectionPlan(editablePlanFromCollectionPlan(plan));
+                    setCollectionPlanOverrideError(undefined);
+                  }
+                }}
+              >
+                用当前计划填充
+              </button>
+              <button
+                type="button"
+                className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
+                onClick={() => {
+                  setEditableCollectionPlan(undefined);
+                  setCollectionPlanOverrideError(undefined);
+                }}
+              >
+                清空
+              </button>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            启用后，本次运行会让 Collector 和 EvidenceQA 使用这里确认过的维度和查询词。Planner 原始输出仍会保存，便于对比。
+          </p>
+          {useCollectionPlanOverride && (
+            <div className="mt-3">
+              <CollectionPlanEditor
+                value={editableCollectionPlan}
+                onChange={(nextPlan) => {
+                  setEditableCollectionPlan(nextPlan);
+                  setCollectionPlanOverrideError(undefined);
+                }}
+              />
+              {collectionPlanOverrideError && (
+                <div className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
+                  collection_plan 配置错误：{collectionPlanOverrideError}
+                </div>
+              )}
+              {workflowSummary?.manual_collection_plan_override_used && (
+                <div className="mt-2 rounded border border-green-200 bg-green-50 px-3 py-2 text-xs text-success">
+                  上次运行已使用手动 collection_plan override。
+                </div>
+              )}
+            </div>
+          )}
+        </section>
 
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded border border-dashed border-line bg-white p-3 text-sm">
           <span className="font-semibold">API Recorder</span>
@@ -552,11 +654,43 @@ export default function App() {
         )}
 
         <PlannerSummaryCard workflowSummary={workflowSummary} collectorDiagnostics={collectorDiagnostics} plannerAttempts={plannerAttempts} />
-        {workflowSummary?.debug_stage !== "planner_only" && <KnowledgeHitsPanel workflowSummary={workflowSummary} />}
+        {!workflowSummary?.debug_stage && <KnowledgeHitsPanel workflowSummary={workflowSummary} />}
 
         <div className="space-y-4">
-          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? (runStage === "planner_only" ? "planner_only" : undefined)} />
-          {workflowSummary?.debug_stage !== "planner_only" && (
+          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? (runStage === "full" ? undefined : runStage)} />
+          {workflowSummary?.debug_stage === "collector_only" && (
+            <>
+              <section className="rounded border border-line bg-white p-4">
+                <h2 className="mb-3 text-lg font-semibold">Collector 采集结果</h2>
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                  <DebugMetric label="搜索 query 总数" value={collectorDiagnostics?.query_count ?? 0} />
+                  <DebugMetric label="Evidence 总数" value={collectorDiagnostics?.evidence_count ?? evidence.length} />
+                  <DebugMetric label="失败 query 数" value={collectorDiagnostics?.failed_queries?.length ?? 0} />
+                  <DebugMetric label="采集计划来源" value={collectorDiagnostics?.collector_search_plan_source ?? "-"} />
+                </div>
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  <MetricMap title="按竞品统计" values={collectorDiagnostics?.evidence_count_by_competitor} />
+                  <MetricMap title="按维度统计" values={collectorDiagnostics?.evidence_count_by_dimension} />
+                </div>
+                {!!collectorDiagnostics?.failed_queries?.length && (
+                  <div className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+                    <div className="font-semibold">失败查询</div>
+                    <div className="mt-1">{collectorDiagnostics.failed_queries.join("、")}</div>
+                  </div>
+                )}
+              </section>
+              <EvidencePanel evidence={evidence} evidenceIds={selectedEvidenceIds} />
+              <QaPanel qa={qa} workflowSummary={workflowSummary} />
+              <section className="rounded border border-line bg-white p-4">
+                <h2 className="mb-3 text-lg font-semibold">调试原始 JSON</h2>
+                <DebugJson title="PlannerOutput" value={workflowSummary.planner_output} />
+                <DebugJson title="CollectorOutput Schema" value={COLLECTOR_OUTPUT_SCHEMA} />
+                <DebugJson title="CollectorOutput" value={workflowSummary.collector_output} />
+                <DebugJson title="QaOutput" value={workflowSummary.qa_output} />
+              </section>
+            </>
+          )}
+          {!workflowSummary?.debug_stage && (
             <>
               <KnowledgeView report={report} evidence={evidence} onEvidenceIdsSelect={(ids) => {
                 setSelectedFact(undefined);
@@ -576,6 +710,278 @@ export default function App() {
         </div>
       </div>
     </main>
+  );
+}
+
+function editablePlanFromCollectionPlan(plan: CollectionPlan): EditableCollectionPlan {
+  return Object.fromEntries(
+    Object.entries(plan.collector_search_plan ?? {}).map(([competitor, dimensions]) => [
+      competitor,
+      Object.fromEntries(
+        Object.entries(dimensions ?? {}).map(([dimensionKey, item]) => [
+          dimensionKey,
+          {
+            enabled: true,
+            dimension_id: item.dimension_id ?? dimensionKey,
+            label: item.label ?? item.dimension_id ?? dimensionKey,
+            queries: [...(item.queries ?? [])],
+            research_goals: [...(item.research_goals ?? [])],
+            source: item.source,
+            max_results_per_query: 8,
+            max_evidence_per_dimension: 3,
+            min_valid_evidence_required: 1,
+            include_domains: "",
+            exclude_domains: "",
+          },
+        ]),
+      ),
+    ]),
+  );
+}
+
+function buildRunOverrides(editablePlan?: EditableCollectionPlan): RunTaskOverrides {
+  const collectionPlan = buildCollectionPlanOverride(editablePlan);
+  return {
+    collection_plan_override: collectionPlan,
+    collector_config: buildCollectorConfig(editablePlan),
+  };
+}
+
+function buildCollectionPlanOverride(editablePlan?: EditableCollectionPlan): CollectionPlan {
+  if (!editablePlan) {
+    throw new Error("请先用 Planner 当前计划填充后再运行。");
+  }
+  const collectorSearchPlan: CollectionPlan["collector_search_plan"] = {};
+  for (const [competitor, dimensions] of Object.entries(editablePlan)) {
+    for (const [dimensionKey, item] of Object.entries(dimensions)) {
+      const dimensionId = item.dimension_id.trim() || dimensionKey;
+      const queries = item.queries.map((query) => query.trim()).filter(Boolean);
+      if (!item.enabled || !queries.length) continue;
+      collectorSearchPlan[competitor] = collectorSearchPlan[competitor] ?? {};
+      collectorSearchPlan[competitor][dimensionId] = {
+        dimension_id: dimensionId,
+        label: item.label.trim() || dimensionId,
+        queries,
+        research_goals: item.research_goals.map((goal) => goal.trim()).filter(Boolean),
+        source: "manual_override",
+      };
+    }
+  }
+  if (!Object.keys(collectorSearchPlan).length) {
+    throw new Error("至少启用一个维度，并保留一条查询词。");
+  }
+  return { collector_search_plan: collectorSearchPlan };
+}
+
+function buildCollectorConfig(editablePlan?: EditableCollectionPlan): CollectorConfig {
+  if (!editablePlan) {
+    throw new Error("请先用 Planner 当前计划填充后再运行。");
+  }
+  const overrides: NonNullable<CollectorConfig["overrides"]> = [];
+  for (const [competitor, dimensions] of Object.entries(editablePlan)) {
+    for (const [dimensionKey, item] of Object.entries(dimensions)) {
+      if (!item.enabled) continue;
+      const dimensionId = item.dimension_id.trim() || dimensionKey;
+      overrides.push({
+        competitor,
+        dimension_id: dimensionId,
+        max_results_per_query: positiveNumber(item.max_results_per_query, 8),
+        max_evidence_per_dimension: positiveNumber(item.max_evidence_per_dimension, 3),
+        min_valid_evidence_required: positiveNumber(item.min_valid_evidence_required, 1),
+        include_domains: splitDomainList(item.include_domains),
+        exclude_domains: splitDomainList(item.exclude_domains),
+      });
+    }
+  }
+  return {
+    default: {
+      max_results_per_query: 8,
+      max_evidence_per_dimension: 3,
+      min_valid_evidence_required: 1,
+      include_domains: [],
+      exclude_domains: [],
+    },
+    overrides,
+  };
+}
+
+function positiveNumber(value: number, fallback: number) {
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
+}
+
+function splitDomainList(value: string) {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function CollectionPlanEditor({
+  value,
+  onChange,
+}: {
+  value?: EditableCollectionPlan;
+  onChange: (nextPlan: EditableCollectionPlan) => void;
+}) {
+  if (!value) {
+    return (
+      <div className="rounded border border-dashed border-line bg-panel px-3 py-6 text-center text-sm text-slate-500">
+        先运行 Planner 或点击“用当前计划填充”，再编辑维度和查询词。
+      </div>
+    );
+  }
+  const plan = value;
+
+  function updateDimension(competitor: string, dimensionKey: string, patch: Partial<EditableCollectionPlanItem>) {
+    onChange({
+      ...plan,
+      [competitor]: {
+        ...plan[competitor],
+        [dimensionKey]: {
+          ...plan[competitor][dimensionKey],
+          ...patch,
+        },
+      },
+    });
+  }
+
+  function addDimension(competitor: string) {
+    const dimensions = plan[competitor] ?? {};
+    const nextIndex = Object.keys(dimensions).length + 1;
+    const dimensionKey = `custom_dimension_${nextIndex}`;
+    onChange({
+      ...plan,
+      [competitor]: {
+        ...dimensions,
+        [dimensionKey]: {
+          enabled: true,
+          dimension_id: dimensionKey,
+          label: "自定义维度",
+          queries: [`${competitor} 自定义维度 官方`],
+          research_goals: [],
+          source: "manual_override",
+          max_results_per_query: 8,
+          max_evidence_per_dimension: 3,
+          min_valid_evidence_required: 1,
+          include_domains: "",
+          exclude_domains: "",
+        },
+      },
+    });
+  }
+
+  return (
+    <div className="space-y-4">
+      {Object.entries(value).map(([competitor, dimensions]) => (
+        <div key={competitor} className="rounded border border-line bg-panel p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="font-semibold">{competitor}</div>
+            <button
+              type="button"
+              className="rounded border border-line bg-white px-3 py-1.5 text-xs font-semibold"
+              onClick={() => addDimension(competitor)}
+            >
+              新增维度
+            </button>
+          </div>
+          <div className="space-y-3">
+            {Object.entries(dimensions).map(([dimensionKey, item]) => (
+              <div key={dimensionKey} className="rounded border border-line bg-white p-3">
+                <div className="grid gap-2 lg:grid-cols-[80px_1fr_1fr]">
+                  <label className="inline-flex items-center gap-2 text-sm font-semibold">
+                    <input
+                      type="checkbox"
+                      checked={item.enabled}
+                      onChange={(event) => updateDimension(competitor, dimensionKey, { enabled: event.target.checked })}
+                    />
+                    启用
+                  </label>
+                  <input
+                    className="rounded border border-line px-3 py-2 text-sm"
+                    value={item.dimension_id}
+                    onChange={(event) => updateDimension(competitor, dimensionKey, { dimension_id: event.target.value })}
+                    placeholder="dimension_id"
+                  />
+                  <input
+                    className="rounded border border-line px-3 py-2 text-sm"
+                    value={item.label}
+                    onChange={(event) => updateDimension(competitor, dimensionKey, { label: event.target.value })}
+                    placeholder="维度名称"
+                  />
+                </div>
+                <textarea
+                  className="mt-2 h-24 w-full rounded border border-line px-3 py-2 font-mono text-xs"
+                  value={item.queries.join("\n")}
+                  onChange={(event) => updateDimension(competitor, dimensionKey, { queries: event.target.value.split("\n") })}
+                  placeholder="每行一条查询词"
+                />
+                <textarea
+                  className="mt-2 h-16 w-full rounded border border-line px-3 py-2 text-xs"
+                  value={item.research_goals.join("\n")}
+                  onChange={(event) => updateDimension(competitor, dimensionKey, { research_goals: event.target.value.split("\n") })}
+                  placeholder="每行一个研究目标，可留空"
+                />
+                <div className="mt-3 grid gap-2 md:grid-cols-3">
+                  <label className="text-xs text-slate-600">
+                    每条 query 返回结果数
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      className="mt-1 w-full rounded border border-line px-3 py-2 text-sm"
+                      value={item.max_results_per_query}
+                      onChange={(event) => updateDimension(competitor, dimensionKey, { max_results_per_query: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-600">
+                    本维度最多 evidence 数
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      className="mt-1 w-full rounded border border-line px-3 py-2 text-sm"
+                      value={item.max_evidence_per_dimension}
+                      onChange={(event) => updateDimension(competitor, dimensionKey, { max_evidence_per_dimension: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-600">
+                    QA 至少有效 evidence 数
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      className="mt-1 w-full rounded border border-line px-3 py-2 text-sm"
+                      value={item.min_valid_evidence_required}
+                      onChange={(event) => updateDimension(competitor, dimensionKey, { min_valid_evidence_required: Number(event.target.value) })}
+                    />
+                  </label>
+                </div>
+                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                  <label className="text-xs text-slate-600">
+                    include domains
+                    <textarea
+                      className="mt-1 h-16 w-full rounded border border-line px-3 py-2 font-mono text-xs"
+                      value={item.include_domains}
+                      onChange={(event) => updateDimension(competitor, dimensionKey, { include_domains: event.target.value })}
+                      placeholder="example.com, docs.example.com"
+                    />
+                  </label>
+                  <label className="text-xs text-slate-600">
+                    exclude domains
+                    <textarea
+                      className="mt-1 h-16 w-full rounded border border-line px-3 py-2 font-mono text-xs"
+                      value={item.exclude_domains}
+                      onChange={(event) => updateDimension(competitor, dimensionKey, { exclude_domains: event.target.value })}
+                      placeholder="reddit.com, pinterest.com"
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -600,3 +1006,125 @@ function recoverWorkflowSummary(traces: TraceRecord[]): WorkflowSummary | undefi
     return undefined;
   }
 }
+
+function DebugMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded border border-line bg-panel p-3">
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="mt-1 font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function MetricMap({ title, values }: { title: string; values?: Record<string, number> }) {
+  return (
+    <div className="rounded border border-line bg-panel p-3 text-sm">
+      <div className="mb-2 font-semibold">{title}</div>
+      <div className="flex flex-wrap gap-2">
+        {Object.entries(values ?? {}).map(([key, value]) => (
+          <span key={key} className="rounded border border-line bg-white px-2 py-1">
+            {key}：{value}
+          </span>
+        ))}
+        {!Object.keys(values ?? {}).length && <span className="text-slate-500">暂无数据</span>}
+      </div>
+    </div>
+  );
+}
+
+function DebugJson({ title, value }: { title: string; value: unknown }) {
+  return (
+    <details className="mb-2 rounded border border-line bg-panel p-3">
+      <summary className="cursor-pointer font-semibold">{title}</summary>
+      <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded border border-line bg-white p-3 text-xs">
+        {JSON.stringify(value ?? {}, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
+const COLLECTOR_OUTPUT_SCHEMA = {
+  CollectorOutput: {
+    evidence: [
+      {
+        evidence_id: "string; generated if missing",
+        run_id: "string | null; bound by current TaskRun",
+        competitor: "string | null; planned competitor bucket",
+        source_type: "web | public_web | knowledge_base | document | pricing_page | review | interview | survey",
+        url: "string | null; required unless local_ref exists",
+        local_ref: "string | null; required unless url exists",
+        collected_at: "ISO datetime",
+        snippet: "string; non-empty source summary",
+        confidence: "number; 0..1",
+        source_domain: "string | null",
+        source_quality: "official | documentation | media | review | unknown | low_quality",
+        relevance_score: "number; 0..1",
+        relevance_level: "high | medium | low | unrelated",
+        relevance_reason: "string",
+        entity_match_signals: {
+          collector_query: "string; query actually used",
+          collector_dimension: "string; dimension from Planner collection_plan",
+          planner_dimension: "string; dimension propagated for QA",
+          collector_query_source: "planner_collection_plan",
+          collector_query_intent: "string | null",
+          collector_query_source_detail: "string | null",
+          confidence_breakdown: "object; optional confidence details",
+          "...": "entity resolver and relevance matching signals",
+        },
+        content_mode: "snippet | page",
+        page_fetch_success: "boolean",
+        page_title: "string | null",
+        content_excerpt: "string | null",
+        content_chars: "number | null",
+        fetch_status_code: "number | null",
+        page_fetch_error: "string | null",
+        fetched_at: "ISO datetime | null",
+      },
+    ],
+    diagnostics: {
+      collector_mode_requested: "mock | web",
+      collector_mode_used: "mock | web",
+      search_provider: "string",
+      search_base_url_configured: "boolean",
+      has_search_api_key: "boolean",
+      web_search_attempted: "boolean",
+      web_search_success: "boolean",
+      collection_plan_used: "boolean",
+      collector_search_plan_source: "planner_collection_plan",
+      collector_search_plan_missing: "boolean",
+      collector_search_plan_used: "boolean",
+      entity_aliases_used: "boolean",
+      competitor_aliases_by_competitor: "Record<competitor, aliases[]>",
+      planned_query_count_by_competitor: "Record<competitor, number>",
+      effective_query_count_by_competitor: "Record<competitor, number>",
+      effective_queries_preview_by_competitor: "Record<competitor, queries[]>",
+      skipped_queries_by_competitor: "Record<competitor, skipped query metadata[]>",
+      query_policy: ["planner_collection_plan"],
+      query_dimensions_by_competitor: "Record<competitor, query dimension metadata[]>",
+      query_count: "number",
+      query_count_by_competitor: "Record<competitor, number>",
+      query_count_by_dimension: "Record<dimension_id, number>",
+      failed_queries: "string[]",
+      evidence_count: "number",
+      evidence_count_by_competitor: "Record<competitor, number>",
+      evidence_count_by_dimension: "Record<dimension_id, number>",
+      evidence_count_by_dimension_by_competitor: "Record<competitor, Record<dimension_id, number>>",
+      raw_evidence_count: "number",
+      deduplicated_evidence_count: "number",
+      duplicate_removed_count: "number",
+      source_quality_summary: "Record<source_quality, number>",
+      low_confidence_count: "number",
+      competitor_coverage: "Record<competitor, number>",
+      missing_competitors: "string[]",
+      fallback_by_competitor: "Record<competitor, string | null>",
+      raw_search_result_count_by_competitor: "Record<competitor, number>",
+      relevant_evidence_count_by_competitor: "Record<competitor, number>",
+      unrelated_evidence_count_by_competitor: "Record<competitor, number>",
+      filtered_unrelated_count: "number",
+      missing_relevant_evidence_competitors: "string[]",
+      fallback_used: "boolean",
+      fallback_reason: "string | null",
+      elapsed_time_ms: "number",
+    },
+  },
+};

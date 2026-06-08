@@ -543,6 +543,16 @@ def test_max_rework_becomes_manual_review(db_session):
     assert result.route_to is None
 
 
+def test_third_rework_is_still_routed_before_manual_review(db_session):
+    task = make_task(db_session)
+    task.rework_count = 2
+    qa = QaAgent(TraceService(db_session))
+    result = qa.run(QaInput(task=task, evidence=[], demo_mode="qa_missing_evidence")).qa_result
+    assert result.status == "failed"
+    assert result.rework_count == 3
+    assert result.route_to == "CollectorAgent"
+
+
 def test_final_report_agent_creates_trace(db_session):
     task, trace_service, _, collected, _, report_output, qa_output = build_agent_outputs(db_session)
     assert report_output.report is not None
@@ -2410,6 +2420,40 @@ def test_langgraph_max_rework_enters_manual_review_without_loop(db_session):
     output = runner.qa_node(state)
     assert output["qa_result"].status == "manual_review"
     assert runner.route_after_qa(output) == "final_report"
+
+
+def test_langgraph_routes_third_rework_attempt(db_session):
+    task = make_task(db_session)
+    runner = LangGraphWorkflowRunner(db_session)
+    state = {
+        "task_id": task.task_id,
+        "task": task,
+        "workflow_engine_requested": "langgraph",
+        "workflow_engine_used": "langgraph",
+        "demo_mode": "normal",
+        "collector_mode": "mock",
+        "analyst_mode": "evidence",
+        "writer_mode": "mock",
+        "content_mode": None,
+        "auto_rework": True,
+        "rework_count": 3,
+        "max_rework": 3,
+        "evidence": [],
+        "report": None,
+        "qa_result": QaResult(
+            task_id=task.task_id,
+            status="failed",
+            route_to="PlannerAgent",
+            rework_count=3,
+        ),
+        "route_to": "PlannerAgent",
+        "final_status": None,
+        "errors": [],
+        "node_sequence": [],
+        "conditional_routes_taken": [],
+        "workflow_summary": {},
+    }
+    assert runner.route_after_qa(state) == "planner"
 
 
 def test_langgraph_unknown_route_enters_manual_review_and_records_route(db_session):

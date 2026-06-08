@@ -5,6 +5,7 @@ from app.schemas.agent_io import (
     CollectorOutput,
     FinalReportOutput,
     PlannerOutput,
+    PlannerIncrementalOutput,
     QaOutput,
     ReportWriterOutput,
 )
@@ -14,6 +15,7 @@ from app.schemas.models import (
     ClaimSupportResult,
     DimensionResult,
     Evidence,
+    CollectorConfig,
     PlannerAmbiguityLevel,
     PlannerCompetitorCandidate,
     PlannerExtractedContext,
@@ -23,6 +25,8 @@ from app.schemas.models import (
     PlannerStage,
     PlannerSurveyInput,
     PlannerDownstreamGuidance,
+    PlannerCollectionPlan,
+    PlannerIncrementalCollectionPlan,
     QaResult,
     Report,
     RetrievalResult,
@@ -63,6 +67,11 @@ class WorkflowState(TypedDict, total=False):
     rework_count: int
     max_rework: int
     planner_output: PlannerOutput | None
+    collection_plan_override: PlannerCollectionPlan | None
+    manual_collection_plan_override_used: bool
+    collector_config: CollectorConfig | None
+    planner_incremental_output: PlannerIncrementalOutput | None
+    incremental_collection_plan: PlannerIncrementalCollectionPlan | None
     planner_summary: dict[str, Any]
     collection_plan: dict[str, Any]
     collector_output: CollectorOutput | None
@@ -115,3 +124,4 @@ class WorkflowState(TypedDict, total=False):
     node_sequence: list[str]
     conditional_routes_taken: list[ConditionalRoute]
     workflow_summary: dict[str, Any]
+    debug_stage: str | None

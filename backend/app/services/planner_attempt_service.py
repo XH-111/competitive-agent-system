@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -39,7 +40,7 @@ class PlannerAttemptService:
         *,
         run_id: str,
         status: str,
-        planner_output: PlannerOutput | None,
+        planner_output: PlannerOutput | BaseModel | dict[str, Any] | None,
         diagnostics: dict[str, Any],
         rework_context: ReworkContext | None = None,
         raw_llm_response: str | None = None,
@@ -58,7 +59,7 @@ class PlannerAttemptService:
             attempt_no=attempt_no,
             status=status,
             planner_output_json=json.dumps(
-                planner_output.model_dump(mode="json") if planner_output else {},
+                _planner_payload(planner_output),
                 ensure_ascii=False,
             ),
             diagnostics_json=json.dumps(diagnostics, ensure_ascii=False),
@@ -81,3 +82,11 @@ class PlannerAttemptService:
             .all()
         )
         return [_to_schema(row) for row in rows]
+
+
+def _planner_payload(planner_output: PlannerOutput | BaseModel | dict[str, Any] | None) -> dict[str, Any]:
+    if planner_output is None:
+        return {}
+    if isinstance(planner_output, BaseModel):
+        return planner_output.model_dump(mode="json")
+    return planner_output

@@ -36,12 +36,14 @@ const orderedAgents = [
   "FinalReport",
 ];
 
+const collectorDebugAgents = ["PlannerAgent", "CollectorAgent", "QaAgent"];
+
 type DagViewProps = {
   dag?: Dag;
   traces: TraceRecord[];
   qaRouteTo?: string;
   running?: boolean;
-  debugStage?: "planner_only";
+  debugStage?: "planner_only" | "collector_only";
 };
 
 function traceAgentName(trace: TraceRecord) {
@@ -59,6 +61,65 @@ function nextRunningAgent(traces: TraceRecord[], qaRouteTo?: string) {
   return index >= 0 && index < orderedAgents.length - 1 ? orderedAgents[index + 1] : undefined;
 }
 
+function agentTraceCount(traces: TraceRecord[], agent: string) {
+  return traces.filter((trace) => traceAgentName(trace) === agent).length;
+}
+
+function collectorDebugProgress(traces: TraceRecord[]) {
+  const plannerCount = agentTraceCount(traces, "PlannerAgent");
+  const collectorCount = agentTraceCount(traces, "CollectorAgent");
+  const qaCount = agentTraceCount(traces, "QaAgent");
+  const completedSteps = Math.min(plannerCount, 2) + Math.min(collectorCount, 2) + Math.min(qaCount, 2);
+
+  if (plannerCount === 0) {
+    return {
+      currentAgent: "PlannerAgent",
+      text: "正在规划采集维度和初始查询词……",
+      completedSteps,
+    };
+  }
+  if (collectorCount === 0) {
+    return {
+      currentAgent: "CollectorAgent",
+      text: "正在按完整采集计划搜索 evidence……",
+      completedSteps,
+    };
+  }
+  if (qaCount === 0) {
+    return {
+      currentAgent: "QaAgent",
+      text: "正在检查 evidence 状态……",
+      completedSteps,
+    };
+  }
+  if (plannerCount < 2) {
+    return {
+      currentAgent: "PlannerAgent",
+      text: "正在设计新的查询词……",
+      completedSteps,
+    };
+  }
+  if (collectorCount < 2) {
+    return {
+      currentAgent: "CollectorAgent",
+      text: "正在增量补采缺口 evidence……",
+      completedSteps,
+    };
+  }
+  if (qaCount < 2) {
+    return {
+      currentAgent: "QaAgent",
+      text: "正在基于合并 evidence 重新检查……",
+      completedSteps,
+    };
+  }
+  return {
+    currentAgent: undefined,
+    text: "Planner、Collector 与 EvidenceQA 已完成",
+    completedSteps,
+  };
+}
+
 export function DagView({ dag, traces, qaRouteTo, running = false, debugStage }: DagViewProps) {
   const visibleAgents = debugStage === "planner_only"
     ? ["PlannerAgent", "CollectorAgent", "AnalystAgent", "ReportWriterAgent"]
@@ -66,19 +127,46 @@ export function DagView({ dag, traces, qaRouteTo, running = false, debugStage }:
   const nodes = visibleAgents.map((agent) => dag?.nodes.find((node) => node.id === agent) ?? {
     id: agent,
     label: agentDescriptions[agent],
-    status: debugStage === "planner_only" && agent !== "PlannerAgent" ? "skipped" : "pending",
+    status: debugStage === "planner_only" && agent !== "PlannerAgent"
+      ? "skipped"
+      : debugStage === "collector_only" && !collectorDebugAgents.includes(agent)
+        ? "skipped"
+        : "pending",
   });
   const tracedAgents = new Set(traces.map(traceAgentName));
+  const collectorProgress = debugStage === "collector_only" ? collectorDebugProgress(traces) : undefined;
+  const activeAgents = debugStage === "planner_only"
+    ? ["PlannerAgent"]
+    : debugStage === "collector_only"
+      ? collectorDebugAgents
+      : visibleAgents;
   const currentAgent = running
     ? debugStage === "planner_only"
       ? "PlannerAgent"
-      : nextRunningAgent(traces, qaRouteTo)
+      : debugStage === "collector_only"
+        ? collectorProgress?.currentAgent
+        : nextRunningAgent(traces, qaRouteTo)
     : undefined;
-  const completedCount = visibleAgents.filter((agent) => tracedAgents.has(agent)).length;
+  const completedCount = debugStage === "collector_only"
+    ? activeAgents.filter((agent) => agentTraceCount(traces, agent) > 0).length
+    : activeAgents.filter((agent) => tracedAgents.has(agent)).length;
   const progress = running
-    ? Math.max(4, Math.round((completedCount / visibleAgents.length) * 100))
-    : Math.round((completedCount / visibleAgents.length) * 100);
+    ? debugStage === "collector_only"
+      ? Math.max(4, Math.round(((collectorProgress?.completedSteps ?? 0) / 6) * 100))
+      : Math.max(4, Math.round((completedCount / activeAgents.length) * 100))
+    : debugStage
+      ? 100
+      : Math.round((completedCount / visibleAgents.length) * 100);
   const currentLabel = currentAgent === "FinalReport" ? "FinalReportAgent" : currentAgent;
+  const statusText = running
+    ? debugStage === "collector_only"
+      ? collectorProgress?.text ?? "正在等待节点状态……"
+      : `正在处理：${currentLabel ?? "等待节点状态"}`
+    : debugStage === "planner_only"
+      ? "PlannerAgent 已完成，后续节点已冻结"
+      : debugStage === "collector_only"
+        ? "Planner、Collector 与 EvidenceQA 已完成，其他节点已冻结"
+        : `已完成 ${completedCount} / ${visibleAgents.length} 个节点`;
 
   return (
     <section className="bg-white p-4">
@@ -87,13 +175,7 @@ export function DagView({ dag, traces, qaRouteTo, running = false, debugStage }:
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Activity size={18} /> DAG 执行状态
           </h2>
-          <p className="mt-1 text-sm text-slate-600">
-            {running
-              ? `正在处理：${currentLabel ?? "等待节点状态"}`
-              : debugStage === "planner_only"
-                ? "PlannerAgent 已完成，后续节点已冻结"
-                : `已完成 ${completedCount} / ${visibleAgents.length} 个节点`}
-          </p>
+          <p className="mt-1 text-sm text-slate-600">{statusText}</p>
         </div>
         {running && (
           <div className="inline-flex items-center gap-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-accent">
@@ -106,7 +188,11 @@ export function DagView({ dag, traces, qaRouteTo, running = false, debugStage }:
       <div className="mb-4">
         <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
           <span>{running ? "实时执行进度" : "本次运行进度"}</span>
-          <span>{completedCount} / {visibleAgents.length}</span>
+          <span>
+            {debugStage === "collector_only"
+              ? `${Math.min(collectorProgress?.completedSteps ?? 6, 6)} / 6`
+              : `${completedCount} / ${visibleAgents.length}`}
+          </span>
         </div>
         <div className="h-2 overflow-hidden rounded bg-slate-100">
           <div
@@ -123,18 +209,19 @@ export function DagView({ dag, traces, qaRouteTo, running = false, debugStage }:
           const schemas = schemaByAgent[node.id] ?? { input: "-", output: "-" };
           const failed = agentTraces.some((trace) => trace.schema_validation_result === "failed");
           const isCurrent = currentAgent === node.id;
-          const frozen = debugStage === "planner_only" && node.id !== "PlannerAgent";
+          const frozen = (debugStage === "planner_only" && node.id !== "PlannerAgent")
+            || (debugStage === "collector_only" && !collectorDebugAgents.includes(node.id));
           const inferredStatus = frozen
             ? "skipped"
             : failed
-            ? "failed"
-            : isCurrent
-              ? "running"
-              : agentTraces.length
-                ? "completed"
-                : running
-                  ? "pending"
-                  : node.status;
+              ? "failed"
+              : isCurrent
+                ? "running"
+                : agentTraces.length
+                  ? "completed"
+                  : running
+                    ? "pending"
+                    : node.status;
 
           return (
             <div
@@ -157,10 +244,10 @@ export function DagView({ dag, traces, qaRouteTo, running = false, debugStage }:
               </p>
               <div className="mt-2"><Pill value={inferredStatus} /></div>
               <div className="mt-3 space-y-1 text-xs text-slate-600">
-                <div>输入：{schemas.input}</div>
-                <div>输出：{schemas.output}</div>
-                <div>{frozen ? "状态：冻结，未执行" : `执行次数：${agentTraces.length}`}</div>
-                {!frozen && <div>耗时：{isCurrent ? "处理中" : `${elapsed}ms`}</div>}
+                <div>输入: {schemas.input}</div>
+                <div>输出: {schemas.output}</div>
+                <div>{frozen ? "状态: 冻结，未执行" : `执行次数: ${agentTraces.length}`}</div>
+                {!frozen && <div>耗时: {isCurrent ? "处理中" : `${elapsed}ms`}</div>}
               </div>
               {index < nodes.length - 1 && (
                 <div className="absolute -right-3 top-1/2 hidden text-slate-400 lg:block">-&gt;</div>
@@ -172,7 +259,7 @@ export function DagView({ dag, traces, qaRouteTo, running = false, debugStage }:
 
       {qaRouteTo && (
         <div className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-danger">
-          QA 打回路径：QaAgent -&gt; {qaRouteTo}
+          QA 打回路径: QaAgent -&gt; {qaRouteTo}
         </div>
       )}
     </section>

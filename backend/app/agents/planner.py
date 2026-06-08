@@ -11,6 +11,10 @@ from app.schemas import (
     PlannerCollectionPlan,
     PlannerCollectionPlanItem,
     PlannerDownstreamGuidance,
+    PlannerIncrementalInput,
+    PlannerIncrementalOutput,
+    PlannerIncrementalCollectionPlan,
+    IncrementalCollectionTarget,
     PlannerInput,
     PlannerOutput,
     PlannerSummary,
@@ -113,6 +117,101 @@ class PlannerAgent:
             retry_count=input_data.retry_count,
             fn=lambda: self._plan(task),
         )
+
+    def plan_incremental_collection(self, input_data: PlannerIncrementalInput) -> PlannerIncrementalOutput:
+        task = input_data.task
+        return run_with_trace(
+            trace_service=self.trace_service,
+            task_id=task.task_id,
+            run_id=input_data.run_id,
+            agent_name=self.name,
+            to_agent="CollectorAgent",
+            message_type="plan",
+            schema_name="PlannerIncrementalOutput",
+            input_summary=(
+                f"Generate incremental collection plan for "
+                f"{len(input_data.coverage_gap.targets)} coverage gaps"
+            ),
+            retry_count=input_data.retry_count,
+            fn=lambda: self._plan_incremental_collection(input_data),
+        )
+
+    def _plan_incremental_collection(self, input_data: PlannerIncrementalInput) -> PlannerIncrementalOutput:
+        diagnostics = {
+            "planner_output_type": "incremental_collection_plan",
+            "planner_mode_requested": "llm",
+            "planner_mode_used": "deterministic",
+            "llm_enabled": self.llm_client.is_available,
+            "llm_provider": self.llm_client.provider,
+            "llm_model": self.llm_client.model,
+            "llm_call_attempted": False,
+            "llm_call_success": False,
+            "llm_schema_validation_success": False,
+            "llm_schema_validation_errors": [],
+            "fallback_used": False,
+            "llm_fallback_reason": None,
+            "base_attempt_no": input_data.base_attempt_no,
+            "target_count": len(input_data.coverage_gap.targets),
+        }
+        response = self.llm_client.chat_json(self._incremental_messages(input_data))
+        diagnostics.update(
+            {
+                "llm_call_attempted": response.attempted,
+                "llm_call_success": response.success,
+                "llm_elapsed_time_ms": response.elapsed_time_ms,
+                "llm_error_type": response.error_type,
+                "llm_error_message": response.error_message,
+                "llm_response_preview": response.response_preview,
+            }
+        )
+        if response.available:
+            try:
+                payload = self._parse_incremental_json(response.content or "")
+                plan = self._build_incremental_plan(
+                    input_data,
+                    payload,
+                    source="llm",
+                    fallback_reason=None,
+                )
+                diagnostics.update(
+                    {
+                        "planner_mode_used": "llm",
+                        "llm_schema_validation_success": True,
+                        "llm_schema_validation_errors": [],
+                        "fallback_used": False,
+                    }
+                )
+                plan = plan.model_copy(update={"diagnostics": {**plan.diagnostics, **diagnostics}})
+                output = PlannerIncrementalOutput(incremental_collection_plan=plan, diagnostics=diagnostics)
+                output._raw_llm_response = response.content
+                return output
+            except Exception as exc:  # noqa: BLE001 - invalid LLM JSON must fall back.
+                diagnostics.update(
+                    {
+                        "llm_schema_validation_errors": [str(exc)],
+                        "fallback_used": True,
+                        "llm_fallback_reason": f"Planner incremental LLM output validation failed: {exc}",
+                    }
+                )
+        else:
+            diagnostics.update(
+                {
+                    "fallback_used": True,
+                    "llm_fallback_reason": response.fallback_reason or response.error_message or "Planner incremental LLM unavailable.",
+                }
+            )
+
+        plan = self._build_incremental_plan(
+            input_data,
+            payload={},
+            source="deterministic",
+            fallback_reason=diagnostics["llm_fallback_reason"],
+        )
+        diagnostics["planner_mode_used"] = "deterministic"
+        plan = plan.model_copy(update={"diagnostics": {**plan.diagnostics, **diagnostics}})
+        output = PlannerIncrementalOutput(incremental_collection_plan=plan, diagnostics=diagnostics)
+        output._raw_llm_response = response.content
+        return output
 
     def _plan(self, task: Task) -> PlannerOutput:
         diagnostics = self._base_diagnostics()
@@ -296,6 +395,199 @@ class PlannerAgent:
                 f"Planner LLM output contains unsupported fields: {', '.join(unexpected)}"
             )
         return payload
+
+    def _parse_incremental_json(self, content: str) -> dict[str, Any]:
+        text = content.strip()
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Planner incremental LLM output must be a strict JSON object without markdown.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Planner incremental LLM output must be a JSON object")
+        allowed = {"mode", "targets"}
+        unexpected = sorted(set(payload) - allowed)
+        if unexpected:
+            raise ValueError(f"Planner incremental output contains unsupported fields: {', '.join(unexpected)}")
+        if payload.get("mode") != "incremental_collection_plan":
+            raise ValueError("Planner incremental output mode must be incremental_collection_plan")
+        if not isinstance(payload.get("targets"), list):
+            raise ValueError("Planner incremental output targets must be a list")
+        return payload
+
+    def _build_incremental_plan(
+        self,
+        input_data: PlannerIncrementalInput,
+        payload: dict[str, Any],
+        *,
+        source: str,
+        fallback_reason: str | None,
+    ) -> PlannerIncrementalCollectionPlan:
+        allowed_targets = {
+            (target.competitor, target.dimension_id): target
+            for target in input_data.coverage_gap.targets
+        }
+        llm_targets = payload.get("targets") if isinstance(payload.get("targets"), list) else []
+        by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in llm_targets:
+            if not isinstance(item, dict):
+                continue
+            key = (str(item.get("competitor") or "").strip(), str(item.get("dimension_id") or "").strip())
+            if key in allowed_targets:
+                by_key[key] = item
+
+        targets: list[IncrementalCollectionTarget] = []
+        for key, gap_target in allowed_targets.items():
+            llm_item = by_key.get(key, {}) if source == "llm" else {}
+            base_queries = self._dedupe([*gap_target.original_queries, *self._base_queries_for_gap(input_data, gap_target.competitor, gap_target.dimension_id)])
+            proposed_queries = self._normalize_incremental_queries(
+                competitor=gap_target.competitor,
+                queries=llm_item.get("queries") if isinstance(llm_item, dict) else None,
+                fallback_queries=self._fallback_incremental_queries(gap_target.competitor, gap_target.dimension_id, base_queries),
+            )
+            if not proposed_queries:
+                proposed_queries = self._fallback_incremental_queries(gap_target.competitor, gap_target.dimension_id, base_queries)
+            reason = self._safe_text(
+                llm_item.get("reason") if isinstance(llm_item, dict) else None,
+                fallback=f"Collect additional public evidence for {gap_target.competitor} / {gap_target.dimension_id}.",
+            )
+            targets.append(
+                IncrementalCollectionTarget(
+                    competitor=gap_target.competitor,
+                    dimension_id=gap_target.dimension_id,
+                    queries=proposed_queries[:6],
+                    reason=reason,
+                    source_coverage_gap_reason_code=gap_target.reason_code,
+                    base_queries=base_queries,
+                )
+            )
+
+        return PlannerIncrementalCollectionPlan(
+            base_attempt_no=input_data.base_attempt_no,
+            targets=targets,
+            skip_evidence_ids=self._dedupe(
+                [
+                    evidence_id
+                    for sufficient in input_data.coverage_gap.sufficient
+                    for evidence_id in sufficient.valid_evidence_ids
+                ]
+            ),
+            diagnostics={
+                "generation_source": source,
+                "fallback_reason": fallback_reason,
+                "target_count": len(targets),
+            },
+        )
+
+    def _incremental_messages(self, input_data: PlannerIncrementalInput) -> list[dict[str, str]]:
+        context = self._incremental_prompt_context(input_data)
+        system = (
+            "You are PlannerAgent. Generate only an incremental public web collection query plan.\n"
+            "Return strict JSON only. Do not use markdown. Do not add comments. Do not add fields outside the schema.\n"
+            "Do not add competitors. Do not add dimensions. Do not write analysis, facts, reports, or conclusions.\n"
+            "Every query must include the exact competitor name from the target.\n"
+            "Schema:\n"
+            '{"mode":"incremental_collection_plan","targets":[{"competitor":"string","dimension_id":"string","queries":["string"],"reason":"string"}]}'
+        )
+        user = (
+            "Generate 3 to 6 targeted search queries per target to find high or medium relevance public Evidence.\n"
+            "Use original_queries and the failed evidence summary to avoid repeating weak searches.\n"
+            f"Context JSON:\n{json.dumps(context, ensure_ascii=False)}"
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def _incremental_prompt_context(self, input_data: PlannerIncrementalInput) -> dict[str, Any]:
+        dimensions = {
+            item.dimension_id: item
+            for item in input_data.base_planner_output.analysis_dimension_plan.dimension_plans
+        }
+        targets: list[dict[str, Any]] = []
+        for target in input_data.coverage_gap.targets:
+            dimension = dimensions.get(target.dimension_id)
+            targets.append(
+                {
+                    "competitor": target.competitor,
+                    "dimension_id": target.dimension_id,
+                    "dimension_label": dimension.label if dimension else target.dimension_id,
+                    "research_goals": dimension.research_goals if dimension else [],
+                    "original_queries": target.original_queries,
+                    "coverage_gap_reason_code": target.reason_code,
+                    "coverage_gap_reason": target.reason,
+                    "current_evidence_summary": [
+                        item.model_dump(mode="json")
+                        for item in target.current_evidence_summary[:5]
+                    ],
+                }
+            )
+        return {
+            "task": {
+                "product_name": input_data.task.product_name,
+                "industry": input_data.task.industry,
+                "region": input_data.task.region,
+                "competitors": input_data.task.competitors,
+            },
+            "base_attempt_no": input_data.base_attempt_no,
+            "targets": targets,
+        }
+
+    def _base_queries_for_gap(self, input_data: PlannerIncrementalInput, competitor: str, dimension_id: str) -> list[str]:
+        by_competitor = input_data.base_planner_output.collection_plan.collector_search_plan.get(competitor)
+        if not by_competitor:
+            return []
+        item = by_competitor.get(dimension_id)
+        return list(item.queries) if item else []
+
+    def _normalize_incremental_queries(
+        self,
+        *,
+        competitor: str,
+        queries: Any,
+        fallback_queries: list[str],
+    ) -> list[str]:
+        candidates = self._normalize_string_list(queries)
+        if not candidates:
+            candidates = fallback_queries
+        normalized: list[str] = []
+        competitor_key = competitor.lower()
+        for query in candidates:
+            value = " ".join(query.split()).strip()
+            if not value:
+                continue
+            if competitor_key not in value.lower():
+                value = f"{competitor} {value}"
+            normalized.append(value)
+        return self._dedupe(normalized)[:6]
+
+    def _fallback_incremental_queries(self, competitor: str, dimension_id: str, base_queries: list[str]) -> list[str]:
+        templates = {
+            "pricing": [
+                "{competitor} official pricing",
+                "{competitor} pricing plans",
+                "{competitor} subscription pricing",
+                "{competitor} price list",
+                "{competitor} 官网 价格",
+            ],
+            "feature": [
+                "{competitor} official features",
+                "{competitor} product capabilities",
+                "{competitor} documentation features",
+                "{competitor} 产品 功能",
+            ],
+            "persona": [
+                "{competitor} customer case",
+                "{competitor} target users",
+                "{competitor} use cases",
+                "{competitor} 客户 案例",
+            ],
+        }
+        fallback = templates.get(
+            dimension_id,
+            [
+                f"{{competitor}} {dimension_id} official",
+                f"{{competitor}} {dimension_id} documentation",
+                f"{{competitor}} {dimension_id} public information",
+            ],
+        )
+        return self._dedupe([*base_queries, *[item.replace("{competitor}", competitor) for item in fallback]])[:6]
 
     def _normalize_dimension_suggestions(self, raw: Any) -> dict[str, dict[str, Any]]:
         if not isinstance(raw, list):

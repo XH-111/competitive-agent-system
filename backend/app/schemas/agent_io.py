@@ -4,9 +4,12 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from app.schemas.models import (
     AnalysisDimensionPlan,
+    CollectorConfig,
     DimensionResult,
     Evidence,
+    EvidenceCoverageGap,
     FeatureTree,
+    PlannerIncrementalCollectionPlan,
     PlannerCollectionPlan,
     PlannerDownstreamGuidance,
     PlannerExtractedContext,
@@ -46,12 +49,31 @@ class PlannerOutput(BaseModel):
     diagnostics: dict = Field(default_factory=dict)
 
 
+class PlannerIncrementalInput(BaseModel):
+    task: Task
+    run_id: str | None = None
+    retry_count: int = 0
+    base_planner_output: PlannerOutput
+    coverage_gap: EvidenceCoverageGap
+    base_attempt_no: int | None = None
+
+
+class PlannerIncrementalOutput(BaseModel):
+    _raw_llm_response: str | None = PrivateAttr(default=None)
+
+    incremental_collection_plan: PlannerIncrementalCollectionPlan
+    diagnostics: dict = Field(default_factory=dict)
+
+
 class CollectorInput(BaseModel):
     task: Task
     run_id: str | None = None
     retry_count: int = 0
     collector_mode: Literal["mock", "web"] = "mock"
     collection_plan: PlannerCollectionPlan | None = None
+    incremental_collection_plan: PlannerIncrementalCollectionPlan | None = None
+    collector_config: CollectorConfig | None = None
+    partial_collection_plan_allowed: bool = False
     selected_dimensions: list[str] = Field(default_factory=list)
     analysis_dimension_plan: AnalysisDimensionPlan | None = None
     rework_context: ReworkContext | None = None
@@ -111,11 +133,15 @@ class ReportWriterOutput(BaseModel):
 class QaInput(BaseModel):
     task: Task
     run_id: str | None = None
+    qa_stage: Literal["full", "evidence"] = "full"
     evidence: list[Evidence] = Field(default_factory=list)
     analysis: AnalystOutput | None = None
     report_output: ReportWriterOutput | None = None
     selected_dimensions: list[str] = Field(default_factory=list)
     analysis_dimension_plan: AnalysisDimensionPlan | None = None
+    collection_plan: PlannerCollectionPlan | None = None
+    collector_config: CollectorConfig | None = None
+    collector_trace_summary: dict = Field(default_factory=dict)
     retry_count: int = 0
     demo_mode: DemoMode = "normal"
 

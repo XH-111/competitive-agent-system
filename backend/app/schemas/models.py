@@ -489,15 +489,99 @@ class ReworkHistoryItem(BaseModel):
 class QaResult(BaseModel):
     task_id: str
     run_id: str | None = None
-    status: Literal["passed", "failed", "manual_review"]
+    qa_stage: Literal["full", "evidence"] = "full"
+    status: Literal["passed", "warning", "failed", "manual_review"]
     hard_errors: list[str] = Field(default_factory=list)
     soft_suggestions: list[str] = Field(default_factory=list)
     rework_instructions: list[ReworkInstruction] = Field(default_factory=list)
     rework_history: list[ReworkHistoryItem] = Field(default_factory=list)
     route_to: AgentName | None = None
+    failed_queries: list[str] = Field(default_factory=list)
+    failed_dimensions: list[str] = Field(default_factory=list)
+    failed_competitors: list[str] = Field(default_factory=list)
+    suggested_action: str = ""
     rework_count: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
     checked_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class EvidenceCoverageSummary(BaseModel):
+    evidence_id: str
+    source_domain: str | None = None
+    source_quality: str | None = None
+    relevance_level: str | None = None
+    relevance_score: float | None = None
+    confidence: float | None = None
+    collector_query: str | None = None
+    relevance_reason: str | None = None
+
+
+class EvidenceCoverageGapTarget(BaseModel):
+    competitor: str
+    dimension_id: str
+    status: Literal["failed"] = "failed"
+    reason_code: Literal[
+        "no_evidence_collected",
+        "no_high_or_medium_evidence",
+        "only_low_quality_evidence",
+        "dimension_not_collected",
+        "query_failed_without_valid_evidence",
+    ]
+    reason: str
+    required_relevance_levels: list[str] = Field(default_factory=lambda: ["high", "medium"])
+    current_evidence_ids: list[str] = Field(default_factory=list)
+    current_evidence_summary: list[EvidenceCoverageSummary] = Field(default_factory=list)
+    original_queries: list[str] = Field(default_factory=list)
+    failed_queries: list[str] = Field(default_factory=list)
+
+
+class EvidenceCoverageSufficientItem(BaseModel):
+    competitor: str
+    dimension_id: str
+    valid_evidence_ids: list[str] = Field(default_factory=list)
+    valid_evidence_count: int = 0
+
+
+class EvidenceCoverageGap(BaseModel):
+    mode: Literal["planner_incremental_collection_required"] = "planner_incremental_collection_required"
+    targets: list[EvidenceCoverageGapTarget] = Field(default_factory=list)
+    sufficient: list[EvidenceCoverageSufficientItem] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class IncrementalCollectionTarget(BaseModel):
+    competitor: str = Field(min_length=1)
+    dimension_id: str = Field(min_length=1)
+    queries: list[str] = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    source_coverage_gap_reason_code: str | None = None
+    base_queries: list[str] = Field(default_factory=list)
+
+
+class PlannerIncrementalCollectionPlan(BaseModel):
+    mode: Literal["incremental_collection_plan"] = "incremental_collection_plan"
+    base_attempt_no: int | None = None
+    targets: list[IncrementalCollectionTarget] = Field(default_factory=list)
+    skip_evidence_ids: list[str] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class CollectorDimensionConfig(BaseModel):
+    max_results_per_query: int | None = Field(default=None, ge=1, le=50)
+    max_evidence_per_dimension: int | None = Field(default=None, ge=1, le=50)
+    min_valid_evidence_required: int | None = Field(default=None, ge=1, le=50)
+    include_domains: list[str] = Field(default_factory=list)
+    exclude_domains: list[str] = Field(default_factory=list)
+
+
+class CollectorConfigOverride(CollectorDimensionConfig):
+    competitor: str = Field(min_length=1)
+    dimension_id: str = Field(min_length=1)
+
+
+class CollectorConfig(BaseModel):
+    default: CollectorDimensionConfig = Field(default_factory=CollectorDimensionConfig)
+    overrides: list[CollectorConfigOverride] = Field(default_factory=list)
 
 
 class TraceRecord(BaseModel):

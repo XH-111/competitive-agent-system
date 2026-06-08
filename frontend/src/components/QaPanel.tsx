@@ -19,6 +19,8 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
   const history = buildReworkHistory(qa, workflowSummary);
   const statusClass = qa.status === "passed"
     ? "border-green-200 bg-green-50"
+    : qa.status === "warning"
+      ? "border-amber-300 bg-amber-50"
     : qa.status === "manual_review"
       ? "border-amber-300 bg-amber-50"
       : "border-red-200 bg-red-50";
@@ -30,6 +32,7 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
       </h2>
 
       <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
+        {qa.qa_stage === "evidence" && <span>检查阶段：EvidenceQA</span>}
         <span>最终状态：</span>
         <Pill value={qa.status} />
         <span>返工次数：{qa.rework_count}</span>
@@ -38,6 +41,19 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
 
       <PrimaryReason qa={qa} />
       <EvidenceGateDetails qa={qa} workflowSummary={workflowSummary} />
+
+      {qa.qa_stage === "evidence" && (
+        <div className="mb-3 grid gap-3 md:grid-cols-3">
+          <InfoBlock title="失败查询 failed_queries" items={qa.failed_queries ?? []} emptyText="无" />
+          <InfoBlock title="薄弱维度 failed_dimensions" items={qa.failed_dimensions ?? []} emptyText="无" />
+          <InfoBlock title="失败竞品 failed_competitors" items={qa.failed_competitors ?? []} emptyText="无" />
+          <div className="rounded border border-line bg-white p-3 text-sm md:col-span-3">
+            <div className="font-semibold">建议动作 suggested_action</div>
+            <div className="mt-1">{qa.suggested_action || "无"}</div>
+            <div className="mt-1 text-slate-600">建议路由：{qa.route_to ?? "无需返工"}</div>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-3 lg:grid-cols-3">
         <InfoBlock title="严重问题 hard_errors" items={qa.hard_errors} emptyText="无" />
