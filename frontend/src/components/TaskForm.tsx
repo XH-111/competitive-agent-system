@@ -10,7 +10,8 @@ const examples: Array<{ label: string; values: TaskFormValues }> = [
       taskName: "AI 编程工具竞品分析",
       competitors: "Cursor, Trae, GitHub Copilot",
       region: "全球",
-      industry: "AI Coding Agent"
+      industry: "AI Coding Agent",
+      collectionStrategyMode: "balanced"
     }
   },
   {
@@ -19,7 +20,8 @@ const examples: Array<{ label: string; values: TaskFormValues }> = [
       taskName: "企业协作工具竞品分析",
       competitors: "飞书, 钉钉, 企业微信",
       region: "中国",
-      industry: "B2B SaaS"
+      industry: "B2B SaaS",
+      collectionStrategyMode: "balanced"
     }
   },
   {
@@ -28,7 +30,8 @@ const examples: Array<{ label: string; values: TaskFormValues }> = [
       taskName: "美妆电商平台竞品分析",
       competitors: "Sephora, Ulta Beauty, Watsons",
       region: "全球",
-      industry: "Beauty Retail"
+      industry: "Beauty Retail",
+      collectionStrategyMode: "balanced"
     }
   }
 ];
@@ -98,7 +101,8 @@ export function TaskForm({ onCreated }: { onCreated: (task: Task) => void }) {
         product_name: form.taskName.trim(),
         competitors: competitorList,
         region: form.region.trim(),
-        industry: form.industry.trim()
+        industry: form.industry.trim(),
+        collection_strategy_mode: form.collectionStrategyMode,
       });
       onCreated(task);
     } finally {
@@ -137,6 +141,24 @@ export function TaskForm({ onCreated }: { onCreated: (task: Task) => void }) {
         <Field label="Competitors / 竞品名称" value={form.competitors} placeholder="例如：飞书, 钉钉, 企业微信" helper="多个竞品请用中文逗号或英文逗号分隔。" error={errors.competitors} onChange={(value) => update("competitors", value)} />
         <Field label="Region / 分析区域" value={form.region} placeholder="例如：中国 / 全球 / 北美" helper="用于限定信息采集范围和市场分析口径。" error={errors.region} onChange={(value) => update("region", value)} />
         <Field label="Industry / 行业或产品类型" value={form.industry} placeholder="例如：B2B SaaS / 电商平台 / AI 编程工具" helper="用于选择竞品知识 Schema 和分析维度。" error={errors.industry} onChange={(value) => update("industry", value)} />
+        <label className="block md:col-span-2">
+          <span className="text-sm font-semibold text-ink">采集策略模式</span>
+          <select
+            className="mt-1 w-full rounded border border-line bg-white px-3 py-2"
+            value={form.collectionStrategyMode}
+            onChange={(event) => setForm((current) => ({
+              ...current,
+              collectionStrategyMode: event.target.value as TaskFormValues["collectionStrategyMode"],
+            }))}
+          >
+            <option value="simple">简易模式：query 3 / 维度 5 / QA 1</option>
+            <option value="balanced">均衡模式：query 5 / 维度 10 / QA 2</option>
+            <option value="expert">专家模式：query 8 / 维度 20 / QA 3</option>
+          </select>
+          <span className="mt-1 block text-xs leading-5 text-slate-500">
+            作为该任务的默认采集强度；正文抽取会尝试处理全部通过 EvidenceQA 的 eligible evidence。
+          </span>
+        </label>
         <div className="md:col-span-2">
           <button className="inline-flex items-center justify-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50" disabled={busy}>
             <Plus size={16} /> 创建任务

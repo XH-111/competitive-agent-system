@@ -44,6 +44,8 @@ class QaAgent:
             input_summary=(
                 "Validate Collector Evidence quality"
                 if input_data.qa_stage == "evidence"
+                else "Validate EvidenceAnalyst question answer coverage"
+                if input_data.qa_stage == "analyst"
                 else "Validate planner, Evidence, DimensionResult facts, and report fidelity"
             ),
             retry_count=input_data.retry_count,
@@ -53,6 +55,8 @@ class QaAgent:
     def evaluate(self, input_data: QaInput) -> QaResult:
         if input_data.qa_stage == "evidence":
             return self._evaluate_evidence_stage(input_data)
+        if input_data.qa_stage == "analyst":
+            return self._evaluate_analyst_stage(input_data)
         for check in (
             self._planner_issue,
             self._evidence_issue,
@@ -137,6 +141,100 @@ class QaAgent:
                 "auto_rework": False,
                 "collection_plan_used": collection_plan_used,
                 "evidence_count": len(input_data.evidence),
+                "coverage_gap": coverage_gap.model_dump(mode="json"),
+            },
+        )
+
+    def _evaluate_analyst_stage(self, input_data: QaInput) -> QaResult:
+        output = input_data.evidence_analyst_output
+        if output is None:
+            return QaResult(
+                task_id=input_data.task.task_id,
+                run_id=input_data.run_id,
+                qa_stage="analyst",
+                status="warning",
+                soft_suggestions=["EvidenceAnalyst output is missing; AnalystQA skipped."],
+                suggested_action="Run EvidenceAnalyst before AnalystQA.",
+                rework_count=input_data.retry_count,
+                metadata={"qa_contract": "analyst_question_answer_coverage", "skip_reason": "missing_evidence_analyst_output"},
+            )
+        if output.diagnostics.get("evidence_analyst_enabled") is False:
+            return QaResult(
+                task_id=input_data.task.task_id,
+                run_id=input_data.run_id,
+                qa_stage="analyst",
+                status="warning",
+                soft_suggestions=["EvidenceAnalyst is disabled; AnalystQA did not trigger automatic rework."],
+                suggested_action="Enable analyst_mode=llm to run AnalystQA coverage checks.",
+                rework_count=input_data.retry_count,
+                metadata={"qa_contract": "analyst_question_answer_coverage", "skip_reason": "evidence_analyst_disabled"},
+            )
+        not_found_targets: list[EvidenceCoverageGapTarget] = []
+        if output:
+            for result in output.question_results:
+                competitor = result.competitor
+                dimension_id = result.dimension_id
+                if not competitor or not dimension_id:
+                    continue
+                for answer in result.question_answers:
+                    if answer.answer_status != "not_found":
+                        continue
+                    suggestions = self._dedupe(answer.suggestions) or [
+                        f"Collect one public source that directly answers: {answer.question}"
+                    ]
+                    not_found_targets.append(
+                        EvidenceCoverageGapTarget(
+                            competitor=competitor,
+                            dimension_id=dimension_id,
+                            reason_code="analyst_question_not_found",
+                            reason=f"{competitor} / {dimension_id} question {answer.question_id} is not answered by current merged evidence.",
+                            current_evidence_ids=answer.evidence_ids,
+                            original_queries=self._original_queries(input_data, competitor, dimension_id),
+                            question_id=answer.question_id,
+                            question=answer.question,
+                            suggestions=suggestions,
+                            max_evidence=1,
+                            content_fetch_priority="required",
+                        )
+                    )
+
+        coverage_gap = EvidenceCoverageGap(
+            targets=not_found_targets,
+            summary={
+                "qa_contract": "analyst_question_answer_coverage",
+                "target_count": len(not_found_targets),
+                "not_found_question_count": len(not_found_targets),
+                "checked_group_count": len(output.question_results) if output else 0,
+            },
+        )
+        if not_found_targets:
+            return QaResult(
+                task_id=input_data.task.task_id,
+                run_id=input_data.run_id,
+                qa_stage="analyst",
+                status="failed",
+                hard_errors=[f"{len(not_found_targets)} EvidenceAnalyst questions are not_found."],
+                route_to="PlannerAgent",
+                failed_dimensions=self._dedupe([target.dimension_id for target in not_found_targets]),
+                failed_competitors=self._dedupe([target.competitor for target in not_found_targets]),
+                suggested_action="Use metadata.coverage_gap to generate question-level incremental collection queries.",
+                rework_count=input_data.retry_count,
+                metadata={
+                    "qa_contract": "analyst_question_answer_coverage",
+                    "coverage_gap": coverage_gap.model_dump(mode="json"),
+                    "auto_rework": True,
+                },
+            )
+
+        return QaResult(
+            task_id=input_data.task.task_id,
+            run_id=input_data.run_id,
+            qa_stage="analyst",
+            status="passed",
+            suggested_action="AnalystQA passed; no not_found question remains.",
+            rework_count=input_data.retry_count,
+            metadata={
+                "qa_contract": "analyst_question_answer_coverage",
                 "coverage_gap": coverage_gap.model_dump(mode="json"),
             },
         )
@@ -832,6 +930,8 @@ class QaAgent:
             "qa_contract": (
                 "evidence_only"
                 if input_data.qa_stage == "evidence"
+                else "analyst_question_answer_coverage"
+                if input_data.qa_stage == "analyst"
                 else "planner_evidence_structured_fact_report"
             ),
             "claims_checked": False,

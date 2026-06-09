@@ -10,6 +10,8 @@ TaskRunStatus = Literal["running", "completed", "qa_failed", "manual_review", "f
 AgentName = Literal[
     "PlannerAgent",
     "CollectorAgent",
+    "EvidenceContentFetcher",
+    "EvidenceAnalystAgent",
     "PageFetcher",
     "Chunker",
     "Indexer",
@@ -32,6 +34,7 @@ class CreateTaskRequest(BaseModel):
     competitors: list[str] = Field(min_length=1)
     region: str = Field(min_length=1)
     industry: str = Field(min_length=1)
+    collection_strategy_mode: Literal["simple", "balanced", "expert"] = "balanced"
 
 
 class Task(BaseModel):
@@ -40,6 +43,7 @@ class Task(BaseModel):
     competitors: list[str]
     region: str
     industry: str
+    collection_strategy_mode: Literal["simple", "balanced", "expert"] = "balanced"
     status: TaskStatus
     rework_count: int = 0
     created_at: datetime
@@ -106,6 +110,38 @@ class Evidence(BaseModel):
         if not self.url and not self.local_ref:
             raise ValueError("Evidence requires either url or local_ref")
         return self
+
+
+class EvidenceQuestionAnswer(BaseModel):
+    question_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    answer: str = Field(min_length=1, max_length=3000)
+    evidence_ids: list[str] = Field(default_factory=list)
+    answer_status: Literal["answered", "partial", "not_found"]
+    suggestions: list[str] = Field(default_factory=list)
+
+
+class EvidenceDimensionAnswerResult(BaseModel):
+    competitor: str | None = None
+    dimension_id: str | None = None
+    dimension_goal: str = ""
+    research_questions: list[str] = Field(default_factory=list)
+    question_answers: list[EvidenceQuestionAnswer] = Field(default_factory=list)
+    dimension_summary: str = ""
+    warnings: list[str] = Field(default_factory=list)
+
+
+class EvidenceAnalystReworkTarget(BaseModel):
+    competitor: str
+    dimension_id: str
+    question_id: str
+    question: str
+    new_evidence_ids: list[str] = Field(default_factory=list)
+
+
+class EvidenceAnalystReworkContext(BaseModel):
+    mode: Literal["answer_not_found_only"] = "answer_not_found_only"
+    targets: list[EvidenceAnalystReworkTarget] = Field(default_factory=list)
 
 
 class ProductProfile(BaseModel):
@@ -489,7 +525,7 @@ class ReworkHistoryItem(BaseModel):
 class QaResult(BaseModel):
     task_id: str
     run_id: str | None = None
-    qa_stage: Literal["full", "evidence"] = "full"
+    qa_stage: Literal["full", "evidence", "analyst"] = "full"
     status: Literal["passed", "warning", "failed", "manual_review"]
     hard_errors: list[str] = Field(default_factory=list)
     soft_suggestions: list[str] = Field(default_factory=list)
@@ -526,6 +562,7 @@ class EvidenceCoverageGapTarget(BaseModel):
         "only_low_quality_evidence",
         "dimension_not_collected",
         "query_failed_without_valid_evidence",
+        "analyst_question_not_found",
     ]
     reason: str
     required_relevance_levels: list[str] = Field(default_factory=lambda: ["high", "medium"])
@@ -533,6 +570,11 @@ class EvidenceCoverageGapTarget(BaseModel):
     current_evidence_summary: list[EvidenceCoverageSummary] = Field(default_factory=list)
     original_queries: list[str] = Field(default_factory=list)
     failed_queries: list[str] = Field(default_factory=list)
+    question_id: str | None = None
+    question: str | None = None
+    suggestions: list[str] = Field(default_factory=list)
+    max_evidence: int | None = Field(default=None, ge=1, le=10)
+    content_fetch_priority: Literal["normal", "required"] = "normal"
 
 
 class EvidenceCoverageSufficientItem(BaseModel):
@@ -556,6 +598,11 @@ class IncrementalCollectionTarget(BaseModel):
     reason: str = Field(min_length=1)
     source_coverage_gap_reason_code: str | None = None
     base_queries: list[str] = Field(default_factory=list)
+    question_id: str | None = None
+    question: str | None = None
+    suggestions: list[str] = Field(default_factory=list)
+    max_evidence: int | None = Field(default=None, ge=1, le=10)
+    content_fetch_priority: Literal["normal", "required"] = "normal"
 
 
 class PlannerIncrementalCollectionPlan(BaseModel):

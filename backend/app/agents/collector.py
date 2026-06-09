@@ -164,12 +164,22 @@ class CollectorAgent:
             return {}
         output: dict[str, dict[str, dict]] = {}
         for target in plan.targets:
-            output.setdefault(target.competitor, {})[target.dimension_id] = {
+            target_key = (
+                f"{target.dimension_id}::{target.question_id}"
+                if target.question_id
+                else target.dimension_id
+            )
+            output.setdefault(target.competitor, {})[target_key] = {
                 "dimension_id": target.dimension_id,
                 "label": target.dimension_id,
                 "queries": target.queries,
                 "research_goals": [target.reason],
                 "source": "planner_incremental_collection_plan",
+                "question_id": target.question_id,
+                "question": target.question,
+                "suggestions": target.suggestions,
+                "max_evidence": target.max_evidence,
+                "content_fetch_priority": target.content_fetch_priority,
             }
         return output
 
@@ -263,11 +273,17 @@ class CollectorAgent:
             for query_index, query in enumerate(query_plan["effective_queries"]):
                 query_metadata = query_plan["query_metadata_by_query"].get(query, {})
                 query_dimension = query_metadata.get("dimension_id") or "unknown"
+                query_count_key = (
+                    f"{query_dimension}::{query_metadata.get('question_id')}"
+                    if query_metadata.get("question_id")
+                    else query_dimension
+                )
                 dimension_config = self._dimension_config(input_data, competitor, query_dimension)
+                max_evidence_for_target = int(query_metadata.get("max_evidence") or dimension_config["max_evidence_per_dimension"])
                 if (
-                    query_dimension in evidence_count_by_dimension_by_competitor[competitor]
-                    and evidence_count_by_dimension_by_competitor[competitor][query_dimension]
-                    >= dimension_config["max_evidence_per_dimension"]
+                    query_count_key in evidence_count_by_dimension_by_competitor[competitor]
+                    and evidence_count_by_dimension_by_competitor[competitor][query_count_key]
+                    >= max_evidence_for_target
                 ):
                     skipped_queries_by_competitor[competitor].append(
                         {
@@ -335,6 +351,10 @@ class CollectorAgent:
                         signals["collector_query_intent"] = query_metadata.get("intent")
                         signals["collector_query_source"] = query_metadata.get("source")
                         signals["collector_preferred_sources"] = query_metadata.get("preferred_sources", [])
+                        signals["target_question_id"] = query_metadata.get("question_id")
+                        signals["target_question"] = query_metadata.get("question")
+                        signals["target_suggestions"] = query_metadata.get("suggestions") or []
+                        signals["content_fetch_priority"] = query_metadata.get("content_fetch_priority") or "normal"
                     self._apply_collection_attempt_signals(
                         signals,
                         input_data,
@@ -346,10 +366,10 @@ class CollectorAgent:
                     if candidate.relevance_level == "unrelated":
                         unrelated_evidence_count_by_competitor[competitor] += 1
                         filtered_unrelated_count += 1
-                    elif query_dimension in evidence_count_by_dimension_by_competitor[competitor]:
-                        if evidence_count_by_dimension_by_competitor[competitor][query_dimension] >= dimension_config["max_evidence_per_dimension"]:
+                    elif query_count_key in evidence_count_by_dimension_by_competitor[competitor]:
+                        if evidence_count_by_dimension_by_competitor[competitor][query_count_key] >= max_evidence_for_target:
                             continue
-                        evidence_count_by_dimension_by_competitor[competitor][query_dimension] += 1
+                        evidence_count_by_dimension_by_competitor[competitor][query_count_key] += 1
                     buckets[competitor].append(candidate)
                     added_for_query += 1
                     if added_for_query >= dimension_config["max_evidence_per_query"]:
@@ -464,9 +484,15 @@ class CollectorAgent:
         for competitor in collection_competitors:
             aliases = aliases_by_competitor.get(competitor, [])
             if self._collection_mode(input_data) == "incremental":
+                incremental_counts: dict[str, int] = {}
                 for index, query in enumerate(query_plans[competitor]["effective_queries"]):
                     metadata = query_plans[competitor]["query_metadata_by_query"].get(query, {})
                     dimension_id = metadata.get("dimension_id") or "unknown"
+                    count_key = f"{dimension_id}::{metadata.get('question_id')}" if metadata.get("question_id") else dimension_id
+                    max_evidence = int(metadata.get("max_evidence") or 1)
+                    if incremental_counts.get(count_key, 0) >= max_evidence:
+                        continue
+                    incremental_counts[count_key] = incremental_counts.get(count_key, 0) + 1
                     evidence.append(
                         apply_relevance(
                             Evidence(
@@ -537,6 +563,10 @@ class CollectorAgent:
                         "collector_dimension": dimension_id,
                         "planner_dimension": dimension_id,
                         "collector_query_source": metadata.get("source") or "planner_collection_plan",
+                        "target_question_id": metadata.get("question_id"),
+                        "target_question": metadata.get("question"),
+                        "target_suggestions": metadata.get("suggestions") or [],
+                        "content_fetch_priority": metadata.get("content_fetch_priority") or "normal",
                     }
                 )
                 self._apply_collection_attempt_signals(
@@ -704,7 +734,7 @@ class CollectorAgent:
         }
 
     @staticmethod
-    def _incremental_targets_summary(input_data: CollectorInput) -> list[dict[str, str | int]]:
+    def _incremental_targets_summary(input_data: CollectorInput) -> list[dict[str, str | int | None]]:
         plan = input_data.incremental_collection_plan
         if plan is None:
             return []
@@ -712,7 +742,9 @@ class CollectorAgent:
             {
                 "competitor": target.competitor,
                 "dimension_id": target.dimension_id,
+                "question_id": target.question_id,
                 "query_count": len(target.queries),
+                "max_evidence": target.max_evidence or 0,
             }
             for target in plan.targets
         ]
@@ -855,6 +887,11 @@ class CollectorAgent:
                     "intent": (item.get("research_goals") or [None])[0],
                     "preferred_sources": [],
                     "query_strategy": None,
+                    "question_id": item.get("question_id"),
+                    "question": item.get("question"),
+                    "suggestions": item.get("suggestions") or [],
+                    "max_evidence": item.get("max_evidence"),
+                    "content_fetch_priority": item.get("content_fetch_priority") or "normal",
                 }
         return cls._dedupe_queries(queries), query_metadata_by_query
 

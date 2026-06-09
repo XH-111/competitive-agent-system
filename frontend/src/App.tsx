@@ -13,7 +13,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { CollectionPlan, CollectorConfig, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
+import type { CollectionPlan, CollectorConfig, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Task, TaskRun, TraceRecord, WorkflowProgress, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
 type EditableCollectionPlanItem = {
@@ -53,6 +53,7 @@ export default function App() {
   const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("langgraph");
   const [runStage, setRunStage] = useState<"full" | "planner_only" | "collector_only">("full");
   const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
+  const [workflowProgress, setWorkflowProgress] = useState<WorkflowProgress>();
   const [plannerAttempts, setPlannerAttempts] = useState<PlannerAttempt[]>([]);
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>();
@@ -63,6 +64,9 @@ export default function App() {
   const [useCollectionPlanOverride, setUseCollectionPlanOverride] = useState(false);
   const [editableCollectionPlan, setEditableCollectionPlan] = useState<EditableCollectionPlan>();
   const [collectionPlanOverrideError, setCollectionPlanOverrideError] = useState<string>();
+  const [manualEvidenceSelectionEnabled, setManualEvidenceSelectionEnabled] = useState(false);
+  const [manualSelectedEvidenceIds, setManualSelectedEvidenceIds] = useState<string[]>([]);
+  const [manualEvidenceSelectionError, setManualEvidenceSelectionError] = useState<string>();
 
   useEffect(() => {
     loadTasks();
@@ -144,6 +148,9 @@ export default function App() {
     setSelectedRunId(undefined);
     setSelectedFact(undefined);
     setSelectedEvidenceIds([]);
+    setManualSelectedEvidenceIds([]);
+    setManualEvidenceSelectionError(undefined);
+    setWorkflowProgress(undefined);
     setWorkflowSummary(undefined);
     setPlannerAttempts([]);
     await refresh(nextTask.task_id);
@@ -166,35 +173,43 @@ export default function App() {
         return;
       }
     }
+    const effectiveRunStage = manualEvidenceSelectionEnabled && runStage === "full" ? "collector_only" : runStage;
+    const effectiveAutoRework = manualEvidenceSelectionEnabled && runStage === "full" ? false : autoRework;
+    const effectiveWorkflowEngine = effectiveRunStage !== "full" ? "langgraph" : workflowEngine;
     const knownRunIds = new Set(runs.map((item) => item.run_id));
     let stopProgressPolling = false;
     setBusy(true);
     setTraces([]);
     setQa(undefined);
+    setWorkflowProgress(undefined);
+    setManualEvidenceSelectionError(undefined);
+    if (manualEvidenceSelectionEnabled && runStage === "full") {
+      setManualSelectedEvidenceIds([]);
+    }
     const progressPolling = pollRunProgress(
       task.task_id,
       knownRunIds,
       () => stopProgressPolling,
-      runStage === "planner_only",
+      effectiveRunStage === "planner_only",
     );
     try {
       const result = await api.runTask(
         task.task_id,
         demoMode,
-        autoRework,
+        effectiveAutoRework,
         writerMode,
         collectorMode,
         analystMode,
-        workflowEngine,
-        runStage === "full" ? undefined : runStage,
+        effectiveWorkflowEngine,
+        effectiveRunStage === "full" ? undefined : effectiveRunStage,
         runOverrides,
       ) as PlannerRunResult;
       setWorkflowSummary(result.workflow_summary);
       const runId = result.workflow_summary?.run_id ?? result.report?.run_id;
-      if (runStage !== "full") {
+      if (effectiveRunStage !== "full") {
         setDag(result.dag ?? result.workflow_summary?.dag);
-        setEvidence(runStage === "collector_only" ? (result.evidence ?? result.collector_output?.evidence ?? []) : []);
-        setQa(runStage === "collector_only" ? (result.qa_result ?? undefined) : undefined);
+        setEvidence(effectiveRunStage === "collector_only" ? (result.evidence ?? result.collector_output?.evidence ?? []) : []);
+        setQa(effectiveRunStage === "collector_only" ? (result.qa_result ?? undefined) : undefined);
         setReport(undefined);
         setSelectedFact(undefined);
         setSelectedEvidenceIds([]);
@@ -229,6 +244,56 @@ export default function App() {
     }
   }
 
+  async function continueWithSelectedEvidence() {
+    if (!task || !selectedRunId) return;
+    if (!manualSelectedEvidenceIds.length) {
+      setManualEvidenceSelectionError("请至少选择一条 Evidence。");
+      return;
+    }
+    let runOverrides: RunTaskOverrides = {
+      manual_evidence_selection_enabled: true,
+      selected_evidence_ids: manualSelectedEvidenceIds,
+      source_run_id: selectedRunId,
+    };
+    if (useCollectionPlanOverride) {
+      try {
+        runOverrides = {
+          ...buildRunOverrides(editableCollectionPlan),
+          ...runOverrides,
+        };
+        setCollectionPlanOverrideError(undefined);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCollectionPlanOverrideError(message);
+        return;
+      }
+    }
+    setBusy(true);
+    setManualEvidenceSelectionError(undefined);
+    setQa(undefined);
+    try {
+      const result = await api.runTask(
+        task.task_id,
+        demoMode,
+        false,
+        writerMode,
+        collectorMode,
+        analystMode,
+        "langgraph",
+        undefined,
+        runOverrides,
+      ) as PlannerRunResult;
+      setRunStage("full");
+      setWorkflowSummary(result.workflow_summary);
+      const runId = result.workflow_summary?.run_id ?? result.run_id ?? selectedRunId;
+      await refresh(task.task_id, runId);
+    } catch (error) {
+      setManualEvidenceSelectionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function pollRunProgress(
     taskId: string,
     knownRunIds: Set<string>,
@@ -247,6 +312,7 @@ export default function App() {
           setSelectedRunId(activeRunId);
           const nextTraces = await api.runTraces(taskId, activeRunId);
           setTraces(nextTraces);
+          await api.runProgress(taskId, activeRunId).then(setWorkflowProgress).catch(() => undefined);
           if (!plannerOnly) {
             await api.runQa(taskId, activeRunId).then(setQa).catch(() => undefined);
           }
@@ -435,7 +501,7 @@ export default function App() {
           >
             <option value="full">完整工作流</option>
             <option value="planner_only">只测试 Planner</option>
-            <option value="collector_only">测试 Planner + Collector + EvidenceQA</option>
+            <option value="collector_only">测试证据采集链路</option>
           </select>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
@@ -463,7 +529,7 @@ export default function App() {
             <Play size={16} /> {runStage === "planner_only"
               ? "只运行 PlannerAgent"
               : runStage === "collector_only"
-                ? "运行采集与 EvidenceQA"
+                ? "运行证据采集链路"
                 : "运行 Demo 工作流"}
           </button>
           <label className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm">
@@ -474,6 +540,19 @@ export default function App() {
               disabled={runStage !== "full"}
             />
             auto_rework={autoRework ? "true" : "false"}
+          </label>
+          <label className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={manualEvidenceSelectionEnabled}
+              onChange={(event) => {
+                setManualEvidenceSelectionEnabled(event.target.checked);
+                setManualEvidenceSelectionError(undefined);
+                setManualSelectedEvidenceIds([]);
+              }}
+              disabled={runStage !== "full"}
+            />
+            手动选择 Evidence
           </label>
           <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
         </div>
@@ -657,7 +736,7 @@ export default function App() {
         {!workflowSummary?.debug_stage && <KnowledgeHitsPanel workflowSummary={workflowSummary} />}
 
         <div className="space-y-4">
-          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? (runStage === "full" ? undefined : runStage)} />
+          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? (runStage === "full" ? undefined : runStage)} progress={workflowProgress} />
           {workflowSummary?.debug_stage === "collector_only" && (
             <>
               <section className="rounded border border-line bg-white p-4">
@@ -679,7 +758,42 @@ export default function App() {
                   </div>
                 )}
               </section>
-              <EvidencePanel evidence={evidence} evidenceIds={selectedEvidenceIds} />
+              {manualEvidenceSelectionEnabled && (
+                <section className="rounded border border-blue-200 bg-blue-50 p-4 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-accent">手动选择 Evidence 已开启</div>
+                      <div className="mt-1 text-xs text-slate-600">
+                        已选择 {manualSelectedEvidenceIds.length} / {evidence.length} 条。确认后将跳过 EvidenceGate，直接进入 Analyst / Report。
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50"
+                      disabled={busy || !manualSelectedEvidenceIds.length || !selectedRunId}
+                      onClick={continueWithSelectedEvidence}
+                    >
+                      使用选中 Evidence 继续
+                    </button>
+                  </div>
+                  {manualEvidenceSelectionError && (
+                    <div className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
+                      {manualEvidenceSelectionError}
+                    </div>
+                  )}
+                </section>
+              )}
+              <EvidencePanel
+                evidence={evidence}
+                evidenceIds={selectedEvidenceIds}
+                selectable={manualEvidenceSelectionEnabled}
+                selectedManualEvidenceIds={manualSelectedEvidenceIds}
+                onManualEvidenceSelectionChange={setManualSelectedEvidenceIds}
+              />
+              <EvidenceQuestionAnswerPanel
+                workflowSummary={workflowSummary}
+                onEvidenceIdsSelect={setSelectedEvidenceIds}
+              />
               <QaPanel qa={qa} workflowSummary={workflowSummary} />
               <section className="rounded border border-line bg-white p-4">
                 <h2 className="mb-3 text-lg font-semibold">调试原始 JSON</h2>
@@ -1030,6 +1144,232 @@ function MetricMap({ title, values }: { title: string; values?: Record<string, n
       </div>
     </div>
   );
+}
+
+function EvidenceQuestionAnswerPanel({
+  workflowSummary,
+  onEvidenceIdsSelect,
+}: {
+  workflowSummary?: WorkflowSummary;
+  onEvidenceIdsSelect: (ids: string[]) => void;
+}) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(3);
+  const output = workflowSummary?.evidence_analyst_output;
+  const results = output?.question_results ?? [];
+  const diagnostics = output?.diagnostics;
+  const answerCount = diagnostics?.question_answer_count
+    ?? results.reduce((sum, item) => sum + (item.question_answers?.length ?? 0), 0);
+  const answeredCount = diagnostics?.answered_question_count
+    ?? results.reduce(
+      (sum, item) => sum + item.question_answers.filter((answer) => answer.answer_status === "answered").length,
+      0,
+    );
+  const enabled = diagnostics?.evidence_analyst_enabled;
+  const totalPages = Math.max(1, Math.ceil(results.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pagedResults = results.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [results.length, pageSize]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  if (!output && !workflowSummary?.node_sequence?.includes("evidence_analyst")) {
+    return null;
+  }
+
+  return (
+    <section className="rounded border border-line bg-white p-4">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">Evidence 问题回答结果</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            按竞品和维度汇总 evidence，回答 Planner 规划的问题。点击问题会联动下方 Evidence 面板。
+          </p>
+        </div>
+        {enabled === false && (
+          <span className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-warning">
+            未启用 LLM 回答
+          </span>
+        )}
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-slate-500">每页</span>
+          <select
+            className="rounded border border-line bg-white px-2 py-1"
+            value={pageSize}
+            onChange={(event) => setPageSize(Number(event.target.value))}
+          >
+            <option value={3}>3 组</option>
+            <option value={5}>5 组</option>
+            <option value={10}>10 组</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+        <DebugMetric label="Evidence 总数" value={diagnostics?.total_evidence ?? 0} />
+        <DebugMetric label="竞品维度组" value={diagnostics?.target_group_count ?? results.length} />
+        <DebugMetric label="问题回答数" value={answerCount} />
+        <DebugMetric label="已回答问题" value={answeredCount} />
+      </div>
+
+      {diagnostics?.skip_reason && (
+        <div className="mt-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-warning">
+          {diagnostics.skip_reason}
+        </div>
+      )}
+
+      <div className="mt-4 space-y-3">
+        {pagedResults.map((item) => (
+          <details
+            key={`${item.competitor ?? "unknown"}-${item.dimension_id ?? "unknown"}`}
+            className="rounded border border-line bg-panel p-3"
+            open
+          >
+            <summary className="cursor-pointer">
+              <div className="inline-flex flex-wrap items-center gap-2">
+                <span className="font-semibold">{item.competitor ?? "-"}</span>
+                <span className="rounded border border-line bg-white px-2 py-0.5 text-xs">{item.dimension_id ?? "-"}</span>
+                <span className="text-xs text-slate-500">{item.question_answers.length} questions</span>
+              </div>
+            </summary>
+            <div className="mt-3 space-y-3">
+              {item.dimension_goal && (
+                <div className="rounded border border-line bg-white p-3 text-sm">
+                  <div className="mb-1 text-xs font-semibold text-slate-500">维度目标</div>
+                  {item.dimension_goal}
+                </div>
+              )}
+              {item.question_answers.map((answer) => (
+                <button
+                  key={answer.question_id}
+                  type="button"
+                  className="block w-full rounded border border-line bg-white p-3 text-left text-sm hover:border-blue-300 hover:bg-blue-50"
+                  onClick={() => onEvidenceIdsSelect(answer.evidence_ids)}
+                >
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs text-slate-500">{answer.question_id}</span>
+                    <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${answerStatusClass(answer.answer_status)}`}>
+                      {answer.answer_status}
+                    </span>
+                    <span className="text-xs text-slate-500">引用 {answer.evidence_ids.length} 条 evidence</span>
+                  </div>
+                  <div className="font-semibold">{answer.question}</div>
+                  <div className="mt-2 whitespace-pre-wrap text-slate-700">{answer.answer}</div>
+                  {!!answer.evidence_ids.length && (
+                    <div className="mt-2 text-xs text-accent">
+                      evidence: {answer.evidence_ids.join(", ")}
+                    </div>
+                  )}
+                  {!!answer.suggestions?.length && (
+                    <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-warning">
+                      补采建议：{answer.suggestions.join("；")}
+                    </div>
+                  )}
+                </button>
+              ))}
+              {item.dimension_summary && (
+                <div className="rounded border border-line bg-white p-3 text-sm">
+                  <div className="mb-1 text-xs font-semibold text-slate-500">维度小结</div>
+                  {item.dimension_summary}
+                </div>
+              )}
+              {!!item.warnings.length && (
+                <div className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-warning">
+                  warnings: {item.warnings.join(", ")}
+                </div>
+              )}
+            </div>
+          </details>
+        ))}
+        {!results.length && (
+          <div className="rounded border border-line bg-panel p-3 text-sm text-slate-500">
+            暂无 EvidenceAnalyst 输出。确认运行时 Analyst 模式为 LLM，且 DAG 已执行到 EvidenceAnalystAgent。
+          </div>
+        )}
+      </div>
+      {!!results.length && (
+        <QuestionAnswerPagination
+          page={safePage}
+          totalPages={totalPages}
+          totalItems={results.length}
+          pageSize={pageSize}
+          onPageChange={setPage}
+        />
+      )}
+    </section>
+  );
+}
+
+function QuestionAnswerPagination({
+  page,
+  totalPages,
+  totalItems,
+  pageSize,
+  onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+}) {
+  const start = totalItems ? (page - 1) * pageSize + 1 : 0;
+  const end = Math.min(totalItems, page * pageSize);
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 text-xs text-slate-600">
+      <span>
+        显示 {start}-{end} / {totalItems} 组
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="rounded border border-line bg-white px-2 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={page <= 1}
+          onClick={() => onPageChange(1)}
+        >
+          首页
+        </button>
+        <button
+          type="button"
+          className="rounded border border-line bg-white px-2 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+        >
+          上一页
+        </button>
+        <span className="rounded border border-line bg-panel px-2 py-1">
+          {page} / {totalPages}
+        </span>
+        <button
+          type="button"
+          className="rounded border border-line bg-white px-2 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+        >
+          下一页
+        </button>
+        <button
+          type="button"
+          className="rounded border border-line bg-white px-2 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(totalPages)}
+        >
+          末页
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function answerStatusClass(value: string) {
+  if (value === "answered") return "border-green-300 bg-green-50 text-success";
+  if (value === "partial") return "border-amber-300 bg-amber-50 text-warning";
+  return "border-slate-300 bg-slate-50 text-slate-600";
 }
 
 function DebugJson({ title, value }: { title: string; value: unknown }) {

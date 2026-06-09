@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.agents.analyst import AnalystAgent
 from app.agents.base import AgentExecutionError
 from app.agents.collector import CollectorAgent
+from app.agents.evidence_analyst import EvidenceAnalystAgent
 from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import MAX_REWORK, QaAgent
@@ -20,10 +22,14 @@ from app.schemas import (
     DemoMode,
     EvidenceCoverageGap,
     Evidence,
+    EvidenceAnalystInput,
+    EvidenceAnalystReworkContext,
+    EvidenceAnalystReworkTarget,
     FinalReportInput,
     PlannerInput,
     PlannerIncrementalInput,
     PlannerCollectionPlan,
+    PlannerOutput,
     QaInput,
     QaResult,
     ReworkContext,
@@ -34,7 +40,12 @@ from app.schemas import (
     TraceRecord,
 )
 from app.schemas.workflow_state import WorkflowState
+from app.constants.collection_strategy import (
+    collector_config_for_strategy,
+    content_fetch_max_per_dimension_for_strategy,
+)
 from app.services.evidence_service import EvidenceService
+from app.services.evidence_content_fetcher import EvidenceContentFetcher
 from app.services.entity_resolver_service import EntityResolverService
 from app.services.knowledge_base_service import KbIngestionService, KbRetrieverService
 from app.services.page_fetcher import PageFetcher
@@ -43,6 +54,7 @@ from app.services.report_service import ReportService
 from app.services.task_run_service import TaskRunService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
+from app.services.workflow_progress_service import set_workflow_progress
 
 
 class LangGraphWorkflowRunner:
@@ -51,6 +63,7 @@ class LangGraphWorkflowRunner:
         self.task_service = TaskService(db)
         self.trace_service = TraceService(db)
         self.evidence_service = EvidenceService(db)
+        self.evidence_content_fetcher = EvidenceContentFetcher()
         self.report_service = ReportService(db)
         self.task_run_service = TaskRunService(db)
         self.planner_attempt_service = PlannerAttemptService(db)
@@ -59,12 +72,17 @@ class LangGraphWorkflowRunner:
         self.entity_resolver_service = EntityResolverService()
         self.planner = PlannerAgent(self.trace_service)
         self.collector = CollectorAgent(self.trace_service)
+        self.evidence_analyst = EvidenceAnalystAgent(self.trace_service)
         self.analyst = AnalystAgent(self.trace_service)
         self.writer = ReportWriterAgent(self.trace_service)
         self.qa = QaAgent(self.trace_service)
         self.final_report = FinalReportAgent(self.trace_service)
         self.page_fetcher = PageFetcher()
         self.graph = self._build_graph()
+
+    @staticmethod
+    def _default_collector_config(task: Task, override: CollectorConfig | None) -> CollectorConfig:
+        return override or collector_config_for_strategy(task.collection_strategy_mode)
 
     def run(
         self,
@@ -79,8 +97,26 @@ class LangGraphWorkflowRunner:
         debug_stage: str | None = None,
         collection_plan_override: PlannerCollectionPlan | None = None,
         collector_config: CollectorConfig | None = None,
+        manual_evidence_selection_enabled: bool = False,
+        selected_evidence_ids: list[str] | None = None,
+        source_run_id: str | None = None,
     ) -> dict:
         started = time.perf_counter()
+        if manual_evidence_selection_enabled:
+            return self._run_manual_evidence_selection(
+                task_id=task_id,
+                source_run_id=source_run_id,
+                selected_evidence_ids=selected_evidence_ids or [],
+                started=started,
+                demo_mode=demo_mode,
+                writer_mode=writer_mode,
+                collector_mode=collector_mode,
+                analyst_mode=analyst_mode,
+                workflow_engine_requested=workflow_engine_requested,
+                content_mode=content_mode,
+                collection_plan_override=collection_plan_override,
+                collector_config=collector_config,
+            )
         task_run = self.task_run_service.create_run(
             task_id=task_id,
             workflow_engine="langgraph",
@@ -113,15 +149,19 @@ class LangGraphWorkflowRunner:
             "planner_output": None,
             "collection_plan_override": collection_plan_override,
             "manual_collection_plan_override_used": False,
-            "collector_config": collector_config,
+            "collector_config": self._default_collector_config(task, collector_config),
+            "collector_config_source": "request_override" if collector_config else f"task_strategy:{task.collection_strategy_mode}",
             "planner_incremental_output": None,
             "incremental_collection_plan": None,
             "collector_output": None,
             "analyst_output": None,
+            "evidence_analyst_output": None,
+            "evidence_analyst_rework_context": None,
             "report_writer_output": None,
             "qa_output": None,
             "final_report_output": None,
             "evidence_gate_output": {},
+            "evidence_content_fetch_output": {},
             "page_fetch_output": {},
             "entity_resolution": {},
             "competitor_aliases": {},
@@ -206,6 +246,184 @@ class LangGraphWorkflowRunner:
             )
             raise
 
+    def _run_manual_evidence_selection(
+        self,
+        *,
+        task_id: str,
+        source_run_id: str | None,
+        selected_evidence_ids: list[str],
+        started: float,
+        demo_mode: DemoMode,
+        writer_mode: str,
+        collector_mode: str,
+        analyst_mode: str,
+        workflow_engine_requested: str,
+        content_mode: str | None,
+        collection_plan_override: PlannerCollectionPlan | None,
+        collector_config: CollectorConfig | None,
+    ) -> dict:
+        if not source_run_id:
+            raise ValueError("source_run_id is required for manual evidence selection.")
+        selected_ids = list(dict.fromkeys(item for item in selected_evidence_ids if item))
+        if not selected_ids:
+            raise ValueError("selected_evidence_ids must contain at least one Evidence id.")
+
+        task_run = self.task_run_service.get_run(task_id, source_run_id)
+        self.trace_service.set_run_context(task_run.run_id)
+        task = self.task_service.update_status(task_id, "running", rework_count=0)
+        planner_output = self._planner_output_for_run(source_run_id)
+        source_evidence = self.evidence_service.list_for_task(task_id, run_id=source_run_id)
+        evidence_by_id = {item.evidence_id: item for item in source_evidence}
+        missing_ids = [evidence_id for evidence_id in selected_ids if evidence_id not in evidence_by_id]
+        if missing_ids:
+            raise ValueError(f"selected Evidence ids not found in source run: {', '.join(missing_ids)}")
+        selected_evidence = [evidence_by_id[evidence_id] for evidence_id in selected_ids]
+        effective_collector_config = self._default_collector_config(task, collector_config)
+        collection_plan = collection_plan_override or planner_output.collection_plan
+        collection_plan_override_used = collection_plan_override is not None
+        selected_dimensions = (
+            self._collection_plan_dimensions(collection_plan)
+            if collection_plan_override_used
+            else planner_output.selected_dimensions
+        )
+        entity_resolution = self.entity_resolver_service.resolve_for_task(task)
+        competitor_aliases = {
+            competitor: result.get("aliases", [])
+            for competitor, result in entity_resolution.items()
+        }
+        initial_state: WorkflowState = {
+            "task_id": task_id,
+            "run_id": source_run_id,
+            "trace_id": f"workflow_{uuid4().hex[:10]}",
+            "task": task,
+            "task_run": task_run,
+            "run_status": "running",
+            "workflow_engine_requested": workflow_engine_requested,
+            "workflow_engine_used": "langgraph",
+            "demo_mode": demo_mode,
+            "collector_mode": collector_mode,
+            "analyst_mode": analyst_mode,
+            "writer_mode": writer_mode,
+            "content_mode": content_mode,
+            "auto_rework": False,
+            "rework_count": 0,
+            "max_rework": MAX_REWORK,
+            "planner_output": planner_output,
+            "collection_plan_override": collection_plan_override,
+            "manual_collection_plan_override_used": collection_plan_override_used,
+            "collector_config": effective_collector_config,
+            "collector_config_source": "request_override" if collector_config else f"task_strategy:{task.collection_strategy_mode}",
+            "planner_incremental_output": None,
+            "incremental_collection_plan": None,
+            "planner_summary": planner_output.planner_summary.model_dump(mode="json"),
+            "collection_plan": collection_plan,
+            "collector_output": None,
+            "analyst_output": None,
+            "evidence_analyst_output": None,
+            "evidence_analyst_rework_context": None,
+            "report_writer_output": None,
+            "qa_output": None,
+            "final_report_output": None,
+            "evidence_gate_output": {
+                "evidence_gate_passed": True,
+                "manual_evidence_selection_used": True,
+                "selected_evidence_ids": selected_ids,
+                "selected_evidence_count": len(selected_evidence),
+                "skip_reason": "manual_evidence_selection",
+                "suggested_action": "Proceed to AnalystAgent with manually selected Evidence.",
+            },
+            "evidence_content_fetch_output": {},
+            "page_fetch_output": {},
+            "entity_resolution": entity_resolution,
+            "competitor_aliases": competitor_aliases,
+            "evidence": selected_evidence,
+            "intent_summary": planner_output.planner_summary.task_goal,
+            "intent_classification": planner_output.planner_summary.intent_classification,
+            "ambiguity_level": getattr(planner_output, "ambiguity_level", None),
+            "scope_type": getattr(planner_output, "scope_type", None),
+            "scope_size": getattr(planner_output, "scope_size", None),
+            "extracted_context": getattr(planner_output, "extracted_context", None),
+            "selected_dimensions": selected_dimensions,
+            "analysis_dimension_plan": planner_output.analysis_dimension_plan,
+            "downstream_guidance": planner_output.downstream_guidance,
+            "survey_needed": getattr(planner_output, "survey_needed", False),
+            "survey_recommended": getattr(planner_output, "survey_recommended", False),
+            "survey_objective": getattr(planner_output, "survey_objective", None),
+            "survey_inputs": getattr(planner_output, "survey_inputs", None),
+            "confirmed_scope": getattr(planner_output, "confirmed_scope", None),
+            "inferred_scope": getattr(planner_output, "inferred_scope", None),
+            "suggested_scope": getattr(planner_output, "suggested_scope", None),
+            "recommended_next_constraints": getattr(planner_output, "recommended_next_constraints", []),
+            "assumptions": getattr(planner_output, "assumptions", []),
+            "candidate_competitors": getattr(planner_output, "candidate_competitors", []),
+            "clarification_targets": getattr(planner_output, "clarification_targets", []),
+            "planning_stages": getattr(planner_output, "planning_stages", []),
+            "planner_notes": planner_output.planner_notes,
+            "planner_confidence": getattr(planner_output, "planner_confidence", None),
+            "dimension_results": [],
+            "survey_evidence": [],
+            "chunks": [],
+            "retrieval_results": [],
+            "retrieved_knowledge_chunks": [],
+            "knowledge_hits": [],
+            "claim_support_results": [],
+            "swot_analysis": None,
+            "rework_context": None,
+            "report": None,
+            "qa_result": None,
+            "route_to": None,
+            "final_status": None,
+            "errors": [],
+            "node_sequence": ["manual_evidence_selection"],
+            "conditional_routes_taken": [
+                {
+                    "from_node": "manual_evidence_selection",
+                    "to_node": "evidence_content_fetcher",
+                    "reason": "skip_evidence_gate",
+                    "rework_count": 0,
+                }
+            ],
+            "workflow_summary": {},
+            "run_isolation_strategy": "run_id",
+            "run_cleanup_summary": {},
+            "manual_evidence_selection_used": True,
+            "manual_selected_evidence_ids": selected_ids,
+        }
+        state = self.evidence_content_fetcher_node(initial_state)
+        state = self.evidence_analyst_node(state)
+        state = self.analyst_node(state)
+        state = self.report_writer_node(state)
+        state = self.qa_node(state)
+        state = self.final_report_node(state)
+        elapsed = int((time.perf_counter() - started) * 1000)
+        summary = self._workflow_summary(state, elapsed)
+        summary.update(
+            {
+                "manual_evidence_selection_used": True,
+                "manual_selected_evidence_ids": selected_ids,
+                "manual_selected_evidence_count": len(selected_evidence),
+                "source_run_id": source_run_id,
+            }
+        )
+        self._save_workflow_trace(task_id, source_run_id, summary, elapsed)
+        finished_run = self.task_run_service.finish_run(
+            source_run_id,
+            status=self._run_status_from_summary(summary),
+            final_status=summary.get("final_status"),
+            elapsed_time_ms=elapsed,
+            error_message=summary.get("error_message"),
+        )
+        return {
+            "run": finished_run,
+            "run_id": source_run_id,
+            "plan": planner_output,
+            "qa_result": state.get("qa_result"),
+            "report": state.get("report"),
+            "knowledge_hits": state.get("knowledge_hits", []),
+            "workflow_summary": summary,
+            "evidence": state.get("evidence", []),
+        }
+
     def _run_planner_only(self, initial_state: WorkflowState, task_run, started: float) -> dict:
         planner_state = self.planner_node(initial_state)
         planner_output = planner_state["planner_output"]
@@ -229,7 +447,7 @@ class LangGraphWorkflowRunner:
             "planner_summary": planner_output.planner_summary.model_dump(mode="json"),
             "intent_summary": planner_output.planner_summary.task_goal,
             "intent_classification": planner_output.planner_summary.intent_classification,
-            "selected_dimensions": collector_state.get("selected_dimensions", planner_output.selected_dimensions),
+            "selected_dimensions": planner_output.selected_dimensions,
             "analysis_dimension_plan": (
                 planner_output.analysis_dimension_plan.model_dump(mode="json")
                 if planner_output.analysis_dimension_plan
@@ -268,7 +486,7 @@ class LangGraphWorkflowRunner:
             "planner_summary": summary["planner_summary"],
             "intent_summary": planner_output.planner_summary.task_goal,
             "intent_classification": planner_output.planner_summary.intent_classification,
-            "selected_dimensions": collector_state.get("selected_dimensions", planner_output.selected_dimensions),
+            "selected_dimensions": planner_output.selected_dimensions,
             "analysis_dimension_plan": summary["analysis_dimension_plan"],
             "collection_plan": summary["collection_plan"],
             "downstream_guidance": summary["downstream_guidance"],
@@ -304,6 +522,7 @@ class LangGraphWorkflowRunner:
 
         planner_output = collector_state["planner_output"]
         collector_output = collector_state["collector_output"]
+        self._qa_visual_delay(collector_state.get("collector_mode") == "web")
         qa_output = self.qa.run(
             QaInput(
                 task=self._current_task(collector_state),
@@ -391,6 +610,7 @@ class LangGraphWorkflowRunner:
                 "incremental": incremental_collector_output.diagnostics,
                 "merged_evidence_count": len(merged_evidence),
             }
+            self._qa_visual_delay(collector_state.get("collector_mode") == "web")
             qa_output = self.qa.run(
                 QaInput(
                     task=self._current_task(collector_state),
@@ -416,6 +636,130 @@ class LangGraphWorkflowRunner:
                     "qa_result": qa_result.model_dump(mode="json"),
                 }
             )
+        collector_state = self.evidence_content_fetcher_node(collector_state)
+        collector_state = self.evidence_analyst_node(collector_state)
+        self._qa_visual_delay(collector_state.get("collector_mode") == "web")
+        analyst_qa_output = self.qa.run(
+            QaInput(
+                task=self._current_task(collector_state),
+                run_id=task_run.run_id,
+                qa_stage="analyst",
+                evidence=collector_state.get("evidence", []),
+                evidence_analyst_output=collector_state.get("evidence_analyst_output"),
+                selected_dimensions=collector_state.get("selected_dimensions", []),
+                analysis_dimension_plan=collector_state.get("analysis_dimension_plan"),
+                collection_plan=collector_state.get("collection_plan"),
+                collector_config=collector_state.get("collector_config"),
+                retry_count=0,
+            )
+        )
+        analyst_qa_result = self.report_service.save_qa(analyst_qa_output.qa_result, run_id=task_run.run_id)
+        analyst_incremental_attempts: list[dict] = []
+        analyst_attempt_no = 0
+        while analyst_attempt_no < MAX_REWORK:
+            coverage_gap_payload = analyst_qa_result.metadata.get("coverage_gap") if analyst_qa_result.metadata else None
+            if not (
+                analyst_qa_result.status == "failed"
+                and isinstance(coverage_gap_payload, dict)
+                and coverage_gap_payload.get("targets")
+            ):
+                break
+            analyst_attempt_no += 1
+            coverage_gap = EvidenceCoverageGap.model_validate(coverage_gap_payload)
+            attempts = self.planner_attempt_service.list_for_run(task_run.run_id)
+            base_attempt_no = attempts[-1].attempt_no if attempts else None
+            incremental_output = self.planner.plan_incremental_collection(
+                PlannerIncrementalInput(
+                    task=self._current_task(collector_state),
+                    run_id=task_run.run_id,
+                    retry_count=analyst_attempt_no,
+                    base_planner_output=planner_output,
+                    coverage_gap=coverage_gap,
+                    base_attempt_no=base_attempt_no,
+                )
+            )
+            self.planner_attempt_service.save(
+                run_id=task_run.run_id,
+                status="fallback" if incremental_output.diagnostics.get("fallback_used") else "generated",
+                planner_output=incremental_output.incremental_collection_plan,
+                diagnostics=incremental_output.diagnostics,
+                rework_context={"source": "AnalystQA", "coverage_gap": coverage_gap.model_dump(mode="json")},
+                raw_llm_response=incremental_output._raw_llm_response,
+            )
+            incremental_collector_output = self.collector.run(
+                CollectorInput(
+                    task=self._current_task(collector_state),
+                    run_id=task_run.run_id,
+                    retry_count=analyst_attempt_no,
+                    collector_mode=collector_state["collector_mode"],
+                    collection_plan=collector_state.get("collection_plan"),
+                    incremental_collection_plan=incremental_output.incremental_collection_plan,
+                    collector_config=collector_state.get("collector_config"),
+                    partial_collection_plan_allowed=collector_state.get("manual_collection_plan_override_used", False),
+                    selected_dimensions=collector_state.get("selected_dimensions", []),
+                    analysis_dimension_plan=collector_state.get("analysis_dimension_plan"),
+                    rework_context=collector_state.get("rework_context"),
+                    competitor_aliases=collector_state.get("competitor_aliases", {}),
+                )
+            )
+            incremental_evidence = self.evidence_service.save_many(
+                self._current_task(collector_state).task_id,
+                incremental_collector_output.evidence,
+                run_id=task_run.run_id,
+            )
+            new_evidence_ids_by_target: dict[tuple[str, str], list[str]] = {}
+            for item in incremental_evidence:
+                dimension_id = (item.entity_match_signals or {}).get("collector_dimension")
+                if item.competitor and dimension_id:
+                    new_evidence_ids_by_target.setdefault((item.competitor, str(dimension_id)), []).append(item.evidence_id)
+            evidence_analyst_rework_context = EvidenceAnalystReworkContext(
+                targets=[
+                    EvidenceAnalystReworkTarget(
+                        competitor=target.competitor,
+                        dimension_id=target.dimension_id,
+                        question_id=target.question_id or "",
+                        question=target.question or target.reason,
+                        new_evidence_ids=new_evidence_ids_by_target.get((target.competitor, target.dimension_id), []),
+                    )
+                    for target in coverage_gap.targets
+                    if target.question_id and target.question
+                ]
+            )
+            collector_state = {
+                **collector_state,
+                "evidence": [*collector_state.get("evidence", []), *incremental_evidence],
+                "collector_output": incremental_collector_output,
+                "evidence_analyst_rework_context": evidence_analyst_rework_context,
+                "node_sequence": [*collector_state["node_sequence"], "collector_incremental_analystqa"],
+            }
+            collector_state = self.evidence_content_fetcher_node(collector_state)
+            collector_state = self.evidence_analyst_node(collector_state)
+            self._qa_visual_delay(collector_state.get("collector_mode") == "web")
+            analyst_qa_output = self.qa.run(
+                QaInput(
+                    task=self._current_task(collector_state),
+                    run_id=task_run.run_id,
+                    qa_stage="analyst",
+                    evidence=collector_state.get("evidence", []),
+                    evidence_analyst_output=collector_state.get("evidence_analyst_output"),
+                    selected_dimensions=collector_state.get("selected_dimensions", []),
+                    analysis_dimension_plan=collector_state.get("analysis_dimension_plan"),
+                    collection_plan=collector_state.get("collection_plan"),
+                    collector_config=collector_state.get("collector_config"),
+                    retry_count=analyst_attempt_no,
+                )
+            )
+            analyst_qa_result = self.report_service.save_qa(analyst_qa_output.qa_result, run_id=task_run.run_id)
+            analyst_incremental_attempts.append(
+                {
+                    "attempt_no": analyst_attempt_no,
+                    "incremental_collection_plan": incremental_output.incremental_collection_plan.model_dump(mode="json"),
+                    "collector_output": incremental_collector_output.model_dump(mode="json"),
+                    "qa_result": analyst_qa_result.model_dump(mode="json"),
+                }
+            )
+        content_fetch_output = collector_state.get("evidence_content_fetch_output", {})
+        evidence_analyst_output = collector_state.get("evidence_analyst_output")
         elapsed = int((time.perf_counter() - started) * 1000)
         collector_failed = collector_error is not None
         frozen_dag = {
@@ -427,7 +771,9 @@ class LangGraphWorkflowRunner:
                     "status": "failed" if collector_failed else "completed",
                 },
                 {"id": "EvidenceGate", "label": "legacy：调试模式不执行", "status": "skipped"},
-                {"id": "PageFetcher", "label": "已冻结，不抓取正文", "status": "skipped"},
+                {"id": "EvidenceContentFetcher", "label": "Tavily Extract 正文抽取", "status": "completed"},
+                {"id": "EvidenceAnalystAgent", "label": "逐条 Evidence 事实抽取", "status": "completed"},
+                {"id": "PageFetcher", "label": "legacy，本链路不执行", "status": "skipped"},
                 {"id": "AnalystAgent", "label": "已冻结，不抽取结构化事实", "status": "skipped"},
                 {"id": "ReportWriterAgent", "label": "已冻结，不生成报告", "status": "skipped"},
                 {"id": "QaAgent", "label": "EvidenceQA 证据质量检查", "status": "completed"},
@@ -436,6 +782,8 @@ class LangGraphWorkflowRunner:
             "edges": [
                 {"source": "PlannerAgent", "target": "CollectorAgent", "label": "collection_plan"},
                 {"source": "CollectorAgent", "target": "QaAgent", "label": "EvidenceQA"},
+                {"source": "QaAgent", "target": "EvidenceContentFetcher", "label": "正文抽取"},
+                {"source": "EvidenceContentFetcher", "target": "EvidenceAnalystAgent", "label": "事实抽取"},
             ],
         }
         summary = {
@@ -448,6 +796,8 @@ class LangGraphWorkflowRunner:
             "selected_dimensions": planner_output.selected_dimensions,
             "analysis_dimension_plan": planner_output.analysis_dimension_plan.model_dump(mode="json"),
             "manual_collection_plan_override_used": collector_state.get("manual_collection_plan_override_used", False),
+            "collection_strategy_mode": self._current_task(collector_state).collection_strategy_mode,
+            "collector_config_source": collector_state.get("collector_config_source"),
             "collector_config": (
                 collector_state.get("collector_config").model_dump(mode="json")
                 if collector_state.get("collector_config")
@@ -475,6 +825,14 @@ class LangGraphWorkflowRunner:
             "initial_qa_result": initial_qa_result.model_dump(mode="json"),
             "qa_output": qa_output.model_dump(mode="json"),
             "qa_result": qa_result.model_dump(mode="json"),
+            "analyst_qa_output": analyst_qa_output.model_dump(mode="json"),
+            "analyst_qa_result": analyst_qa_result.model_dump(mode="json"),
+            "evidence_content_fetch_output": content_fetch_output,
+            "evidence_analyst_output": (
+                evidence_analyst_output.model_dump(mode="json")
+                if evidence_analyst_output
+                else None
+            ),
             "incremental_collection_plan": (
                 incremental_output.incremental_collection_plan.model_dump(mode="json")
                 if incremental_output
@@ -482,6 +840,7 @@ class LangGraphWorkflowRunner:
             ),
             "planner_incremental_output": incremental_output.model_dump(mode="json") if incremental_output else None,
             "incremental_attempts": incremental_attempts,
+            "analyst_incremental_attempts": analyst_incremental_attempts,
             "dag": frozen_dag,
             "node_sequence": (
                 ["planner", "collector", "qa"]
@@ -490,17 +849,43 @@ class LangGraphWorkflowRunner:
                     for _attempt in incremental_attempts
                     for node in ["planner_incremental", "collector_incremental", "qa_incremental"]
                 ]
+                + ["evidence_content_fetcher"]
+                + ["evidence_analyst"]
+                + ["analyst_qa"]
+                + [
+                    node
+                    for _attempt in analyst_incremental_attempts
+                    for node in [
+                        "planner_incremental_analystqa",
+                        "collector_incremental_analystqa",
+                        "evidence_content_fetcher",
+                        "evidence_analyst",
+                        "analyst_qa_incremental",
+                    ]
+                ]
             ),
-            "conditional_routes_taken": [],
-            "rework_count": attempt_no,
-            "final_status": f"evidence_qa_{qa_result.status}",
+            "conditional_routes_taken": (
+                [
+                    {
+                        "from_node": "analyst_qa",
+                        "to_node": "planner_incremental_analystqa",
+                        "reason": "analyst_question_not_found",
+                        "rework_count": len(analyst_incremental_attempts),
+                    }
+                ]
+                if analyst_incremental_attempts
+                else []
+            ),
+            "rework_count": attempt_no + analyst_attempt_no,
+            "final_status": f"analyst_qa_{analyst_qa_result.status}",
             "elapsed_time_ms": elapsed,
             "run_isolation_strategy": "run_id",
         }
         self._save_workflow_trace(initial_state["task_id"], task_run.run_id, summary, elapsed)
-        task_status = "qa_failed" if qa_result.status == "failed" else "completed"
-        run_status = "qa_failed" if qa_result.status == "failed" else "completed"
-        self.task_service.update_status(initial_state["task_id"], task_status, rework_count=attempt_no)
+        final_failed = qa_result.status == "failed" or analyst_qa_result.status == "failed"
+        task_status = "qa_failed" if final_failed else "completed"
+        run_status = "qa_failed" if final_failed else "completed"
+        self.task_service.update_status(initial_state["task_id"], task_status, rework_count=attempt_no + analyst_attempt_no)
         finished_run = self.task_run_service.finish_run(
             task_run.run_id,
             status=run_status,
@@ -883,6 +1268,99 @@ class LangGraphWorkflowRunner:
             "node_sequence": [*state["node_sequence"], "page_fetcher"],
         }
 
+    def evidence_content_fetcher_node(self, state: WorkflowState) -> WorkflowState:
+        task = self._current_task(state)
+        content_fetch_max_per_dimension = content_fetch_max_per_dimension_for_strategy(
+            task.collection_strategy_mode
+        )
+        evidence, output = self.evidence_content_fetcher.enrich(
+            state.get("evidence", []),
+            run_id=state.get("run_id"),
+            enabled=state.get("collector_mode") == "web",
+            max_per_competitor_dimension=content_fetch_max_per_dimension,
+            progress_callback=lambda progress: set_workflow_progress(
+                state.get("run_id"),
+                current_agent="EvidenceContentFetcher",
+                current_stage="content_fetch",
+                message=(
+                    f"正在抓取第 {progress.get('current', 0)} / {progress.get('total', 0)} 条 evidence 正文"
+                ),
+                current=int(progress.get("current") or 0),
+                total=int(progress.get("total") or 0),
+                unit=str(progress.get("unit") or "evidence"),
+                detail=str(progress.get("detail") or ""),
+                metadata={"evidence_id": progress.get("evidence_id")},
+            ),
+        )
+        output["content_fetch_scope"] = (
+            "limited_per_competitor_dimension"
+            if content_fetch_max_per_dimension
+            else "all_eligible_evidence"
+        )
+        output["collection_strategy_mode"] = task.collection_strategy_mode
+        saved_evidence = self.evidence_service.save_many(task.task_id, evidence, run_id=state.get("run_id"))
+        self._save_evidence_content_fetcher_trace(task.task_id, state.get("run_id"), output, state["rework_count"])
+        return {
+            **state,
+            "task": task,
+            "evidence": saved_evidence,
+            "evidence_content_fetch_output": output,
+            "node_sequence": [*state["node_sequence"], "evidence_content_fetcher"],
+        }
+
+    @staticmethod
+    def _qa_visual_delay(enabled: bool) -> None:
+        if not enabled or os.getenv("PYTEST_CURRENT_TEST"):
+            return
+        try:
+            delay = float(os.getenv("QA_VISUAL_DELAY_SECONDS", "5") or "0")
+        except ValueError:
+            delay = 0
+        if delay > 0:
+            time.sleep(delay)
+
+    def evidence_analyst_node(self, state: WorkflowState) -> WorkflowState:
+        task = self._current_task(state)
+        output = self.evidence_analyst.run(
+            EvidenceAnalystInput(
+                task=task,
+                run_id=state.get("run_id"),
+                evidence=state.get("evidence", []),
+                retry_count=state["rework_count"],
+                selected_dimensions=state.get("selected_dimensions", []),
+                collection_plan=state.get("collection_plan"),
+                enabled=state.get("analyst_mode") == "llm",
+                previous_output=state.get("evidence_analyst_output"),
+                rework_context=state.get("evidence_analyst_rework_context"),
+            ),
+            progress_callback=lambda progress: set_workflow_progress(
+                state.get("run_id"),
+                current_agent="EvidenceAnalystAgent",
+                current_stage="answer_questions",
+                message=(
+                    f"正在回答第 {progress.get('start', progress.get('current', 0))}"
+                    f"-{progress.get('end', progress.get('current', 0))} / {progress.get('total', 0)} 个问题"
+                    if progress.get("start") != progress.get("end")
+                    else f"正在回答第 {progress.get('current', 0)} / {progress.get('total', 0)} 个问题"
+                ),
+                current=int(progress.get("current") or 0),
+                total=int(progress.get("total") or 0),
+                unit=str(progress.get("unit") or "question"),
+                detail=str(progress.get("detail") or ""),
+                metadata={
+                    "competitor": progress.get("competitor"),
+                    "dimension_id": progress.get("dimension_id"),
+                },
+            ),
+        )
+        return {
+            **state,
+            "task": task,
+            "evidence_analyst_output": output,
+            "evidence_analyst_rework_context": None,
+            "node_sequence": [*state["node_sequence"], "evidence_analyst"],
+        }
+
     def report_writer_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
         output = self.writer.run(
@@ -1207,6 +1685,16 @@ class LangGraphWorkflowRunner:
     def _current_task(self, state: WorkflowState) -> Task:
         return self.task_service.get_task(state["task_id"])
 
+    def _planner_output_for_run(self, run_id: str) -> PlannerOutput:
+        attempts = self.planner_attempt_service.list_for_run(run_id)
+        for attempt in reversed(attempts):
+            if attempt.planner_output:
+                try:
+                    return PlannerOutput.model_validate(attempt.planner_output)
+                except ValueError:
+                    continue
+        raise ValueError(f"No persisted PlannerOutput found for run {run_id}.")
+
     @staticmethod
     def _agent_to_node(agent_name: str) -> str:
         return {
@@ -1243,6 +1731,11 @@ class LangGraphWorkflowRunner:
             "survey_recommended": state.get("survey_recommended"),
             "selected_dimensions": state.get("selected_dimensions", []),
             "manual_collection_plan_override_used": state.get("manual_collection_plan_override_used", False),
+            "collection_strategy_mode": state.get("task").collection_strategy_mode if state.get("task") else None,
+            "collector_config_source": state.get("collector_config_source"),
+            "manual_evidence_selection_used": state.get("manual_evidence_selection_used", False),
+            "manual_selected_evidence_ids": state.get("manual_selected_evidence_ids", []),
+            "manual_selected_evidence_count": len(state.get("manual_selected_evidence_ids", [])),
             "collector_config": (
                 state.get("collector_config").model_dump(mode="json")
                 if state.get("collector_config")
@@ -1292,6 +1785,12 @@ class LangGraphWorkflowRunner:
             "node_sequence": state.get("node_sequence", []),
             "conditional_routes_taken": state.get("conditional_routes_taken", []),
             "evidence_gate_output": state.get("evidence_gate_output", {}),
+            "evidence_content_fetch_output": state.get("evidence_content_fetch_output", {}),
+            "evidence_analyst_output": (
+                state.get("evidence_analyst_output").model_dump(mode="json")
+                if state.get("evidence_analyst_output")
+                else None
+            ),
             "page_fetch_output": state.get("page_fetch_output", {}),
             "knowledge_hits": state.get("knowledge_hits", []),
             "retrieved_knowledge_chunk_count": len(state.get("retrieved_knowledge_chunks", [])),
@@ -1423,6 +1922,23 @@ class LangGraphWorkflowRunner:
                 schema_validation_result="passed",
                 model_name="langgraph-page-fetcher",
                 elapsed_time_ms=0,
+                retry_count=retry_count,
+                error_message=None,
+            )
+        )
+
+    def _save_evidence_content_fetcher_trace(self, task_id: str, run_id: str | None, output: dict, retry_count: int) -> None:
+        self.trace_service.save(
+            TraceRecord(
+                trace_id=f"trace_{uuid4().hex[:10]}",
+                task_id=task_id,
+                run_id=run_id,
+                agent_name="EvidenceContentFetcher",
+                input_summary="Extract richer page content for Collector Evidence using Tavily Extract",
+                output_summary=json.dumps(output, ensure_ascii=False),
+                schema_validation_result="passed",
+                model_name="tavily-extract" if output.get("content_fetch_provider") == "tavily" else "content-fetcher",
+                elapsed_time_ms=int(output.get("content_fetch_elapsed_time_ms") or 0),
                 retry_count=retry_count,
                 error_message=None,
             )

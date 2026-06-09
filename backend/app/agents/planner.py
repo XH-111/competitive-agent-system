@@ -438,7 +438,14 @@ class PlannerAgent:
         targets: list[IncrementalCollectionTarget] = []
         for key, gap_target in allowed_targets.items():
             llm_item = by_key.get(key, {}) if source == "llm" else {}
-            base_queries = self._dedupe([*gap_target.original_queries, *self._base_queries_for_gap(input_data, gap_target.competitor, gap_target.dimension_id)])
+            base_queries = self._dedupe(
+                [
+                    *gap_target.original_queries,
+                    *self._base_queries_for_gap(input_data, gap_target.competitor, gap_target.dimension_id),
+                    *gap_target.suggestions,
+                    *([gap_target.question] if gap_target.question else []),
+                ]
+            )
             proposed_queries = self._normalize_incremental_queries(
                 competitor=gap_target.competitor,
                 queries=llm_item.get("queries") if isinstance(llm_item, dict) else None,
@@ -458,6 +465,11 @@ class PlannerAgent:
                     reason=reason,
                     source_coverage_gap_reason_code=gap_target.reason_code,
                     base_queries=base_queries,
+                    question_id=gap_target.question_id,
+                    question=gap_target.question,
+                    suggestions=gap_target.suggestions,
+                    max_evidence=gap_target.max_evidence,
+                    content_fetch_priority=gap_target.content_fetch_priority,
                 )
             )
 
@@ -512,6 +524,11 @@ class PlannerAgent:
                     "original_queries": target.original_queries,
                     "coverage_gap_reason_code": target.reason_code,
                     "coverage_gap_reason": target.reason,
+                    "question_id": target.question_id,
+                    "question": target.question,
+                    "suggestions": target.suggestions,
+                    "max_evidence": target.max_evidence,
+                    "content_fetch_priority": target.content_fetch_priority,
                     "current_evidence_summary": [
                         item.model_dump(mode="json")
                         for item in target.current_evidence_summary[:5]
@@ -693,10 +710,89 @@ class PlannerAgent:
                         template.replace("{competitor}", competitor)
                         for template in dimension.query_templates
                     ],
-                    research_goals=dimension.research_goals,
+                    research_goals=self._single_competitor_research_goals(
+                        competitor=competitor,
+                        competitors=competitors,
+                        dimension=dimension,
+                    ),
                     source=dimension.source,
                 )
         return plan
+
+    def _single_competitor_research_goals(
+        self,
+        *,
+        competitor: str,
+        competitors: list[str],
+        dimension: AnalysisDimension,
+    ) -> list[str]:
+        goals: list[str] = []
+        for goal in dimension.research_goals:
+            scoped = self._scope_research_goal_to_competitor(
+                competitor=competitor,
+                competitors=competitors,
+                dimension=dimension,
+                goal=goal,
+            )
+            if scoped:
+                goals.append(scoped)
+        if not goals:
+            goals.append(
+                f"针对 {competitor}，梳理 {dimension.label} 维度下可由该竞品自身公开证据支持的关键信息。"
+            )
+        return self._dedupe(goals)[:8]
+
+    def _scope_research_goal_to_competitor(
+        self,
+        *,
+        competitor: str,
+        competitors: list[str],
+        dimension: AnalysisDimension,
+        goal: str,
+    ) -> str:
+        value = str(goal or "").strip()
+        if not value:
+            return ""
+        if self._is_cross_competitor_goal(value, competitor=competitor, competitors=competitors):
+            return (
+                f"针对 {competitor}，梳理 {dimension.label} 维度下可由该竞品自身公开证据支持的关键信息；"
+                "不要要求与其他竞品直接对比。"
+            )
+        if competitor.lower() in value.lower():
+            return value
+        return f"针对 {competitor}，{value}"
+
+    @staticmethod
+    def _is_cross_competitor_goal(goal: str, *, competitor: str, competitors: list[str]) -> bool:
+        normalized = goal.lower()
+        cross_terms = (
+            "compare",
+            "comparison",
+            "benchmark",
+            " versus ",
+            " vs ",
+            "对比",
+            "比较",
+            "相比",
+            "相较",
+            "差异",
+            "两款竞品",
+            "两个竞品",
+            "多个竞品",
+            "多款竞品",
+            "各竞品",
+            "各自",
+            "竞品之间",
+            "竞品间",
+        )
+        if any(term in normalized for term in cross_terms):
+            return True
+        competitor_key = competitor.lower()
+        return any(
+            other.lower() in normalized
+            for other in competitors
+            if other and other.lower() != competitor_key
+        )
 
     @staticmethod
     def _build_downstream_guidance(
@@ -748,6 +844,11 @@ class PlannerAgent:
 
     def _messages(self, task: Task) -> list[dict[str, str]]:
         system = (
+            "Research goal rules:\n"
+            "1. research_goals must be answerable from evidence about one competitor at a time.\n"
+            "2. Do not create research_goals that require direct comparison across competitors.\n"
+            "3. Avoid wording like compare, benchmark, vs, 对比, 比较, 差异, 两款竞品, 各竞品, 各自.\n"
+            "4. Cross-competitor comparison will be handled later by report generation, not by collector or evidence analyst.\n\n"
             "你是企业竞品分析系统的 PlannerAgent。你的职责仅限于理解任务和建议分析维度。\n"
             "固定基础维度 pricing、feature、persona、strength、weakness、opportunity、threat 必须全部保留。\n"
             "可以根据行业和竞品增加动态维度，但不要生成 DAG、报告、结论、问卷或证据。\n\n"

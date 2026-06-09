@@ -1,4 +1,4 @@
-import type { CollectorStatus, Dag, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Task, TaskRun, TraceRecord } from "./types";
+import type { CollectorStatus, Dag, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Task, TaskRun, TraceRecord, WorkflowProgress } from "./types";
 import { apiRecorder } from "./recorder";
 
 const baseUrl = "";
@@ -71,7 +71,7 @@ async function request<T>(url: string, options: RequestOptions): Promise<T> {
 }
 
 export const api = {
-  createTask: (payload: { product_name: string; competitors: string[]; region: string; industry: string }) =>
+  createTask: (payload: { product_name: string; competitors: string[]; region: string; industry: string; collection_strategy_mode?: "simple" | "balanced" | "expert" }) =>
     request<Task>("/api/tasks", { label: "createTask", method: "POST", body: JSON.stringify(payload) }),
   listTasks: () => request<Task[]>("/api/tasks", { label: "listTasks", method: "GET" }),
   runTask: (taskId: string, demoMode = "normal", autoRework = false, writerMode = "mock", collectorMode = "mock", analystMode = "evidence", workflowEngine = "custom", debugStage?: "planner_only" | "collector_only", overrides?: RunTaskOverrides) => {
@@ -89,6 +89,7 @@ export const api = {
   runQa: (taskId: string, runId: string) => request<QaResult>(`/api/tasks/${taskId}/runs/${runId}/qa`, { label: "runQa", method: "GET" }),
   runReport: (taskId: string, runId: string) => request<Report>(`/api/tasks/${taskId}/runs/${runId}/report`, { label: "runReport", method: "GET" }),
   runTraces: (taskId: string, runId: string) => request<TraceRecord[]>(`/api/tasks/${taskId}/runs/${runId}/traces`, { label: "runTraces", method: "GET" }),
+  runProgress: (taskId: string, runId: string) => request<WorkflowProgress>(`/api/tasks/${taskId}/runs/${runId}/progress`, { label: "runProgress", method: "GET" }),
   runPlannerAttempts: (taskId: string, runId: string) => request<PlannerAttempt[]>(`/api/tasks/${taskId}/runs/${runId}/planner-attempts`, { label: "runPlannerAttempts", method: "GET" }),
   llmStatus: () => request<LlmStatus>("/api/llm/status", { label: "llmStatus", method: "GET" }),
   testLlm: () => request<LlmStatus>("/api/llm/test", { label: "testLlm", method: "POST" }),

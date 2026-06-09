@@ -7,6 +7,8 @@ from app.schemas.models import (
     CollectorConfig,
     DimensionResult,
     Evidence,
+    EvidenceAnalystReworkContext,
+    EvidenceDimensionAnswerResult,
     EvidenceCoverageGap,
     FeatureTree,
     PlannerIncrementalCollectionPlan,
@@ -107,6 +109,23 @@ class AnalystOutput(BaseModel):
     diagnostics: dict = Field(default_factory=dict)
 
 
+class EvidenceAnalystInput(BaseModel):
+    task: Task
+    run_id: str | None = None
+    evidence: list[Evidence]
+    retry_count: int = 0
+    selected_dimensions: list[str] = Field(default_factory=list)
+    collection_plan: PlannerCollectionPlan | None = None
+    enabled: bool = True
+    previous_output: "EvidenceAnalystOutput | None" = None
+    rework_context: EvidenceAnalystReworkContext | None = None
+
+
+class EvidenceAnalystOutput(BaseModel):
+    question_results: list[EvidenceDimensionAnswerResult] = Field(default_factory=list)
+    diagnostics: dict = Field(default_factory=dict)
+
+
 class ReportWriterInput(BaseModel):
     task: Task
     run_id: str | None = None
@@ -133,8 +152,9 @@ class ReportWriterOutput(BaseModel):
 class QaInput(BaseModel):
     task: Task
     run_id: str | None = None
-    qa_stage: Literal["full", "evidence"] = "full"
+    qa_stage: Literal["full", "evidence", "analyst"] = "full"
     evidence: list[Evidence] = Field(default_factory=list)
+    evidence_analyst_output: EvidenceAnalystOutput | None = None
     analysis: AnalystOutput | None = None
     report_output: ReportWriterOutput | None = None
     selected_dimensions: list[str] = Field(default_factory=list)

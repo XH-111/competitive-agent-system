@@ -14,6 +14,7 @@ from app.services.task_run_service import TaskRunService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
 from app.services.web_search_client import WebSearchClient
+from app.services.workflow_progress_service import get_workflow_progress
 
 router = APIRouter(prefix="/api")
 
@@ -21,6 +22,9 @@ router = APIRouter(prefix="/api")
 class RunTaskRequest(BaseModel):
     collection_plan_override: PlannerCollectionPlan | None = None
     collector_config: CollectorConfig | None = None
+    manual_evidence_selection_enabled: bool = False
+    selected_evidence_ids: list[str] = []
+    source_run_id: str | None = None
 
 
 @router.get("/llm/status")
@@ -97,6 +101,11 @@ def run_task(
                 debug_stage=debug_stage,
                 collection_plan_override=request.collection_plan_override if request else None,
                 collector_config=request.collector_config if request else None,
+                manual_evidence_selection_enabled=(
+                    request.manual_evidence_selection_enabled if request else False
+                ),
+                selected_evidence_ids=request.selected_evidence_ids if request else None,
+                source_run_id=request.source_run_id if request else None,
             )
         run_service = TaskRunService(db)
         task_run = run_service.create_run(
@@ -257,6 +266,12 @@ def get_task_run_qa(task_id: str, run_id: str, db: Session = Depends(get_db)):
 @router.get("/tasks/{task_id}/runs/{run_id}/traces")
 def get_task_run_traces(task_id: str, run_id: str, db: Session = Depends(get_db)):
     return TraceService(db).list_for_task(task_id, run_id=run_id)
+
+
+@router.get("/tasks/{task_id}/runs/{run_id}/progress")
+def get_task_run_progress(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    TaskRunService(db).get_run(task_id, run_id)
+    return get_workflow_progress(run_id)
 
 
 @router.get("/tasks/{task_id}/runs/{run_id}/planner-attempts")

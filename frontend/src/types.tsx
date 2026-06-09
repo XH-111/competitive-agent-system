@@ -21,6 +21,7 @@ export type {
   PlannerAttempt,
   PlannerRunResult,
   RunTaskOverrides,
+  WorkflowProgress,
   WriterDiagnostics,
   WorkflowSummary
 } from "./api/types";
@@ -32,6 +33,7 @@ export type TaskFormValues = {
   competitors: string;
   region: string;
   industry: string;
+  collectionStrategyMode: "simple" | "balanced" | "expert";
 };
 
 export const statusClass: Record<string, string> = {

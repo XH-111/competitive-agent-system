@@ -26,6 +26,7 @@ def _ensure_sqlite_columns() -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     column_plan = {
+        "tasks": {"collection_strategy_mode": "VARCHAR NOT NULL DEFAULT 'balanced'"},
         "traces": {"run_id": "VARCHAR"},
         "evidence": {"run_id": "VARCHAR"},
         "reports": {"run_id": "VARCHAR"},

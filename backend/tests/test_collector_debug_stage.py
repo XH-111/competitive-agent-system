@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.agents.langgraph_runner import LangGraphWorkflowRunner
+from app.agents.evidence_analyst import EvidenceAnalystAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import QaAgent
 from app.database import Base
@@ -13,6 +14,12 @@ from app.schemas import (
     CollectorConfigOverride,
     CreateTaskRequest,
     Evidence,
+    EvidenceAnalystInput,
+    EvidenceAnalystOutput,
+    EvidenceAnalystReworkContext,
+    EvidenceAnalystReworkTarget,
+    EvidenceDimensionAnswerResult,
+    EvidenceQuestionAnswer,
     EvidenceCoverageGap,
     EvidenceCoverageGapTarget,
     PlannerCollectionPlan,
@@ -22,6 +29,7 @@ from app.schemas import (
     Task,
 )
 from app.services.planner_attempt_service import PlannerAttemptService
+from app.services.evidence_content_fetcher import EvidenceContentFetcher
 from app.services.llm_client import LlmResponse
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
@@ -330,6 +338,54 @@ def test_planner_incremental_collection_falls_back_on_invalid_json(db_session):
     assert output.incremental_collection_plan.targets[0].queries
 
 
+def test_planner_attempt_service_accepts_dict_rework_context(db_session):
+    saved = PlannerAttemptService(db_session).save(
+        run_id="run_dict_rework_context",
+        status="generated",
+        planner_output={"mode": "incremental_collection_plan"},
+        diagnostics={"planner_mode_used": "llm"},
+        rework_context={"source": "AnalystQA", "coverage_gap": {"targets": []}},
+    )
+
+    assert saved.rework_context == {"source": "AnalystQA", "coverage_gap": {"targets": []}}
+
+
+def test_planner_scopes_research_goals_to_single_competitor(db_session):
+    task = Task(
+        task_id="task_single_competitor_questions",
+        product_name="OurIDE",
+        competitors=["AcmeAI", "BetaAI"],
+        region="US",
+        industry="AI coding",
+        status="running",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    planner = PlannerAgent(
+        TraceService(db_session),
+        llm_client=FixedPlannerLlm(
+            '{"planner_summary":{"intent_classification":"competitive_analysis","product_type":"AI coding","task_goal":"Compare products"},'
+            '"selected_dimensions":["feature"],'
+            '"dimension_suggestions":[{"dimension_id":"feature","label":"Code generation",'
+            '"description":"Feature research","keywords":["code"],'
+            '"query_templates":["{competitor} code generation"],'
+            '"research_goals":["Compare AcmeAI and BetaAI code generation capability differences"]}],'
+            '"missing_information":[],"planner_notes":[]}'
+        ),
+    )
+
+    output = planner.run(type("Input", (), {"task": task, "run_id": "run_scope", "retry_count": 0})())
+    acme_goals = output.collection_plan.collector_search_plan["AcmeAI"]["feature"].research_goals
+    beta_goals = output.collection_plan.collector_search_plan["BetaAI"]["feature"].research_goals
+
+    assert acme_goals
+    assert beta_goals
+    assert all("Compare AcmeAI and BetaAI" not in goal for goal in [*acme_goals, *beta_goals])
+    assert all("不要要求与其他竞品直接对比" in goal for goal in [*acme_goals, *beta_goals])
+    assert acme_goals[0].startswith("针对 AcmeAI")
+    assert beta_goals[0].startswith("针对 BetaAI")
+
+
 def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, monkeypatch):
     task = TaskService(db_session).create_task(
         CreateTaskRequest(
@@ -376,14 +432,11 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
     )
 
     assert result["workflow_summary"]["debug_stage"] == "collector_only"
-    assert result["workflow_summary"]["node_sequence"] == [
-        "planner",
-        "collector",
-        "qa",
-        "planner_incremental",
-        "collector_incremental",
-        "qa_incremental",
-    ]
+    node_sequence = result["workflow_summary"]["node_sequence"]
+    assert node_sequence[:3] == ["planner", "collector", "qa"]
+    assert "evidence_content_fetcher" in node_sequence
+    assert "evidence_analyst" in node_sequence
+    assert "analyst_qa" in node_sequence
     assert result["qa_result"].qa_stage == "evidence"
     assert result["qa_result"].status == "warning"
     assert result["qa_result"].metadata["coverage_gap"]["summary"]["target_count"] == 0
@@ -401,6 +454,8 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
         for node in result["dag"]["nodes"]
     }
     assert statuses["EvidenceGate"] == "skipped"
+    assert statuses["EvidenceContentFetcher"] == "completed"
+    assert statuses["EvidenceAnalystAgent"] == "completed"
     assert statuses["PageFetcher"] == "skipped"
     assert statuses["AnalystAgent"] == "skipped"
     assert statuses["ReportWriterAgent"] == "skipped"
@@ -411,4 +466,376 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
             run_id=result["run_id"],
         )
     }
-    assert trace_agents == {"PlannerAgent", "CollectorAgent", "QaAgent", "WorkflowEngine"}
+    assert trace_agents == {
+        "PlannerAgent",
+        "CollectorAgent",
+        "QaAgent",
+        "EvidenceContentFetcher",
+        "EvidenceAnalystAgent",
+        "WorkflowEngine",
+    }
+
+
+def test_manual_evidence_selection_continues_same_run_without_evidence_gate(db_session):
+    task = TaskService(db_session).create_task(
+        CreateTaskRequest(
+            product_name="测试产品",
+            competitors=["竞品A"],
+            region="中国",
+            industry="测试行业",
+        )
+    )
+    runner = LangGraphWorkflowRunner(db_session)
+    collector_result = runner.run(
+        task.task_id,
+        collector_mode="mock",
+        analyst_mode="mock",
+        writer_mode="mock",
+        workflow_engine_requested="langgraph",
+        debug_stage="collector_only",
+    )
+    selected_id = collector_result["evidence"][0].evidence_id
+
+    result = runner.run(
+        task.task_id,
+        collector_mode="mock",
+        analyst_mode="mock",
+        writer_mode="mock",
+        workflow_engine_requested="langgraph",
+        manual_evidence_selection_enabled=True,
+        selected_evidence_ids=[selected_id],
+        source_run_id=collector_result["run_id"],
+    )
+
+    summary = result["workflow_summary"]
+    assert result["run_id"] == collector_result["run_id"]
+    assert summary["manual_evidence_selection_used"] is True
+    assert summary["manual_selected_evidence_ids"] == [selected_id]
+    assert summary["evidence_gate_output"]["manual_evidence_selection_used"] is True
+    assert summary["node_sequence"][0] == "manual_evidence_selection"
+    assert "evidence_content_fetcher" in summary["node_sequence"]
+    assert "collector" not in summary["node_sequence"]
+    assert "evidence_gate" not in summary["node_sequence"]
+    assert "analyst" in summary["node_sequence"]
+    assert "report_writer" in summary["node_sequence"]
+
+
+def test_task_collection_strategy_sets_collector_and_content_fetch_defaults(db_session):
+    task = TaskService(db_session).create_task(
+        CreateTaskRequest(
+            product_name="测试产品",
+            competitors=["竞品A", "竞品B"],
+            region="中国",
+            industry="测试行业",
+            collection_strategy_mode="expert",
+        )
+    )
+    result = LangGraphWorkflowRunner(db_session).run(
+        task.task_id,
+        collector_mode="mock",
+        workflow_engine_requested="langgraph",
+        debug_stage="collector_only",
+    )
+
+    summary = result["workflow_summary"]
+    assert summary["collection_strategy_mode"] == "expert"
+    assert summary["collector_config_source"] == "task_strategy:expert"
+    assert summary["collector_config"]["default"]["max_results_per_query"] == 8
+    assert summary["collector_config"]["default"]["max_evidence_per_dimension"] == 20
+    assert summary["collector_config"]["default"]["min_valid_evidence_required"] == 3
+    assert summary["evidence_content_fetch_output"]["content_fetch_scope"] == "all_eligible_evidence"
+
+
+def test_evidence_content_fetcher_limits_simple_mode_to_best_evidence_per_dimension():
+    class StubContentFetcher(EvidenceContentFetcher):
+        @property
+        def is_available(self) -> bool:
+            return True
+
+        def fetch(self, url: str):
+            from app.services.evidence_content_fetcher import EvidenceContentFetchResult
+
+            return EvidenceContentFetchResult(
+                success=True,
+                content_excerpt=f"full text for {url}",
+                content_chars=24,
+            )
+
+    evidence = [
+            Evidence(
+                evidence_id="ev_low",
+                competitor="A",
+                source_type="public_web",
+                url="https://example.com/low",
+                snippet="low",
+            relevance_level="medium",
+            source_quality="unknown",
+            relevance_score=0.7,
+            confidence=0.7,
+            entity_match_signals={"collector_dimension": "pricing"},
+        ),
+            Evidence(
+                evidence_id="ev_best",
+                competitor="A",
+                source_type="public_web",
+                url="https://example.com/best",
+                snippet="best",
+            relevance_level="high",
+            source_quality="official",
+            relevance_score=0.9,
+            confidence=0.9,
+            entity_match_signals={"collector_dimension": "pricing"},
+        ),
+            Evidence(
+                evidence_id="ev_other_dimension",
+                competitor="A",
+                source_type="public_web",
+                url="https://example.com/other",
+                snippet="other",
+            relevance_level="high",
+            source_quality="official",
+            relevance_score=0.8,
+            confidence=0.8,
+            entity_match_signals={"collector_dimension": "feature"},
+        ),
+    ]
+
+    enriched, diagnostics = StubContentFetcher(provider="tavily", api_key="test").enrich(
+        evidence,
+        enabled=True,
+        max_per_competitor_dimension=1,
+    )
+
+    by_id = {item.evidence_id: item for item in enriched}
+    assert by_id["ev_best"].content_mode == "page"
+    assert by_id["ev_other_dimension"].content_mode == "page"
+    assert by_id["ev_low"].content_mode == "snippet"
+    assert by_id["ev_low"].page_fetch_error == "skipped:strategy_dimension_limit"
+    assert diagnostics["content_fetch_attempt_count"] == 2
+    assert diagnostics["content_fetch_limit_skipped_ids"] == ["ev_low"]
+
+
+def test_evidence_analyst_answers_planner_questions_with_evidence_ids(db_session):
+    class StubLlmClient:
+        is_available = True
+        provider = "test"
+        model = "test-model"
+
+        def chat_json(self, messages, timeout=None):
+            return LlmResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                content=(
+                    '{"question_answers":[{"question_id":"q1",'
+                    '"question":"AcmeAI 的 Pro 套餐如何计费？",'
+                    '"answer":"当前证据显示 AcmeAI Pro starts at $19 per user per month.",'
+                    '"evidence_ids":["ev_001"],'
+                    '"answer_status":"answered"}],'
+                    '"dimension_summary":"当前证据回答了 Pro 套餐起价问题。",'
+                    '"warnings":[]}'
+                ),
+                elapsed_time_ms=12,
+            )
+
+    now = datetime.utcnow()
+    task = Task(
+        task_id="task_evidence_analyst",
+        product_name="Test Product",
+        competitors=["AcmeAI"],
+        region="US",
+        industry="AI",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    evidence = Evidence(
+        evidence_id="ev_001",
+        competitor="AcmeAI",
+        source_type="public_web",
+        url="https://acmeai.com/pricing",
+        snippet="AcmeAI Pro starts at $19 per user per month.",
+        confidence=0.9,
+        source_domain="acmeai.com",
+        source_quality="official",
+        relevance_level="high",
+        content_mode="page",
+        content_excerpt="Free plan available. Pro starts at $19 per user per month. Enterprise requires sales.",
+        entity_match_signals={"collector_dimension": "pricing"},
+    )
+
+    output = EvidenceAnalystAgent(TraceService(db_session), llm_client=StubLlmClient()).run(
+        EvidenceAnalystInput(
+            task=task,
+            evidence=[evidence],
+            selected_dimensions=["pricing"],
+            collection_plan=PlannerCollectionPlan(
+                collector_search_plan={
+                    "AcmeAI": {
+                        "pricing": PlannerCollectionPlanItem(
+                            dimension_id="pricing",
+                            label="定价与商业模式",
+                            queries=["AcmeAI pricing"],
+                            research_goals=["AcmeAI 的 Pro 套餐如何计费？"],
+                        )
+                    }
+                }
+            ),
+        )
+    )
+
+    result = output.question_results[0]
+    assert result.competitor == "AcmeAI"
+    assert result.dimension_id == "pricing"
+    assert result.question_answers[0].question_id == "q1"
+    assert result.question_answers[0].evidence_ids == ["ev_001"]
+    assert result.question_answers[0].answer_status == "answered"
+    assert output.diagnostics["total_evidence"] == 1
+    assert output.diagnostics["question_answer_count"] == 1
+
+
+def test_evidence_analyst_incremental_only_reanswers_not_found_targets(db_session):
+    class StubLlmClient:
+        is_available = True
+        provider = "test"
+        model = "test-model"
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat_json(self, messages, timeout=None):
+            self.calls += 1
+            return LlmResponse(
+                available=True,
+                attempted=True,
+                success=True,
+                content=(
+                    '{"question_answers":[{"question_id":"q2",'
+                    '"question":"What is AcmeAI enterprise pricing?",'
+                    '"answer":"The new evidence says Enterprise pricing requires contacting sales.",'
+                    '"evidence_ids":["ev_new"],'
+                    '"answer_status":"answered",'
+                    '"suggestions":[]}],'
+                    '"dimension_summary":"Enterprise pricing is now answered.",'
+                    '"warnings":[]}'
+                ),
+                elapsed_time_ms=10,
+            )
+
+    now = datetime.utcnow()
+    task = Task(
+        task_id="task_incremental_evidence_analyst",
+        product_name="Test Product",
+        competitors=["AcmeAI"],
+        region="US",
+        industry="AI",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    previous_output = EvidenceAnalystOutput(
+        question_results=[
+            EvidenceDimensionAnswerResult(
+                competitor="AcmeAI",
+                dimension_id="pricing",
+                dimension_goal="pricing",
+                research_questions=[
+                    "What is AcmeAI Pro pricing?",
+                    "What is AcmeAI enterprise pricing?",
+                ],
+                question_answers=[
+                    EvidenceQuestionAnswer(
+                        question_id="q1",
+                        question="What is AcmeAI Pro pricing?",
+                        answer="Pro starts at $19 per user per month.",
+                        evidence_ids=["ev_old"],
+                        answer_status="answered",
+                    ),
+                    EvidenceQuestionAnswer(
+                        question_id="q2",
+                        question="What is AcmeAI enterprise pricing?",
+                        answer="Current evidence is insufficient.",
+                        evidence_ids=[],
+                        answer_status="not_found",
+                    ),
+                ],
+                dimension_summary="Pro pricing is answered; enterprise pricing is missing.",
+            )
+        ],
+        diagnostics={"evidence_analyst_mode": "question_answer_by_competitor_dimension"},
+    )
+    evidence = [
+        Evidence(
+            evidence_id="ev_old",
+            competitor="AcmeAI",
+            source_type="public_web",
+            url="https://acmeai.com/pricing",
+            snippet="Pro starts at $19 per user per month.",
+            confidence=0.9,
+            source_domain="acmeai.com",
+            source_quality="official",
+            relevance_level="high",
+            entity_match_signals={"collector_dimension": "pricing"},
+        ),
+        Evidence(
+            evidence_id="ev_new",
+            competitor="AcmeAI",
+            source_type="public_web",
+            url="https://acmeai.com/enterprise",
+            snippet="Enterprise pricing requires contacting sales.",
+            confidence=0.9,
+            source_domain="acmeai.com",
+            source_quality="official",
+            relevance_level="high",
+            content_mode="page",
+            content_excerpt="Enterprise pricing requires contacting sales.",
+            entity_match_signals={"collector_dimension": "pricing"},
+        ),
+    ]
+    llm_client = StubLlmClient()
+
+    output = EvidenceAnalystAgent(TraceService(db_session), llm_client=llm_client).run(
+        EvidenceAnalystInput(
+            task=task,
+            evidence=evidence,
+            selected_dimensions=["pricing"],
+            previous_output=previous_output,
+            rework_context=EvidenceAnalystReworkContext(
+                targets=[
+                    EvidenceAnalystReworkTarget(
+                        competitor="AcmeAI",
+                        dimension_id="pricing",
+                        question_id="q2",
+                        question="What is AcmeAI enterprise pricing?",
+                        new_evidence_ids=["ev_new"],
+                    )
+                ]
+            ),
+            collection_plan=PlannerCollectionPlan(
+                collector_search_plan={
+                    "AcmeAI": {
+                        "pricing": PlannerCollectionPlanItem(
+                            dimension_id="pricing",
+                            label="pricing",
+                            queries=["AcmeAI pricing"],
+                            research_goals=[
+                                "What is AcmeAI Pro pricing?",
+                                "What is AcmeAI enterprise pricing?",
+                            ],
+                        )
+                    }
+                }
+            ),
+        )
+    )
+
+    answers = output.question_results[0].question_answers
+    assert llm_client.calls == 1
+    assert answers[0].question_id == "q1"
+    assert answers[0].answer == "Pro starts at $19 per user per month."
+    assert answers[0].answer_status == "answered"
+    assert answers[1].question_id == "q2"
+    assert answers[1].answer_status == "answered"
+    assert answers[1].evidence_ids == ["ev_new"]
+    assert output.diagnostics["evidence_analyst_mode"] == "incremental_answer_not_found_only"
+    assert output.diagnostics["incremental_reanswer_target_count"] == 1

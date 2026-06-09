@@ -3,6 +3,7 @@ from typing import Any, Literal, TypedDict
 from app.schemas.agent_io import (
     AnalystOutput,
     CollectorOutput,
+    EvidenceAnalystOutput,
     FinalReportOutput,
     PlannerOutput,
     PlannerIncrementalOutput,
@@ -15,6 +16,7 @@ from app.schemas.models import (
     ClaimSupportResult,
     DimensionResult,
     Evidence,
+    EvidenceAnalystReworkContext,
     CollectorConfig,
     PlannerAmbiguityLevel,
     PlannerCompetitorCandidate,
@@ -70,16 +72,20 @@ class WorkflowState(TypedDict, total=False):
     collection_plan_override: PlannerCollectionPlan | None
     manual_collection_plan_override_used: bool
     collector_config: CollectorConfig | None
+    collector_config_source: str | None
     planner_incremental_output: PlannerIncrementalOutput | None
     incremental_collection_plan: PlannerIncrementalCollectionPlan | None
     planner_summary: dict[str, Any]
     collection_plan: dict[str, Any]
     collector_output: CollectorOutput | None
     analyst_output: AnalystOutput | None
+    evidence_analyst_output: EvidenceAnalystOutput | None
+    evidence_analyst_rework_context: EvidenceAnalystReworkContext | None
     report_writer_output: ReportWriterOutput | None
     qa_output: QaOutput | None
     final_report_output: FinalReportOutput | None
     evidence_gate_output: dict[str, Any]
+    evidence_content_fetch_output: dict[str, Any]
     page_fetch_output: dict[str, Any]
     entity_resolution: dict[str, Any]
     competitor_aliases: dict[str, list[str]]

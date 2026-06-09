@@ -14,6 +14,7 @@ class TaskRecord(Base):
     competitors_json: Mapped[str] = mapped_column(Text, nullable=False)
     region: Mapped[str] = mapped_column(String, nullable=False)
     industry: Mapped[str] = mapped_column(String, nullable=False)
+    collection_strategy_mode: Mapped[str] = mapped_column(String, default="balanced", nullable=False)
     status: Mapped[str] = mapped_column(String, default="created", nullable=False)
     rework_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

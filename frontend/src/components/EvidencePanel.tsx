@@ -1,39 +1,83 @@
 import { ExternalLink } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Evidence } from "../types";
 
 export function EvidencePanel({
   evidence,
   evidenceIds,
   selectedFactId,
+  selectable = false,
+  selectedManualEvidenceIds = [],
+  onManualEvidenceSelectionChange,
 }: {
   evidence: Evidence[];
   evidenceIds?: string[];
   selectedFactId?: string;
+  selectable?: boolean;
+  selectedManualEvidenceIds?: string[];
+  onManualEvidenceSelectionChange?: (ids: string[]) => void;
 }) {
   const [competitorFilter, setCompetitorFilter] = useState("all");
   const [relevanceFilter, setRelevanceFilter] = useState("all");
   const [onlyRelevant, setOnlyRelevant] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const selectedIds = evidenceIds?.length ? evidenceIds : undefined;
+  const selectedIdSet = useMemo(() => new Set(selectedIds ?? []), [selectedIds]);
+  const manualSelection = new Set(selectedManualEvidenceIds);
   const competitors = useMemo(
     () => Array.from(new Set(evidence.map((item) => item.competitor).filter(Boolean))) as string[],
     [evidence],
   );
 
-  const related = (selectedIds
-    ? evidence.filter((item) => selectedIds.includes(item.evidence_id))
-    : evidence
-  )
+  const related = evidence
     .filter((item) => competitorFilter === "all" || item.competitor === competitorFilter)
     .filter((item) => relevanceFilter === "all" || item.relevance_level === relevanceFilter)
     .filter((item) => !onlyRelevant || ["high", "medium"].includes(item.relevance_level ?? "high"))
     .sort((a, b) => {
       const relevanceRank = { high: 4, medium: 3, low: 2, unrelated: 1 };
       return (
+        Number(selectedIdSet.has(b.evidence_id)) - Number(selectedIdSet.has(a.evidence_id)) ||
         (relevanceRank[b.relevance_level ?? "high"] ?? 0) - (relevanceRank[a.relevance_level ?? "high"] ?? 0) ||
         b.confidence - a.confidence
       );
     });
+  const totalPages = Math.max(1, Math.ceil(related.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pagedEvidence = related.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [competitorFilter, relevanceFilter, onlyRelevant, pageSize, evidence.length, selectedIds?.join("|")]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  function toggleManualEvidence(evidenceId: string, checked: boolean) {
+    if (!onManualEvidenceSelectionChange) return;
+    const next = new Set(selectedManualEvidenceIds);
+    if (checked) {
+      next.add(evidenceId);
+    } else {
+      next.delete(evidenceId);
+    }
+    onManualEvidenceSelectionChange(Array.from(next));
+  }
+
+  function selectVisibleEvidence() {
+    if (!onManualEvidenceSelectionChange) return;
+    onManualEvidenceSelectionChange(Array.from(new Set([
+      ...selectedManualEvidenceIds,
+      ...pagedEvidence.map((item) => item.evidence_id),
+    ])));
+  }
+
+  function clearVisibleEvidence() {
+    if (!onManualEvidenceSelectionChange) return;
+    const visible = new Set(pagedEvidence.map((item) => item.evidence_id));
+    onManualEvidenceSelectionChange(selectedManualEvidenceIds.filter((id) => !visible.has(id)));
+  }
 
   return (
     <section className="rounded border border-line bg-white p-4">
@@ -43,8 +87,31 @@ export function EvidencePanel({
           <p className="mt-1 text-xs text-slate-500">
             共 {evidence.length} 条 Evidence，当前显示 {related.length} 条
           </p>
+          {selectable && (
+            <p className="mt-1 text-xs text-slate-500">
+              已选择 {selectedManualEvidenceIds.length} 条 Evidence
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
+          {selectable && (
+            <>
+              <button
+                type="button"
+                className="rounded border border-line bg-white px-2 py-1 font-semibold"
+                onClick={selectVisibleEvidence}
+              >
+                全选当前显示
+              </button>
+              <button
+                type="button"
+                className="rounded border border-line bg-white px-2 py-1 font-semibold"
+                onClick={clearVisibleEvidence}
+              >
+                清除当前显示
+              </button>
+            </>
+          )}
           <select className="rounded border border-line bg-white px-2 py-1" value={competitorFilter} onChange={(event) => setCompetitorFilter(event.target.value)}>
             <option value="all">全部竞品</option>
             {competitors.map((competitor) => (
@@ -62,6 +129,15 @@ export function EvidencePanel({
             <input type="checkbox" checked={onlyRelevant} onChange={(event) => setOnlyRelevant(event.target.checked)} />
             只看 high/medium
           </label>
+          <select
+            className="rounded border border-line bg-white px-2 py-1"
+            value={pageSize}
+            onChange={(event) => setPageSize(Number(event.target.value))}
+          >
+            <option value={10}>10 / page</option>
+            <option value={20}>20 / page</option>
+            <option value={50}>50 / page</option>
+          </select>
         </div>
       </div>
 
@@ -72,18 +148,38 @@ export function EvidencePanel({
       )}
 
       <div className="space-y-3">
-        {related.map((item) => (
+        {pagedEvidence.map((item) => (
           <div
             key={item.evidence_id}
             className={`rounded border p-3 text-sm ${
-              item.relevance_level === "unrelated" || item.confidence < 0.5 ? "border-amber-300 bg-amber-50" : "border-line bg-panel"
+              selectedIdSet.has(item.evidence_id)
+                ? "border-blue-400 bg-blue-50"
+                : item.relevance_level === "unrelated" || item.confidence < 0.5 ? "border-amber-300 bg-amber-50" : "border-line bg-panel"
             }`}
           >
             <div className="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <div className="font-semibold">{item.evidence_id} · {item.source_type}</div>
+              <div className="flex min-w-0 items-start gap-2">
+                {selectable && (
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4"
+                    checked={manualSelection.has(item.evidence_id)}
+                    onChange={(event) => toggleManualEvidence(item.evidence_id, event.target.checked)}
+                    aria-label={`选择 Evidence ${item.evidence_id}`}
+                  />
+                )}
+                <div>
+                <div className="font-semibold">
+                  {item.evidence_id} · {item.source_type}
+                  {selectedIdSet.has(item.evidence_id) && (
+                    <span className="ml-2 rounded border border-blue-300 bg-white px-2 py-0.5 text-xs text-blue-600">
+                      referenced
+                    </span>
+                  )}
+                </div>
                 <div className="mt-1 text-xs text-slate-600">
                   竞品：{item.competitor ?? "-"} · 来源：{item.source_domain ?? "unknown"} · 质量：{item.source_quality ?? "unknown"}
+                </div>
                 </div>
               </div>
               {item.url && (
@@ -137,7 +233,77 @@ export function EvidencePanel({
         ))}
         {!related.length && <p className="text-sm text-slate-500">暂无可展示证据。</p>}
       </div>
+      {!!related.length && (
+        <PaginationControls
+          page={safePage}
+          totalPages={totalPages}
+          totalItems={related.length}
+          pageSize={pageSize}
+          onPageChange={setPage}
+        />
+      )}
     </section>
+  );
+}
+
+function PaginationControls({
+  page,
+  totalPages,
+  totalItems,
+  pageSize,
+  onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+}) {
+  const start = totalItems ? (page - 1) * pageSize + 1 : 0;
+  const end = Math.min(totalItems, page * pageSize);
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 text-xs text-slate-600">
+      <span>
+        显示 {start}-{end} / {totalItems}
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="rounded border border-line bg-white px-2 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={page <= 1}
+          onClick={() => onPageChange(1)}
+        >
+          首页
+        </button>
+        <button
+          type="button"
+          className="rounded border border-line bg-white px-2 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+        >
+          上一页
+        </button>
+        <span className="rounded border border-line bg-panel px-2 py-1">
+          {page} / {totalPages}
+        </span>
+        <button
+          type="button"
+          className="rounded border border-line bg-white px-2 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+        >
+          下一页
+        </button>
+        <button
+          type="button"
+          className="rounded border border-line bg-white px-2 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(totalPages)}
+        >
+          末页
+        </button>
+      </div>
+    </div>
   );
 }
 

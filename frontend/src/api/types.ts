@@ -4,6 +4,7 @@ export type Task = {
   competitors: string[];
   region: string;
   industry: string;
+  collection_strategy_mode: "simple" | "balanced" | "expert";
   status: string;
   rework_count: number;
   created_at: string;
@@ -286,6 +287,12 @@ export type WorkflowSummary = {
   } | null;
   collection_plan?: CollectionPlan;
   manual_collection_plan_override_used?: boolean;
+  collection_strategy_mode?: "simple" | "balanced" | "expert";
+  collector_config_source?: string | null;
+  manual_evidence_selection_used?: boolean;
+  manual_selected_evidence_ids?: string[];
+  manual_selected_evidence_count?: number;
+  source_run_id?: string;
   planner_collection_plan_original?: CollectionPlan;
   collector_config?: CollectorConfig | null;
   collector_output?: {
@@ -338,9 +345,72 @@ export type WorkflowSummary = {
     skipped_evidence_ids?: string[];
     run_id?: string | null;
   };
+  evidence_content_fetch_output?: {
+    content_fetch_provider?: string;
+    content_fetch_available?: boolean;
+    content_fetch_attempted?: boolean;
+    content_fetch_attempt_count?: number;
+    content_fetch_success_count?: number;
+    content_fetch_failed_count?: number;
+    content_fetch_skipped_count?: number;
+    content_fetch_fallback_count?: number;
+    content_fetch_error_summary?: Record<string, number>;
+    content_fetch_elapsed_time_ms?: number;
+    avg_content_chars?: number;
+    max_content_chars?: number;
+    fetched_evidence_ids?: string[];
+    failed_evidence_ids?: string[];
+    skipped_evidence_ids?: string[];
+    run_id?: string | null;
+  };
+  evidence_analyst_output?: {
+    question_results?: EvidenceDimensionAnswerResult[];
+    diagnostics?: {
+      evidence_analyst_mode?: string;
+      evidence_analyst_enabled?: boolean;
+      total_evidence?: number;
+      target_group_count?: number;
+      completed_group_count?: number;
+      failed_group_count?: number;
+      failed_evidence?: number;
+      question_answer_count?: number;
+      answered_question_count?: number;
+      warning_count?: number;
+      skip_reason?: string;
+      llm_call_success_count?: number;
+      llm_call_failed_count?: number;
+      llm_elapsed_time_ms?: number;
+      schema_validation_errors?: string[];
+    } & Record<string, unknown>;
+  };
+  analyst_qa_output?: {
+    qa_result?: QaResult;
+    diagnostics?: Record<string, unknown>;
+  };
+  analyst_qa_result?: QaResult;
+  analyst_incremental_attempts?: Array<Record<string, unknown>>;
   knowledge_hits?: KnowledgeHit[];
   retrieved_knowledge_chunk_count?: number;
   knowledge_retrieval_strategy?: KnowledgeRetrievalStrategy;
+};
+
+export type EvidenceQuestionAnswer = {
+  question_id: string;
+  question: string;
+  answer: string;
+  evidence_ids: string[];
+  answer_status: "answered" | "partial" | "not_found";
+  suggestions?: string[];
+};
+
+export type EvidenceDimensionAnswerResult = {
+  competitor?: string | null;
+  dimension_id?: string | null;
+  dimension_goal: string;
+  research_questions: string[];
+  question_answers: EvidenceQuestionAnswer[];
+  dimension_summary: string;
+  warnings: string[];
 };
 
 export type PlannerRunResult = {
@@ -375,6 +445,9 @@ export type PlannerRunResult = {
 export type RunTaskOverrides = {
   collection_plan_override?: CollectionPlan;
   collector_config?: CollectorConfig;
+  manual_evidence_selection_enabled?: boolean;
+  selected_evidence_ids?: string[];
+  source_run_id?: string;
 };
 
 export type PlannerAttempt = {
@@ -386,6 +459,20 @@ export type PlannerAttempt = {
   rework_context?: Record<string, unknown> | null;
   raw_llm_response?: string | null;
   created_at: string;
+};
+
+export type WorkflowProgress = {
+  run_id: string;
+  current_agent?: string;
+  current_stage?: string;
+  message?: string;
+  current?: number;
+  total?: number;
+  unit?: string;
+  detail?: string | null;
+  status?: string;
+  metadata?: Record<string, unknown>;
+  updated_at?: string;
 };
 
 export type CollectorDiagnostics = {
@@ -430,7 +517,7 @@ export type CollectorDiagnostics = {
 export type QaResult = {
   task_id: string;
   run_id?: string | null;
-  qa_stage?: "full" | "evidence";
+  qa_stage?: "full" | "evidence" | "analyst";
   status: "passed" | "warning" | "failed" | "manual_review";
   hard_errors: string[];
   soft_suggestions: string[];

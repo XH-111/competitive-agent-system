@@ -42,7 +42,7 @@ class PlannerAttemptService:
         status: str,
         planner_output: PlannerOutput | BaseModel | dict[str, Any] | None,
         diagnostics: dict[str, Any],
-        rework_context: ReworkContext | None = None,
+        rework_context: ReworkContext | dict[str, Any] | None = None,
         raw_llm_response: str | None = None,
     ) -> PlannerAttempt:
         current_max = (
@@ -64,7 +64,7 @@ class PlannerAttemptService:
             ),
             diagnostics_json=json.dumps(diagnostics, ensure_ascii=False),
             rework_context_json=(
-                rework_context.model_dump_json() if rework_context is not None else None
+                _rework_context_json(rework_context) if rework_context is not None else None
             ),
             raw_llm_response=stored_raw,
             created_at=datetime.utcnow(),
@@ -90,3 +90,9 @@ def _planner_payload(planner_output: PlannerOutput | BaseModel | dict[str, Any] 
     if isinstance(planner_output, BaseModel):
         return planner_output.model_dump(mode="json")
     return planner_output
+
+
+def _rework_context_json(rework_context: ReworkContext | dict[str, Any]) -> str:
+    if isinstance(rework_context, BaseModel):
+        return rework_context.model_dump_json()
+    return json.dumps(rework_context, ensure_ascii=False)

@@ -14,7 +14,9 @@ type ReworkItem = {
 };
 
 export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummary?: WorkflowSummary }) {
-  if (!qa) return null;
+  const displayedQa = workflowSummary?.analyst_qa_result ?? qa;
+  if (!displayedQa) return null;
+  qa = displayedQa;
 
   const history = buildReworkHistory(qa, workflowSummary);
   const statusClass = qa.status === "passed"
@@ -33,6 +35,7 @@ export function QaPanel({ qa, workflowSummary }: { qa?: QaResult; workflowSummar
 
       <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
         {qa.qa_stage === "evidence" && <span>检查阶段：EvidenceQA</span>}
+        {qa.qa_stage === "analyst" && <span>检查阶段：AnalystQA</span>}
         <span>最终状态：</span>
         <Pill value={qa.status} />
         <span>返工次数：{qa.rework_count}</span>

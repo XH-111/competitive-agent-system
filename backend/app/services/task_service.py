@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db_models import TaskRecord
 from app.schemas import CreateTaskRequest, Task
+from app.constants.collection_strategy import normalize_collection_strategy_mode
 
 
 def _to_schema(row: TaskRecord) -> Task:
@@ -15,6 +16,7 @@ def _to_schema(row: TaskRecord) -> Task:
         competitors=json.loads(row.competitors_json),
         region=row.region,
         industry=row.industry,
+        collection_strategy_mode=normalize_collection_strategy_mode(getattr(row, "collection_strategy_mode", None)),
         status=row.status,
         rework_count=row.rework_count,
         created_at=row.created_at,
@@ -33,6 +35,7 @@ class TaskService:
             competitors_json=json.dumps(request.competitors, ensure_ascii=False),
             region=request.region,
             industry=request.industry,
+            collection_strategy_mode=request.collection_strategy_mode,
             status="created",
         )
         self.db.add(row)
