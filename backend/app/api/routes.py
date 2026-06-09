@@ -22,6 +22,7 @@ router = APIRouter(prefix="/api")
 class RunTaskRequest(BaseModel):
     collection_plan_override: PlannerCollectionPlan | None = None
     collector_config: CollectorConfig | None = None
+    skip_initial_planner: bool = False
     manual_evidence_selection_enabled: bool = False
     selected_evidence_ids: list[str] = []
     source_run_id: str | None = None
@@ -101,6 +102,7 @@ def run_task(
                 debug_stage=debug_stage,
                 collection_plan_override=request.collection_plan_override if request else None,
                 collector_config=request.collector_config if request else None,
+                skip_initial_planner=request.skip_initial_planner if request else False,
                 manual_evidence_selection_enabled=(
                     request.manual_evidence_selection_enabled if request else False
                 ),

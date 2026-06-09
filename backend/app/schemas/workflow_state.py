@@ -8,6 +8,7 @@ from app.schemas.agent_io import (
     PlannerOutput,
     PlannerIncrementalOutput,
     QaOutput,
+    ReportAgentOutput,
     ReportWriterOutput,
 )
 from app.schemas.models import (
@@ -70,6 +71,7 @@ class WorkflowState(TypedDict, total=False):
     max_rework: int
     planner_output: PlannerOutput | None
     collection_plan_override: PlannerCollectionPlan | None
+    skip_initial_planner: bool
     manual_collection_plan_override_used: bool
     collector_config: CollectorConfig | None
     collector_config_source: str | None
@@ -81,11 +83,13 @@ class WorkflowState(TypedDict, total=False):
     analyst_output: AnalystOutput | None
     evidence_analyst_output: EvidenceAnalystOutput | None
     evidence_analyst_rework_context: EvidenceAnalystReworkContext | None
+    report_agent_output: ReportAgentOutput | None
     report_writer_output: ReportWriterOutput | None
     qa_output: QaOutput | None
     final_report_output: FinalReportOutput | None
     evidence_gate_output: dict[str, Any]
     evidence_content_fetch_output: dict[str, Any]
+    evidence_content_fetch_target_ids: list[str]
     page_fetch_output: dict[str, Any]
     entity_resolution: dict[str, Any]
     competitor_aliases: dict[str, list[str]]

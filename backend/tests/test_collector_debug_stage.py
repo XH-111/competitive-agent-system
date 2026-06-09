@@ -8,6 +8,7 @@ from app.agents.langgraph_runner import LangGraphWorkflowRunner
 from app.agents.evidence_analyst import EvidenceAnalystAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import QaAgent
+from app.agents.report_agent import ReportAgent
 from app.database import Base
 from app.schemas import (
     CollectorConfig,
@@ -26,6 +27,7 @@ from app.schemas import (
     PlannerCollectionPlanItem,
     PlannerIncrementalInput,
     QaInput,
+    ReportAgentInput,
     Task,
 )
 from app.services.planner_attempt_service import PlannerAttemptService
@@ -412,6 +414,7 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
             )
 
     runner.planner.llm_client = UnavailablePlannerLlm()
+    runner.report_agent.llm_client = UnavailablePlannerLlm()
     monkeypatch.setattr(
         runner,
         "evidence_gate_node",
@@ -437,6 +440,7 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
     assert "evidence_content_fetcher" in node_sequence
     assert "evidence_analyst" in node_sequence
     assert "analyst_qa" in node_sequence
+    assert "report_agent" in node_sequence
     assert result["qa_result"].qa_stage == "evidence"
     assert result["qa_result"].status == "warning"
     assert result["qa_result"].metadata["coverage_gap"]["summary"]["target_count"] == 0
@@ -447,7 +451,9 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
     attempts = PlannerAttemptService(db_session).list_for_run(result["run_id"])
     assert attempts[-1].diagnostics["planner_output_type"] == "incremental_collection_plan"
     assert attempts[-1].planner_output["mode"] == "incremental_collection_plan"
-    assert result["report"] is None
+    assert result["report"] is not None
+    assert result["report"].markdown.startswith("#")
+    assert result["workflow_summary"]["report_agent_output"]["diagnostics"]["fallback_used"] is True
     assert result["evidence"]
     statuses = {
         node["id"]: node["status"]
@@ -456,6 +462,7 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
     assert statuses["EvidenceGate"] == "skipped"
     assert statuses["EvidenceContentFetcher"] == "completed"
     assert statuses["EvidenceAnalystAgent"] == "completed"
+    assert statuses["ReportAgent"] == "completed"
     assert statuses["PageFetcher"] == "skipped"
     assert statuses["AnalystAgent"] == "skipped"
     assert statuses["ReportWriterAgent"] == "skipped"
@@ -472,6 +479,7 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
         "QaAgent",
         "EvidenceContentFetcher",
         "EvidenceAnalystAgent",
+        "ReportAgent",
         "WorkflowEngine",
     }
 
@@ -613,6 +621,35 @@ def test_evidence_content_fetcher_limits_simple_mode_to_best_evidence_per_dimens
     assert by_id["ev_low"].page_fetch_error == "skipped:strategy_dimension_limit"
     assert diagnostics["content_fetch_attempt_count"] == 2
     assert diagnostics["content_fetch_limit_skipped_ids"] == ["ev_low"]
+
+
+def test_evidence_content_fetcher_preserves_already_fetched_content():
+    evidence = Evidence(
+        evidence_id="ev_fetched",
+        competitor="A",
+        source_type="public_web",
+        url="https://example.com/fetched",
+        snippet="summary",
+        confidence=0.9,
+        relevance_level="high",
+        source_quality="official",
+        content_mode="page",
+        page_fetch_success=True,
+        content_excerpt="existing full text",
+        content_chars=18,
+        entity_match_signals={"collector_dimension": "pricing"},
+    )
+
+    enriched, diagnostics = EvidenceContentFetcher(
+        provider="tavily",
+        api_key="test",
+    ).enrich([evidence], enabled=True)
+
+    assert diagnostics["content_fetch_attempt_count"] == 0
+    assert diagnostics["skipped_evidence_ids"] == ["ev_fetched"]
+    assert enriched[0].content_mode == "page"
+    assert enriched[0].page_fetch_success is True
+    assert enriched[0].content_excerpt == "existing full text"
 
 
 def test_evidence_analyst_answers_planner_questions_with_evidence_ids(db_session):
@@ -839,3 +876,61 @@ def test_evidence_analyst_incremental_only_reanswers_not_found_targets(db_sessio
     assert answers[1].evidence_ids == ["ev_new"]
     assert output.diagnostics["evidence_analyst_mode"] == "incremental_answer_not_found_only"
     assert output.diagnostics["incremental_reanswer_target_count"] == 1
+
+
+def test_report_agent_fallback_generates_markdown_from_evidence_analyst_output(db_session):
+    class UnavailableLlm:
+        is_available = False
+        provider = "test"
+        model = "test-model"
+
+        def chat_json(self, messages, timeout=None):
+            raise AssertionError("ReportAgent should not call unavailable LLM")
+
+    now = datetime.utcnow()
+    task = Task(
+        task_id="task_report_agent",
+        product_name="Test Product",
+        competitors=["AcmeAI"],
+        region="US",
+        industry="AI",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    evidence_analyst_output = EvidenceAnalystOutput(
+        question_results=[
+            EvidenceDimensionAnswerResult(
+                competitor="AcmeAI",
+                dimension_id="pricing",
+                dimension_goal="pricing",
+                research_questions=["What is AcmeAI Pro pricing?"],
+                question_answers=[
+                    EvidenceQuestionAnswer(
+                        question_id="q1",
+                        question="What is AcmeAI Pro pricing?",
+                        answer="Pro starts at $19 per user per month.",
+                        evidence_ids=["ev_001"],
+                        answer_status="answered",
+                    )
+                ],
+                dimension_summary="AcmeAI Pro pricing is answered.",
+            )
+        ]
+    )
+
+    output = ReportAgent(TraceService(db_session), llm_client=UnavailableLlm()).run(
+        ReportAgentInput(
+            task=task,
+            run_id="run_report_agent",
+            evidence_analyst_output=evidence_analyst_output,
+        )
+    )
+
+    assert output.report.markdown.startswith("# 竞品分析报告")
+    assert "Pro starts at $19 per user per month." in output.report.markdown
+    assert output.report.json_report["report_agent"]["sections"][0]["section_id"] == "pricing"
+    assert output.report.json_report["report_agent"]["evidence_refs"]["ev_001"]["source_domain"] is None
+    assert output.sections[0].section_no == "2.1"
+    assert output.sections[0].competitor_analyses
+    assert output.diagnostics["fallback_used"] is True

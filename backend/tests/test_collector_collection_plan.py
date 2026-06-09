@@ -24,6 +24,7 @@ from app.schemas import (
 )
 from app.services.trace_service import TraceService
 from app.services.task_service import TaskService
+from app.services.planner_attempt_service import PlannerAttemptService
 from app.services.web_search_client import SearchResult, WebSearchResponse
 
 
@@ -451,3 +452,57 @@ def test_langgraph_planner_node_applies_manual_collection_plan_override(db_sessi
     assert state["collection_plan"] == override
     assert state["selected_dimensions"] == ["pricing"]
     assert state["planner_output"].collection_plan != override
+
+
+def test_langgraph_planner_node_can_skip_initial_llm_with_manual_plan(db_session, monkeypatch):
+    stored_task = TaskService(db_session).create_task(
+        CreateTaskRequest(
+            product_name="Manual product",
+            competitors=["Competitor A"],
+            region="China",
+            industry="Software",
+        )
+    )
+    runner = LangGraphWorkflowRunner(db_session)
+    monkeypatch.setattr(
+        runner.planner,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("manual planning called Planner LLM"),
+    )
+    override = PlannerCollectionPlan(
+        collector_search_plan={
+            "Competitor A": {
+                "pricing": PlannerCollectionPlanItem(
+                    dimension_id="pricing",
+                    label="Pricing",
+                    queries=["Competitor A pricing official"],
+                    research_goals=["What plans and prices does Competitor A publish?"],
+                    source="manual_override",
+                )
+            }
+        }
+    )
+
+    state = runner.planner_node(
+        {
+            "task_id": stored_task.task_id,
+            "task": stored_task,
+            "run_id": "run_manual_skip_planner",
+            "demo_mode": "normal",
+            "rework_count": 0,
+            "collection_plan_override": override,
+            "skip_initial_planner": True,
+            "planner_output": None,
+            "rework_context": None,
+            "node_sequence": [],
+        }
+    )
+
+    assert state["planner_output"].diagnostics["planner_mode_used"] == "manual"
+    assert state["planner_output"].collection_plan == override
+    assert state["selected_dimensions"] == ["pricing"]
+    assert state["analysis_dimension_plan"].dimension_plans[0].research_goals == [
+        "What plans and prices does Competitor A publish?"
+    ]
+    attempts = PlannerAttemptService(db_session).list_for_run("run_manual_skip_planner")
+    assert attempts[0].diagnostics["planner_mode_used"] == "manual"

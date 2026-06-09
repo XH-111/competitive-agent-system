@@ -13,8 +13,11 @@ from app.agents.evidence_analyst import EvidenceAnalystAgent
 from app.agents.final_report import FinalReportAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import MAX_REWORK, QaAgent
+from app.agents.report_agent import ReportAgent
 from app.agents.report_writer import ReportWriterAgent
 from app.schemas import (
+    AnalysisDimension,
+    AnalysisDimensionPlan,
     AnalystInput,
     CollectorInput,
     CollectorOutput,
@@ -29,11 +32,14 @@ from app.schemas import (
     PlannerInput,
     PlannerIncrementalInput,
     PlannerCollectionPlan,
+    PlannerDownstreamGuidance,
     PlannerOutput,
+    PlannerSummary,
     QaInput,
     QaResult,
     ReworkContext,
     ReportWriterInput,
+    ReportAgentInput,
     ReworkInstruction,
     ReworkHistoryItem,
     Task,
@@ -73,6 +79,7 @@ class LangGraphWorkflowRunner:
         self.planner = PlannerAgent(self.trace_service)
         self.collector = CollectorAgent(self.trace_service)
         self.evidence_analyst = EvidenceAnalystAgent(self.trace_service)
+        self.report_agent = ReportAgent(self.trace_service)
         self.analyst = AnalystAgent(self.trace_service)
         self.writer = ReportWriterAgent(self.trace_service)
         self.qa = QaAgent(self.trace_service)
@@ -97,6 +104,7 @@ class LangGraphWorkflowRunner:
         debug_stage: str | None = None,
         collection_plan_override: PlannerCollectionPlan | None = None,
         collector_config: CollectorConfig | None = None,
+        skip_initial_planner: bool = False,
         manual_evidence_selection_enabled: bool = False,
         selected_evidence_ids: list[str] | None = None,
         source_run_id: str | None = None,
@@ -148,6 +156,7 @@ class LangGraphWorkflowRunner:
             "max_rework": MAX_REWORK,
             "planner_output": None,
             "collection_plan_override": collection_plan_override,
+            "skip_initial_planner": skip_initial_planner,
             "manual_collection_plan_override_used": False,
             "collector_config": self._default_collector_config(task, collector_config),
             "collector_config_source": "request_override" if collector_config else f"task_strategy:{task.collection_strategy_mode}",
@@ -157,6 +166,7 @@ class LangGraphWorkflowRunner:
             "analyst_output": None,
             "evidence_analyst_output": None,
             "evidence_analyst_rework_context": None,
+            "report_agent_output": None,
             "report_writer_output": None,
             "qa_output": None,
             "final_report_output": None,
@@ -321,6 +331,7 @@ class LangGraphWorkflowRunner:
             "analyst_output": None,
             "evidence_analyst_output": None,
             "evidence_analyst_rework_context": None,
+            "report_agent_output": None,
             "report_writer_output": None,
             "qa_output": None,
             "final_report_output": None,
@@ -522,6 +533,12 @@ class LangGraphWorkflowRunner:
 
         planner_output = collector_state["planner_output"]
         collector_output = collector_state["collector_output"]
+        set_workflow_progress(
+            task_run.run_id,
+            current_agent="QaAgent",
+            current_stage="evidence_qa",
+            message="正在检查 Evidence 覆盖状态...",
+        )
         self._qa_visual_delay(collector_state.get("collector_mode") == "web")
         qa_output = self.qa.run(
             QaInput(
@@ -553,6 +570,15 @@ class LangGraphWorkflowRunner:
             coverage_gap = EvidenceCoverageGap.model_validate(coverage_gap_payload)
             attempts = self.planner_attempt_service.list_for_run(task_run.run_id)
             base_attempt_no = attempts[-1].attempt_no if attempts else None
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="PlannerAgent",
+                current_stage="evidence_rework_planning",
+                message=f"正在规划第 {attempt_no} / {MAX_REWORK} 轮 Evidence 补采查询词...",
+                current=attempt_no,
+                total=MAX_REWORK,
+                unit="attempt",
+            )
             incremental_output = self.planner.plan_incremental_collection(
                 PlannerIncrementalInput(
                     task=self._current_task(collector_state),
@@ -568,8 +594,17 @@ class LangGraphWorkflowRunner:
                 status="fallback" if incremental_output.diagnostics.get("fallback_used") else "generated",
                 planner_output=incremental_output.incremental_collection_plan,
                 diagnostics=incremental_output.diagnostics,
-                rework_context=None,
+                rework_context={"source": "EvidenceQA", "coverage_gap": coverage_gap.model_dump(mode="json")},
                 raw_llm_response=incremental_output._raw_llm_response,
+            )
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="CollectorAgent",
+                current_stage="evidence_rework_collect",
+                message=f"正在执行第 {attempt_no} / {MAX_REWORK} 轮 Evidence 补采...",
+                current=attempt_no,
+                total=MAX_REWORK,
+                unit="attempt",
             )
             incremental_collector_output = self.collector.run(
                 CollectorInput(
@@ -610,6 +645,15 @@ class LangGraphWorkflowRunner:
                 "incremental": incremental_collector_output.diagnostics,
                 "merged_evidence_count": len(merged_evidence),
             }
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="QaAgent",
+                current_stage="evidence_rework_qa",
+                message="正在检查补采后的 merged Evidence...",
+                current=attempt_no,
+                total=MAX_REWORK,
+                unit="attempt",
+            )
             self._qa_visual_delay(collector_state.get("collector_mode") == "web")
             qa_output = self.qa.run(
                 QaInput(
@@ -638,6 +682,12 @@ class LangGraphWorkflowRunner:
             )
         collector_state = self.evidence_content_fetcher_node(collector_state)
         collector_state = self.evidence_analyst_node(collector_state)
+        set_workflow_progress(
+            task_run.run_id,
+            current_agent="QaAgent",
+            current_stage="analyst_qa",
+            message="正在检查问题回答覆盖状态...",
+        )
         self._qa_visual_delay(collector_state.get("collector_mode") == "web")
         analyst_qa_output = self.qa.run(
             QaInput(
@@ -668,6 +718,15 @@ class LangGraphWorkflowRunner:
             coverage_gap = EvidenceCoverageGap.model_validate(coverage_gap_payload)
             attempts = self.planner_attempt_service.list_for_run(task_run.run_id)
             base_attempt_no = attempts[-1].attempt_no if attempts else None
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="PlannerAgent",
+                current_stage="analyst_rework_planning",
+                message=f"正在规划第 {analyst_attempt_no} / {MAX_REWORK} 轮问题补采查询词...",
+                current=analyst_attempt_no,
+                total=MAX_REWORK,
+                unit="attempt",
+            )
             incremental_output = self.planner.plan_incremental_collection(
                 PlannerIncrementalInput(
                     task=self._current_task(collector_state),
@@ -685,6 +744,15 @@ class LangGraphWorkflowRunner:
                 diagnostics=incremental_output.diagnostics,
                 rework_context={"source": "AnalystQA", "coverage_gap": coverage_gap.model_dump(mode="json")},
                 raw_llm_response=incremental_output._raw_llm_response,
+            )
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="CollectorAgent",
+                current_stage="analyst_rework_collect",
+                message=f"正在执行第 {analyst_attempt_no} / {MAX_REWORK} 轮问题补采...",
+                current=analyst_attempt_no,
+                total=MAX_REWORK,
+                unit="attempt",
             )
             incremental_collector_output = self.collector.run(
                 CollectorInput(
@@ -728,12 +796,31 @@ class LangGraphWorkflowRunner:
             collector_state = {
                 **collector_state,
                 "evidence": [*collector_state.get("evidence", []), *incremental_evidence],
+                "evidence_content_fetch_target_ids": [item.evidence_id for item in incremental_evidence],
                 "collector_output": incremental_collector_output,
                 "evidence_analyst_rework_context": evidence_analyst_rework_context,
                 "node_sequence": [*collector_state["node_sequence"], "collector_incremental_analystqa"],
             }
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="EvidenceContentFetcher",
+                current_stage="analyst_rework_content_fetch",
+                message="正在抓取本轮补采 Evidence 正文...",
+                current=0,
+                total=len(incremental_evidence),
+                unit="evidence",
+            )
             collector_state = self.evidence_content_fetcher_node(collector_state)
             collector_state = self.evidence_analyst_node(collector_state)
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="QaAgent",
+                current_stage="analyst_rework_qa",
+                message="正在检查补采后的问题回答状态...",
+                current=analyst_attempt_no,
+                total=MAX_REWORK,
+                unit="attempt",
+            )
             self._qa_visual_delay(collector_state.get("collector_mode") == "web")
             analyst_qa_output = self.qa.run(
                 QaInput(
@@ -760,6 +847,10 @@ class LangGraphWorkflowRunner:
             )
         content_fetch_output = collector_state.get("evidence_content_fetch_output", {})
         evidence_analyst_output = collector_state.get("evidence_analyst_output")
+        if evidence_analyst_output is not None:
+            collector_state = self.report_agent_node({**collector_state, "rework_count": analyst_attempt_no})
+        report_agent_output = collector_state.get("report_agent_output")
+        saved_report = collector_state.get("report")
         elapsed = int((time.perf_counter() - started) * 1000)
         collector_failed = collector_error is not None
         frozen_dag = {
@@ -773,6 +864,7 @@ class LangGraphWorkflowRunner:
                 {"id": "EvidenceGate", "label": "legacy：调试模式不执行", "status": "skipped"},
                 {"id": "EvidenceContentFetcher", "label": "Tavily Extract 正文抽取", "status": "completed"},
                 {"id": "EvidenceAnalystAgent", "label": "逐条 Evidence 事实抽取", "status": "completed"},
+                {"id": "ReportAgent", "label": "基于 EvidenceAnalystOutput 生成最终报告", "status": "completed" if saved_report else "skipped"},
                 {"id": "PageFetcher", "label": "legacy，本链路不执行", "status": "skipped"},
                 {"id": "AnalystAgent", "label": "已冻结，不抽取结构化事实", "status": "skipped"},
                 {"id": "ReportWriterAgent", "label": "已冻结，不生成报告", "status": "skipped"},
@@ -784,6 +876,7 @@ class LangGraphWorkflowRunner:
                 {"source": "CollectorAgent", "target": "QaAgent", "label": "EvidenceQA"},
                 {"source": "QaAgent", "target": "EvidenceContentFetcher", "label": "正文抽取"},
                 {"source": "EvidenceContentFetcher", "target": "EvidenceAnalystAgent", "label": "事实抽取"},
+                {"source": "EvidenceAnalystAgent", "target": "ReportAgent", "label": "final_report"},
             ],
         }
         summary = {
@@ -833,6 +926,12 @@ class LangGraphWorkflowRunner:
                 if evidence_analyst_output
                 else None
             ),
+            "report_agent_output": (
+                report_agent_output.model_dump(mode="json")
+                if report_agent_output
+                else None
+            ),
+            "markdown_report": saved_report.markdown if saved_report else None,
             "incremental_collection_plan": (
                 incremental_output.incremental_collection_plan.model_dump(mode="json")
                 if incremental_output
@@ -863,6 +962,7 @@ class LangGraphWorkflowRunner:
                         "analyst_qa_incremental",
                     ]
                 ]
+                + (["report_agent"] if saved_report else [])
             ),
             "conditional_routes_taken": (
                 [
@@ -903,7 +1003,7 @@ class LangGraphWorkflowRunner:
             "evidence": collector_state.get("evidence", []),
             "qa_result": qa_result,
             "dag": frozen_dag,
-            "report": None,
+            "report": saved_report,
             "knowledge_hits": [],
             "workflow_summary": summary,
         }
@@ -963,25 +1063,44 @@ class LangGraphWorkflowRunner:
     def planner_node(self, state: WorkflowState) -> WorkflowState:
         task = state["task"]
         run_id = state.get("run_id")
-        try:
-            output = self.planner.run(
-                PlannerInput(task=task, run_id=run_id, retry_count=state["rework_count"])
-            )
-        except Exception as exc:
-            if run_id:
-                self.planner_attempt_service.save(
-                    run_id=run_id,
-                    status="failed",
-                    planner_output=None,
-                    diagnostics={
-                        "planner_mode_used": "failed",
-                        "fallback_used": False,
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    },
-                    rework_context=state.get("rework_context"),
+        manual_plan = state.get("collection_plan_override")
+        skip_initial_planner = bool(
+            state.get("skip_initial_planner")
+            and manual_plan
+            and state.get("planner_output") is None
+        )
+        set_workflow_progress(
+            run_id,
+            current_agent="PlannerAgent",
+            current_stage="manual_planning" if skip_initial_planner else "planning",
+            message=(
+                "正在加载人工规划..."
+                if skip_initial_planner
+                else "正在规划分析维度和采集查询词..."
+            ),
+        )
+        if skip_initial_planner:
+            output = self._manual_planner_output(task, manual_plan)
+        else:
+            try:
+                output = self.planner.run(
+                    PlannerInput(task=task, run_id=run_id, retry_count=state["rework_count"])
                 )
-            raise
+            except Exception as exc:
+                if run_id:
+                    self.planner_attempt_service.save(
+                        run_id=run_id,
+                        status="failed",
+                        planner_output=None,
+                        diagnostics={
+                            "planner_mode_used": "failed",
+                            "fallback_used": False,
+                            "error_type": type(exc).__name__,
+                            "error_message": str(exc),
+                        },
+                        rework_context=state.get("rework_context"),
+                    )
+                raise
         if run_id:
             self.planner_attempt_service.save(
                 run_id=run_id,
@@ -1021,8 +1140,80 @@ class LangGraphWorkflowRunner:
             "node_sequence": [*state["node_sequence"], "planner"],
         }
 
+    @staticmethod
+    def _manual_planner_output(task: Task, collection_plan: PlannerCollectionPlan) -> PlannerOutput:
+        dimension_items: dict[str, AnalysisDimension] = {}
+        for dimensions in collection_plan.collector_search_plan.values():
+            for dimension_id, item in dimensions.items():
+                existing = dimension_items.get(dimension_id)
+                goals = list(dict.fromkeys([
+                    *(existing.research_goals if existing else []),
+                    *item.research_goals,
+                ]))
+                dimension_items[dimension_id] = AnalysisDimension(
+                    dimension_id=dimension_id,
+                    label=item.label,
+                    description=f"人工规划的 {item.label} 调研维度",
+                    required=True,
+                    priority=len(dimension_items) + 1,
+                    keywords=[],
+                    query_templates=[],
+                    research_goals=goals,
+                    source="manual",
+                    metadata={"planning_source": "manual"},
+                )
+        selected_dimensions = list(dimension_items)
+        if not selected_dimensions:
+            raise ValueError("Manual planning requires at least one enabled dimension.")
+        diagnostics = {
+            "planner_mode_requested": "manual",
+            "planner_mode_used": "manual",
+            "planner_output_type": "full",
+            "llm_enabled": False,
+            "llm_call_attempted": False,
+            "llm_call_success": False,
+            "fallback_used": False,
+            "manual_planning": True,
+        }
+        return PlannerOutput(
+            planner_summary=PlannerSummary(
+                intent_classification="competitive_analysis",
+                product_name=task.product_name,
+                industry=task.industry,
+                region=task.region,
+                competitors=task.competitors,
+                product_type=task.industry,
+                task_goal=(
+                    f"围绕 {task.product_name}，按人工配置的维度分析 "
+                    f"{'、'.join(task.competitors)}，并生成有证据支撑的竞品报告。"
+                ),
+            ),
+            selected_dimensions=selected_dimensions,
+            analysis_dimension_plan=AnalysisDimensionPlan(
+                selected_dimensions=selected_dimensions,
+                dimension_plans=list(dimension_items.values()),
+                research_goals=list(dict.fromkeys(
+                    goal
+                    for item in dimension_items.values()
+                    for goal in item.research_goals
+                )),
+                metadata={"planning_source": "manual"},
+            ),
+            collection_plan=collection_plan,
+            downstream_guidance=PlannerDownstreamGuidance(),
+            missing_information=[],
+            planner_notes=["首轮规划由用户人工配置，未调用 Planner LLM。"],
+            diagnostics=diagnostics,
+        )
+
     def collector_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
+        set_workflow_progress(
+            state.get("run_id"),
+            current_agent="CollectorAgent",
+            current_stage="collect",
+            message="正在按采集计划搜索 Evidence...",
+        )
         if state["demo_mode"] == "qa_missing_evidence" and state["rework_count"] == 0:
             return {**state, "task": task, "evidence": [], "collector_output": None, "node_sequence": [*state["node_sequence"], "collector"]}
         output = self.collector.run(
@@ -1270,11 +1461,24 @@ class LangGraphWorkflowRunner:
 
     def evidence_content_fetcher_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
+        all_evidence = state.get("evidence", [])
+        target_ids = set(state.get("evidence_content_fetch_target_ids", []))
+        evidence_to_fetch = (
+            [item for item in all_evidence if item.evidence_id in target_ids]
+            if target_ids
+            else all_evidence
+        )
+        set_workflow_progress(
+            state.get("run_id"),
+            current_agent="EvidenceContentFetcher",
+            current_stage="content_fetch",
+            message="正在准备抓取 Evidence 正文...",
+        )
         content_fetch_max_per_dimension = content_fetch_max_per_dimension_for_strategy(
             task.collection_strategy_mode
         )
         evidence, output = self.evidence_content_fetcher.enrich(
-            state.get("evidence", []),
+            evidence_to_fetch,
             run_id=state.get("run_id"),
             enabled=state.get("collector_mode") == "web",
             max_per_competitor_dimension=content_fetch_max_per_dimension,
@@ -1293,17 +1497,34 @@ class LangGraphWorkflowRunner:
             ),
         )
         output["content_fetch_scope"] = (
-            "limited_per_competitor_dimension"
-            if content_fetch_max_per_dimension
-            else "all_eligible_evidence"
+            "incremental_evidence_only"
+            if target_ids
+            else (
+                "limited_per_competitor_dimension"
+                if content_fetch_max_per_dimension
+                else "all_eligible_evidence"
+            )
         )
         output["collection_strategy_mode"] = task.collection_strategy_mode
-        saved_evidence = self.evidence_service.save_many(task.task_id, evidence, run_id=state.get("run_id"))
+        if target_ids:
+            enriched_by_id = {item.evidence_id: item for item in evidence}
+            merged_evidence = [
+                enriched_by_id.get(item.evidence_id, item)
+                for item in all_evidence
+            ]
+        else:
+            merged_evidence = evidence
+        saved_evidence = self.evidence_service.save_many(
+            task.task_id,
+            merged_evidence,
+            run_id=state.get("run_id"),
+        )
         self._save_evidence_content_fetcher_trace(task.task_id, state.get("run_id"), output, state["rework_count"])
         return {
             **state,
             "task": task,
             "evidence": saved_evidence,
+            "evidence_content_fetch_target_ids": [],
             "evidence_content_fetch_output": output,
             "node_sequence": [*state["node_sequence"], "evidence_content_fetcher"],
         }
@@ -1321,6 +1542,12 @@ class LangGraphWorkflowRunner:
 
     def evidence_analyst_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
+        set_workflow_progress(
+            state.get("run_id"),
+            current_agent="EvidenceAnalystAgent",
+            current_stage="answer_questions",
+            message="正在准备基于 Evidence 回答规划问题...",
+        )
         output = self.evidence_analyst.run(
             EvidenceAnalystInput(
                 task=task,
@@ -1386,8 +1613,53 @@ class LangGraphWorkflowRunner:
             "node_sequence": [*state["node_sequence"], "report_writer"],
         }
 
+    def report_agent_node(self, state: WorkflowState) -> WorkflowState:
+        task = self._current_task(state)
+        set_workflow_progress(
+            state.get("run_id"),
+            current_agent="ReportAgent",
+            current_stage="report_generation",
+            message="正在生成结构化竞品分析报告...",
+        )
+        evidence_analyst_output = state.get("evidence_analyst_output")
+        if evidence_analyst_output is None:
+            return {
+                **state,
+                "task": task,
+                "report_agent_output": None,
+                "report": None,
+                "node_sequence": [*state["node_sequence"], "report_agent"],
+            }
+        output = self.report_agent.run(
+            ReportAgentInput(
+                task=task,
+                run_id=state.get("run_id"),
+                evidence_analyst_output=evidence_analyst_output,
+                evidence=state.get("evidence", []),
+                selected_dimensions=state.get("selected_dimensions", []),
+                collection_plan=state.get("collection_plan"),
+                retry_count=state.get("rework_count", 0),
+            )
+        )
+        saved_report = self.report_service.save_report(output.report, run_id=state.get("run_id"))
+        output.report = saved_report
+        output.markdown_report = saved_report.markdown
+        return {
+            **state,
+            "task": task,
+            "report_agent_output": output,
+            "report": saved_report,
+            "node_sequence": [*state["node_sequence"], "report_agent"],
+        }
+
     def qa_node(self, state: WorkflowState) -> WorkflowState:
         task = self._current_task(state)
+        set_workflow_progress(
+            state.get("run_id"),
+            current_agent="QaAgent",
+            current_stage="qa",
+            message="正在执行质量检查...",
+        )
         output = self.qa.run(
             QaInput(
                 task=task,
@@ -1789,6 +2061,11 @@ class LangGraphWorkflowRunner:
             "evidence_analyst_output": (
                 state.get("evidence_analyst_output").model_dump(mode="json")
                 if state.get("evidence_analyst_output")
+                else None
+            ),
+            "report_agent_output": (
+                state.get("report_agent_output").model_dump(mode="json")
+                if state.get("report_agent_output")
                 else None
             ),
             "page_fetch_output": state.get("page_fetch_output", {}),

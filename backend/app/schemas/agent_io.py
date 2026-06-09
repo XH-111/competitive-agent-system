@@ -42,7 +42,7 @@ class PlannerOutput(BaseModel):
     _raw_llm_response: str | None = PrivateAttr(default=None)
 
     planner_summary: PlannerSummary
-    selected_dimensions: list[str] = Field(min_length=7)
+    selected_dimensions: list[str] = Field(min_length=1)
     analysis_dimension_plan: AnalysisDimensionPlan
     collection_plan: PlannerCollectionPlan
     downstream_guidance: PlannerDownstreamGuidance
@@ -146,6 +146,46 @@ class ReportWriterOutput(BaseModel):
     draft_report: dict | None = None
     writer_mode: Literal["mock", "llm"] = "mock"
     llm_fallback_reason: str | None = None
+    diagnostics: dict = Field(default_factory=dict)
+
+
+class ReportAgentInput(BaseModel):
+    task: Task
+    run_id: str | None = None
+    evidence_analyst_output: EvidenceAnalystOutput
+    evidence: list[Evidence] = Field(default_factory=list)
+    selected_dimensions: list[str] = Field(default_factory=list)
+    collection_plan: PlannerCollectionPlan | None = None
+    retry_count: int = 0
+
+
+class ReportSection(BaseModel):
+    section_id: str
+    section_no: str
+    title: str
+    summary: str
+    competitor_analyses: list[dict] = Field(default_factory=list)
+    comparison: str | None = None
+    limitations: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+
+
+class ReportEvidenceRef(BaseModel):
+    evidence_id: str
+    title: str | None = None
+    url: str | None = None
+    source_domain: str | None = None
+    source_quality: str | None = None
+    snippet: str | None = None
+
+
+class ReportAgentOutput(BaseModel):
+    report: Report
+    report_title: str
+    sections: list[ReportSection] = Field(default_factory=list)
+    evidence_refs: dict[str, ReportEvidenceRef] = Field(default_factory=dict)
+    markdown_report: str
     diagnostics: dict = Field(default_factory=dict)
 
 

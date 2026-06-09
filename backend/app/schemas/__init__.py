@@ -79,6 +79,10 @@ from app.schemas.agent_io import (
     QaOutput,
     ReportWriterInput,
     ReportWriterOutput,
+    ReportAgentInput,
+    ReportAgentOutput,
+    ReportEvidenceRef,
+    ReportSection,
 )
 from app.schemas.workflow_state import ConditionalRoute, WorkflowEngine, WorkflowState
 
@@ -158,6 +162,10 @@ __all__ = [
     "QaOutput",
     "ReportWriterInput",
     "ReportWriterOutput",
+    "ReportAgentInput",
+    "ReportAgentOutput",
+    "ReportEvidenceRef",
+    "ReportSection",
     "ConditionalRoute",
     "WorkflowEngine",
     "WorkflowState",

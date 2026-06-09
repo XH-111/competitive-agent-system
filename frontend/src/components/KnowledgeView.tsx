@@ -176,12 +176,6 @@ function LegacyKnowledgeCard({
 
       <EvidenceButtons evidenceIds={evidenceIds} evidenceById={evidenceById} onEvidenceIdsSelect={onEvidenceIdsSelect} />
 
-      <details className="mt-2 rounded border border-line bg-white">
-        <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-600">查看原始 JSON</summary>
-        <pre className="max-h-56 overflow-auto whitespace-pre-wrap border-t border-line p-3 text-xs leading-5">
-          {JSON.stringify(value, null, 2)}
-        </pre>
-      </details>
     </div>
   );
 }

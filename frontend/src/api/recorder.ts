@@ -49,7 +49,7 @@ type StageSection = {
 };
 
 const DEFAULT_SNAPSHOT: RecorderSnapshot = {
-  enabled: true,
+  enabled: false,
   records: [],
 };
 

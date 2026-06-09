@@ -1,9 +1,7 @@
-import { Play } from "lucide-react";
+import { Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "./api/client";
-import { apiRecorder, getApiRecorderSnapshot } from "./api/recorder";
 import { DagView } from "./components/DagView";
-import { DemoGuide } from "./components/DemoGuide";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { KnowledgeHitsPanel } from "./components/KnowledgeHitsPanel";
 import { KnowledgeView } from "./components/KnowledgeView";
@@ -13,7 +11,7 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
-import type { CollectionPlan, CollectorConfig, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, DimensionResult, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Task, TaskRun, TraceRecord, WorkflowProgress, WriterDiagnostics, WorkflowSummary } from "./types";
+import type { CollectionPlan, CollectorConfig, CollectorDiagnostics, CollectorStatus, Dag, DimensionResult, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Task, TaskRun, TraceRecord, WorkflowProgress, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
 type EditableCollectionPlanItem = {
@@ -45,13 +43,13 @@ export default function App() {
   const [selectedFact, setSelectedFact] = useState<DimensionResult>();
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [demoMode, setDemoMode] = useState<DemoMode>("normal");
-  const [autoRework, setAutoRework] = useState(true);
-  const [writerMode, setWriterMode] = useState<"mock" | "llm">("llm");
+  const demoMode = "normal";
+  const autoRework = true;
+  const writerMode = "llm";
   const [collectorMode, setCollectorMode] = useState<"mock" | "web">("web");
-  const [analystMode, setAnalystMode] = useState<"mock" | "evidence" | "llm">("llm");
-  const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("langgraph");
-  const [runStage, setRunStage] = useState<"full" | "planner_only" | "collector_only">("full");
+  const analystMode = "llm";
+  const workflowEngine: "langgraph" = "langgraph";
+  const runStage: "collector_only" = "collector_only";
   const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
   const [workflowProgress, setWorkflowProgress] = useState<WorkflowProgress>();
   const [plannerAttempts, setPlannerAttempts] = useState<PlannerAttempt[]>([]);
@@ -60,10 +58,10 @@ export default function App() {
   const [llmTesting, setLlmTesting] = useState(false);
   const [searchTesting, setSearchTesting] = useState(false);
   const [searchTestResult, setSearchTestResult] = useState<SearchTestResult>();
-  const [apiRecorderSnapshot, setApiRecorderSnapshot] = useState(getApiRecorderSnapshot());
   const [useCollectionPlanOverride, setUseCollectionPlanOverride] = useState(false);
   const [editableCollectionPlan, setEditableCollectionPlan] = useState<EditableCollectionPlan>();
   const [collectionPlanOverrideError, setCollectionPlanOverrideError] = useState<string>();
+  const [manualPlanConfirmed, setManualPlanConfirmed] = useState(false);
   const [manualEvidenceSelectionEnabled, setManualEvidenceSelectionEnabled] = useState(false);
   const [manualSelectedEvidenceIds, setManualSelectedEvidenceIds] = useState<string[]>([]);
   const [manualEvidenceSelectionError, setManualEvidenceSelectionError] = useState<string>();
@@ -74,9 +72,6 @@ export default function App() {
     loadCollectorStatus();
   }, []);
 
-  useEffect(() => apiRecorder.subscribe(() => {
-    setApiRecorderSnapshot(getApiRecorderSnapshot());
-  }), []);
 
   async function loadLlmStatus() {
     await api.llmStatus().then(setLlmStatus).catch(() => setLlmStatus(undefined));
@@ -117,6 +112,8 @@ export default function App() {
       if (recoveredSummary.debug_stage && recoveredSummary.dag) {
         setDag(recoveredSummary.dag);
       }
+    } else {
+      setWorkflowSummary(undefined);
     }
     const qaRequest = activeRunId ? api.runQa(taskId, activeRunId) : api.qa(taskId);
     const reportRequest = activeRunId ? api.runReport(taskId, activeRunId) : api.report(taskId);
@@ -150,6 +147,10 @@ export default function App() {
     setSelectedEvidenceIds([]);
     setManualSelectedEvidenceIds([]);
     setManualEvidenceSelectionError(undefined);
+    setUseCollectionPlanOverride(false);
+    setEditableCollectionPlan(undefined);
+    setCollectionPlanOverrideError(undefined);
+    setManualPlanConfirmed(false);
     setWorkflowProgress(undefined);
     setWorkflowSummary(undefined);
     setPlannerAttempts([]);
@@ -157,6 +158,26 @@ export default function App() {
   }
 
   async function handleCreated(created: Task) {
+    setTask(created);
+    setDag(undefined);
+    setEvidence([]);
+    setQa(undefined);
+    setReport(undefined);
+    setTraces([]);
+    setRuns([]);
+    setSelectedRunId(undefined);
+    setSelectedFact(undefined);
+    setSelectedEvidenceIds([]);
+    setManualSelectedEvidenceIds([]);
+    setManualEvidenceSelectionEnabled(false);
+    setManualEvidenceSelectionError(undefined);
+    setUseCollectionPlanOverride(false);
+    setEditableCollectionPlan(undefined);
+    setCollectionPlanOverrideError(undefined);
+    setManualPlanConfirmed(false);
+    setWorkflowProgress(undefined);
+    setWorkflowSummary(undefined);
+    setPlannerAttempts([]);
     await loadTasks(created.task_id);
   }
 
@@ -164,8 +185,12 @@ export default function App() {
     if (!task) return;
     let runOverrides: RunTaskOverrides | undefined;
     if (useCollectionPlanOverride) {
+      if (!manualPlanConfirmed) {
+        setCollectionPlanOverrideError("请先确认人工计划，再运行流程。");
+        return;
+      }
       try {
-        runOverrides = buildRunOverrides(editableCollectionPlan);
+        runOverrides = buildRunOverrides(editableCollectionPlan, task);
         setCollectionPlanOverrideError(undefined);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -173,24 +198,22 @@ export default function App() {
         return;
       }
     }
-    const effectiveRunStage = manualEvidenceSelectionEnabled && runStage === "full" ? "collector_only" : runStage;
-    const effectiveAutoRework = manualEvidenceSelectionEnabled && runStage === "full" ? false : autoRework;
-    const effectiveWorkflowEngine = effectiveRunStage !== "full" ? "langgraph" : workflowEngine;
+    const effectiveRunStage = runStage;
+    const effectiveAutoRework = autoRework;
+    const effectiveWorkflowEngine = workflowEngine;
     const knownRunIds = new Set(runs.map((item) => item.run_id));
     let stopProgressPolling = false;
     setBusy(true);
     setTraces([]);
     setQa(undefined);
+    setPlannerAttempts([]);
     setWorkflowProgress(undefined);
     setManualEvidenceSelectionError(undefined);
-    if (manualEvidenceSelectionEnabled && runStage === "full") {
-      setManualSelectedEvidenceIds([]);
-    }
     const progressPolling = pollRunProgress(
       task.task_id,
       knownRunIds,
       () => stopProgressPolling,
-      effectiveRunStage === "planner_only",
+      false,
     );
     try {
       const result = await api.runTask(
@@ -201,42 +224,32 @@ export default function App() {
         collectorMode,
         analystMode,
         effectiveWorkflowEngine,
-        effectiveRunStage === "full" ? undefined : effectiveRunStage,
+        effectiveRunStage,
         runOverrides,
       ) as PlannerRunResult;
       setWorkflowSummary(result.workflow_summary);
       const runId = result.workflow_summary?.run_id ?? result.report?.run_id;
-      if (effectiveRunStage !== "full") {
-        setDag(result.dag ?? result.workflow_summary?.dag);
-        setEvidence(effectiveRunStage === "collector_only" ? (result.evidence ?? result.collector_output?.evidence ?? []) : []);
-        setQa(effectiveRunStage === "collector_only" ? (result.qa_result ?? undefined) : undefined);
-        setReport(undefined);
-        setSelectedFact(undefined);
-        setSelectedEvidenceIds([]);
-        const [nextTasks, nextRuns, nextTraces] = await Promise.all([
-          api.listTasks(),
-          api.runs(task.task_id),
-          runId ? api.runTraces(task.task_id, runId) : Promise.resolve([]),
-        ]);
-        setTasks(nextTasks);
-        setTask(nextTasks.find((item) => item.task_id === task.task_id) ?? task);
-        setRuns(nextRuns);
-        setSelectedRunId(runId ?? undefined);
-        setTraces(nextTraces);
-      } else {
-        await loadTasks(task.task_id);
-        if (runId) {
-          await refresh(task.task_id, runId);
-        }
-      }
-      if (!result.report) {
-        setReport(undefined);
-        setSelectedFact(undefined);
-        setSelectedEvidenceIds([]);
-      }
-      if (demoMode === "qa_missing_evidence") {
-        setEvidence([]);
-      }
+      setDag(result.dag ?? result.workflow_summary?.dag);
+      setEvidence(result.evidence ?? result.collector_output?.evidence ?? []);
+      setQa(result.qa_result ?? undefined);
+      setReport(result.report ?? undefined);
+      setSelectedFact(
+        result.report?.dimension_results?.[0]
+        ?? result.report?.json_report.dimension_results?.[0]
+      );
+      setSelectedEvidenceIds([]);
+      const [nextTasks, nextRuns, nextTraces, nextPlannerAttempts] = await Promise.all([
+        api.listTasks(),
+        api.runs(task.task_id),
+        runId ? api.runTraces(task.task_id, runId) : Promise.resolve([]),
+        runId ? api.runPlannerAttempts(task.task_id, runId).catch(() => []) : Promise.resolve([]),
+      ]);
+      setTasks(nextTasks);
+      setTask(nextTasks.find((item) => item.task_id === task.task_id) ?? task);
+      setRuns(nextRuns);
+      setSelectedRunId(runId ?? undefined);
+      setTraces(nextTraces);
+      setPlannerAttempts(nextPlannerAttempts);
     } finally {
       stopProgressPolling = true;
       await progressPolling;
@@ -258,7 +271,7 @@ export default function App() {
     if (useCollectionPlanOverride) {
       try {
         runOverrides = {
-          ...buildRunOverrides(editableCollectionPlan),
+          ...buildRunOverrides(editableCollectionPlan, task),
           ...runOverrides,
         };
         setCollectionPlanOverrideError(undefined);
@@ -283,7 +296,6 @@ export default function App() {
         undefined,
         runOverrides,
       ) as PlannerRunResult;
-      setRunStage("full");
       setWorkflowSummary(result.workflow_summary);
       const runId = result.workflow_summary?.run_id ?? result.run_id ?? selectedRunId;
       await refresh(task.task_id, runId);
@@ -310,8 +322,12 @@ export default function App() {
           ?? nextRuns.find((item) => item.status === "running")?.run_id;
         if (activeRunId) {
           setSelectedRunId(activeRunId);
-          const nextTraces = await api.runTraces(taskId, activeRunId);
+          const [nextTraces, nextPlannerAttempts] = await Promise.all([
+            api.runTraces(taskId, activeRunId),
+            api.runPlannerAttempts(taskId, activeRunId).catch(() => []),
+          ]);
           setTraces(nextTraces);
+          setPlannerAttempts(nextPlannerAttempts);
           await api.runProgress(taskId, activeRunId).then(setWorkflowProgress).catch(() => undefined);
           if (!plannerOnly) {
             await api.runQa(taskId, activeRunId).then(setQa).catch(() => undefined);
@@ -344,7 +360,6 @@ export default function App() {
     }
   }
 
-  const writerDiagnostics = report?.json_report.writer_diagnostics as WriterDiagnostics | undefined;
   const collectorDiagnostics = latestCollectorDiagnostics(traces) ?? workflowSummary?.collector_diagnostics;
   const llmStatusLabel = !llmStatus
     ? "LLM 状态未知"
@@ -355,18 +370,6 @@ export default function App() {
         : llmStatus.last_check_status === "failed"
           ? "测试失败"
           : "已配置，未测试";
-  const writerDiagnosticMessage = writerDiagnostics
-    ? writerDiagnostics.fallback_used
-      ? `已选择 ${writerDiagnostics.writer_mode_requested ?? writerMode} ReportWriter，但本次使用 ${writerDiagnostics.writer_mode_used ?? "mock"}。原因：${writerDiagnostics.llm_fallback_reason ?? writerDiagnostics.llm_error_message ?? "未知"}`
-      : writerDiagnostics.writer_mode_used === "llm"
-        ? `LLM ReportWriter 调用成功，耗时 ${writerDiagnostics.llm_elapsed_time_ms ?? 0}ms，模型：${writerDiagnostics.llm_model ?? "未记录"}。`
-        : `本次使用 ${writerDiagnostics.writer_mode_used ?? "mock"} ReportWriter。`
-    : undefined;
-  const collectorDiagnosticMessage = collectorDiagnostics?.fallback_used
-    ? `Web Collector 调用失败，本次 fallback 到 Mock Evidence。原因：${collectorDiagnostics.fallback_reason ?? "未知"}`
-    : collectorDiagnostics?.collector_mode_used === "web"
-      ? `Web Collector 调用成功，采集 Evidence ${collectorDiagnostics.evidence_count ?? 0} 条。`
-      : undefined;
   const searchStatusLabel = !collectorStatus
     ? "搜索状态未知"
     : !collectorStatus.api_key_configured
@@ -376,11 +379,6 @@ export default function App() {
         : searchTestResult && !searchTestResult.success
           ? "测试失败"
           : "已配置";
-  const searchTestMessage = searchTestResult
-    ? searchTestResult.success
-      ? `搜索工具已连接，返回 ${searchTestResult.result_count} 条结果。`
-      : `搜索工具调用失败：${searchTestResult.error_type ?? searchTestResult.error_message ?? "未知错误"}，本次 Web Collector 会 fallback 到 Mock。`
-    : undefined;
 
   return (
     <main className="min-h-screen">
@@ -388,17 +386,144 @@ export default function App() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-semibold">CIS 多 Agent 竞品分析系统</h1>
-            <p className="text-sm text-slate-300">基于结构化 Schema、证据绑定、QA 打回和 Trace 回放的竞品分析 Demo</p>
+            <p className="text-sm text-slate-300">基于 LangGraph、证据绑定、增量补采和质量检查的竞品分析流程</p>
           </div>
           {task && <div className="flex items-center gap-3 text-sm"><span>当前任务：{task.task_id}</span><Pill value={task.status} /></div>}
         </div>
       </header>
 
       <div className="p-4">
-        <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
+        <div className="mb-4">
           <TaskForm onCreated={handleCreated} />
-          <DemoGuide />
         </div>
+
+        {task && (
+          <section className="mb-4 border border-line bg-white p-4 text-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold">任务规划方式</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  自动规划调用 Planner LLM；手动规划直接使用你配置的维度、调研问题和查询词。
+                </p>
+              </div>
+              <div className="inline-flex border border-line bg-panel p-1">
+                <button
+                  type="button"
+                  className={`px-3 py-1.5 text-sm font-semibold ${
+                    !useCollectionPlanOverride ? "bg-white text-accent shadow-sm" : "text-slate-600"
+                  }`}
+                  onClick={() => {
+                    setUseCollectionPlanOverride(false);
+                    setCollectionPlanOverrideError(undefined);
+                    setManualPlanConfirmed(false);
+                  }}
+                >
+                  自动规划
+                </button>
+                <button
+                  type="button"
+                  className={`px-3 py-1.5 text-sm font-semibold ${
+                    useCollectionPlanOverride ? "bg-white text-accent shadow-sm" : "text-slate-600"
+                  }`}
+                  onClick={() => {
+                    setUseCollectionPlanOverride(true);
+                    setEditableCollectionPlan((current) => current ?? emptyEditablePlan(task));
+                    setCollectionPlanOverrideError(undefined);
+                    setManualPlanConfirmed(false);
+                  }}
+                >
+                  手动规划
+                </button>
+              </div>
+            </div>
+
+            {useCollectionPlanOverride && (
+              <div className="mt-4 border-t border-line pt-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-xs text-slate-600">
+                    首轮不会调用 Planner LLM；人工计划会保存为第 1 轮，后续 QA 仍可调用 Planner 生成增量补采词。
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="border border-line bg-white px-3 py-1.5 text-xs font-semibold"
+                      onClick={() => {
+                        const plan = workflowSummary?.collection_plan ?? workflowSummary?.planner_collection_plan_original;
+                        if (plan) {
+                          setEditableCollectionPlan(
+                            editablePlanFromCollectionPlan(plan, collectorDefaultsForTask(task)),
+                          );
+                          setCollectionPlanOverrideError(undefined);
+                          setManualPlanConfirmed(false);
+                        }
+                      }}
+                    >
+                      使用当前计划填充
+                    </button>
+                    <button
+                      type="button"
+                      className="border border-line bg-white px-3 py-1.5 text-xs font-semibold"
+                      onClick={() => {
+                        setEditableCollectionPlan(emptyEditablePlan(task));
+                        setCollectionPlanOverrideError(undefined);
+                        setManualPlanConfirmed(false);
+                      }}
+                    >
+                      新建空白计划
+                    </button>
+                  </div>
+                </div>
+                <CollectionPlanEditor
+                  value={editableCollectionPlan}
+                  defaults={collectorDefaultsForTask(task)}
+                  disabled={manualPlanConfirmed}
+                  onChange={(nextPlan) => {
+                    setEditableCollectionPlan(nextPlan);
+                    setCollectionPlanOverrideError(undefined);
+                    setManualPlanConfirmed(false);
+                  }}
+                />
+                <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-line pt-3">
+                  {manualPlanConfirmed ? (
+                    <>
+                      <span className="mr-auto text-xs font-semibold text-success">人工计划已确认</span>
+                      <button
+                        type="button"
+                        className="border border-line bg-white px-3 py-2 text-sm font-semibold"
+                        onClick={() => setManualPlanConfirmed(false)}
+                      >
+                        继续编辑
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="bg-accent px-4 py-2 text-sm font-semibold text-white"
+                      onClick={() => {
+                        try {
+                          buildRunOverrides(editableCollectionPlan, task);
+                          setManualPlanConfirmed(true);
+                          setCollectionPlanOverrideError(undefined);
+                        } catch (error) {
+                          setCollectionPlanOverrideError(
+                            error instanceof Error ? error.message : String(error),
+                          );
+                        }
+                      }}
+                    >
+                      确认人工计划
+                    </button>
+                  )}
+                </div>
+                {collectionPlanOverrideError && (
+                  <div className="mt-2 border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
+                    手动规划配置错误：{collectionPlanOverrideError}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
 
         <div className="mb-4">
           <TaskList tasks={tasks} currentTaskId={task?.task_id} onSelect={selectTask} />
@@ -446,63 +571,15 @@ export default function App() {
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <select
             className="rounded border border-line bg-white px-3 py-2 text-sm"
-            value={demoMode}
-            onChange={(event) => setDemoMode(event.target.value as DemoMode)}
-          >
-            <option value="normal">正常流程</option>
-            <option value="qa_missing_evidence">QA 失败：缺少证据</option>
-            <option value="qa_invalid_extraction">QA 失败：抽取冲突</option>
-            <option value="qa_bad_report">QA 失败：报告格式错误</option>
-          </select>
-          <select
-            className="rounded border border-line bg-white px-3 py-2 text-sm"
-            value={writerMode}
-            onChange={(event) => setWriterMode(event.target.value as "mock" | "llm")}
-          >
-            <option value="mock">Mock ReportWriter</option>
-            <option value="llm">LLM ReportWriter</option>
-          </select>
-          <select
-            className="rounded border border-line bg-white px-3 py-2 text-sm"
             value={collectorMode}
             onChange={(event) => setCollectorMode(event.target.value as "mock" | "web")}
           >
-            <option value="mock">Mock Collector</option>
-            <option value="web">Web Collector</option>
+            <option value="web">联网采集</option>
+            <option value="mock">本地备用采集</option>
           </select>
-          <select
-            className="rounded border border-line bg-white px-3 py-2 text-sm"
-            value={analystMode}
-            onChange={(event) => setAnalystMode(event.target.value as "mock" | "evidence" | "llm")}
-          >
-            <option value="mock">Mock Analyst</option>
-            <option value="evidence">Evidence-based Analyst</option>
-            <option value="llm">LLM Analyst</option>
-          </select>
-          <select
-            className="rounded border border-line bg-white px-3 py-2 text-sm"
-            value={workflowEngine}
-            onChange={(event) => setWorkflowEngine(event.target.value as "custom" | "langgraph")}
-          >
-            <option value="custom">Custom Runner</option>
-            <option value="langgraph">LangGraph Runner</option>
-          </select>
-          <select
-            className="rounded border border-line bg-white px-3 py-2 text-sm"
-            value={runStage}
-            onChange={(event) => {
-              const nextStage = event.target.value as "full" | "planner_only" | "collector_only";
-              setRunStage(nextStage);
-              if (nextStage !== "full") {
-                setWorkflowEngine("langgraph");
-                setAutoRework(false);
-              }
-            }}
-          >
-            <option value="full">完整工作流</option>
-            <option value="planner_only">只测试 Planner</option>
-            <option value="collector_only">测试证据采集链路</option>
-          </select>
+          <span className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold text-accent">
+            LangGraph 主流程
+          </span>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
           </span>
@@ -526,221 +603,24 @@ export default function App() {
             {searchTesting ? "测试中..." : "测试搜索连接"}
           </button>
           <button onClick={run} disabled={!task || busy} className="inline-flex items-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50">
-            <Play size={16} /> {runStage === "planner_only"
-              ? "只运行 PlannerAgent"
-              : runStage === "collector_only"
-                ? "运行证据采集链路"
-                : "运行 Demo 工作流"}
+            <Play size={16} /> 运行竞品分析流程
           </button>
-          <label className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm">
-            <input
-              type="checkbox"
-              checked={autoRework}
-              onChange={(event) => setAutoRework(event.target.checked)}
-              disabled={runStage !== "full"}
-            />
-            auto_rework={autoRework ? "true" : "false"}
-          </label>
-          <label className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm">
-            <input
-              type="checkbox"
-              checked={manualEvidenceSelectionEnabled}
-              onChange={(event) => {
-                setManualEvidenceSelectionEnabled(event.target.checked);
-                setManualEvidenceSelectionError(undefined);
-                setManualSelectedEvidenceIds([]);
-              }}
-              disabled={runStage !== "full"}
-            />
-            手动选择 Evidence
-          </label>
-          <span className="text-sm text-slate-600">执行所选 Mock Agent DAG，并生成 DAG、报告、证据、QA 和 Trace。</span>
+          <span className="text-sm text-slate-600">执行当前主流程，并生成 Evidence、问题回答、结构化报告、QA 和 Trace。</span>
         </div>
 
-        <section className="mb-4 rounded border border-line bg-white p-3 text-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <label className="inline-flex items-center gap-2 font-semibold">
-              <input
-                type="checkbox"
-                checked={useCollectionPlanOverride}
-                onChange={(event) => setUseCollectionPlanOverride(event.target.checked)}
-              />
-              手动覆盖 Collector collection_plan
-            </label>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
-                onClick={() => {
-                  const plan = workflowSummary?.collection_plan ?? workflowSummary?.planner_collection_plan_original;
-                  if (plan) {
-                    setEditableCollectionPlan(editablePlanFromCollectionPlan(plan));
-                    setCollectionPlanOverrideError(undefined);
-                  }
-                }}
-              >
-                用当前计划填充
-              </button>
-              <button
-                type="button"
-                className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
-                onClick={() => {
-                  setEditableCollectionPlan(undefined);
-                  setCollectionPlanOverrideError(undefined);
-                }}
-              >
-                清空
-              </button>
-            </div>
-          </div>
-          <p className="mt-2 text-xs text-slate-500">
-            启用后，本次运行会让 Collector 和 EvidenceQA 使用这里确认过的维度和查询词。Planner 原始输出仍会保存，便于对比。
-          </p>
-          {useCollectionPlanOverride && (
-            <div className="mt-3">
-              <CollectionPlanEditor
-                value={editableCollectionPlan}
-                onChange={(nextPlan) => {
-                  setEditableCollectionPlan(nextPlan);
-                  setCollectionPlanOverrideError(undefined);
-                }}
-              />
-              {collectionPlanOverrideError && (
-                <div className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
-                  collection_plan 配置错误：{collectionPlanOverrideError}
-                </div>
-              )}
-              {workflowSummary?.manual_collection_plan_override_used && (
-                <div className="mt-2 rounded border border-green-200 bg-green-50 px-3 py-2 text-xs text-success">
-                  上次运行已使用手动 collection_plan override。
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-
-        <div className="mb-4 flex flex-wrap items-center gap-3 rounded border border-dashed border-line bg-white p-3 text-sm">
-          <span className="font-semibold">API Recorder</span>
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={apiRecorderSnapshot.enabled}
-              onChange={(event) => apiRecorder.setEnabled(event.target.checked)}
-            />
-            enabled
-          </label>
-          <span>recorded: {apiRecorderSnapshot.records.length}</span>
-          <button
-            type="button"
-            onClick={() => apiRecorder.clear()}
-            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
-          >
-            Clear Recording
-          </button>
-          <button
-            type="button"
-            onClick={() => apiRecorder.exportRaw()}
-            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
-          >
-            Export Raw JSON
-          </button>
-          <button
-            type="button"
-            onClick={() => apiRecorder.exportGroupedMarkdown()}
-            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
-          >
-            Export Grouped Markdown
-          </button>
-          <span className="text-xs text-slate-500">
-            Records frontend request/response inputs and outputs during your manual session.
-          </span>
-        </div>
-
-        {(llmStatus || collectorStatus || writerDiagnosticMessage || collectorDiagnosticMessage || workflowSummary) && (
-          <div className="mb-4 rounded border border-line bg-white p-3 text-sm">
-            <div className="flex flex-wrap gap-x-5 gap-y-2">
-              <span>LLM Provider：{llmStatus?.llm_provider ?? "未读取"}</span>
-              <span>模型：{llmStatus?.llm_model ?? "未读取"}</span>
-              <span>Base URL：{llmStatus?.base_url_configured ? "已配置" : "未配置"}</span>
-              <span>API Key：{llmStatus?.api_key_configured ? "已配置" : "未配置"}</span>
-              <span>状态：{llmStatusLabel}</span>
-              <span>Search Provider：{collectorStatus?.search_provider ?? "未读取"}</span>
-              <span>Search API Key：{collectorStatus?.api_key_configured ? "已配置" : "未配置"}</span>
-              <span>Web Collector：{collectorStatus?.enabled ? "已启用" : "未启用"}</span>
-              <span>搜索状态：{searchStatusLabel}</span>
-            </div>
-            {llmStatus?.last_error && <div className="mt-2 text-danger">测试错误：{llmStatus.last_error}</div>}
-            {searchTestMessage && (
-              <div className={`mt-2 rounded border px-3 py-2 ${searchTestResult?.success ? "border-green-300 bg-green-50 text-success" : "border-amber-300 bg-amber-50 text-warning"}`}>
-                {searchTestMessage}
-              </div>
-            )}
-            {writerDiagnostics && (
-              <div className="mt-2 grid gap-2 md:grid-cols-4">
-                <span>requested：{writerDiagnostics.writer_mode_requested ?? "-"}</span>
-                <span>used：{writerDiagnostics.writer_mode_used ?? "-"}</span>
-                <span>fallback：{writerDiagnostics.fallback_used ? "true" : "false"}</span>
-                <span>llm_call：{writerDiagnostics.llm_call_attempted ? (writerDiagnostics.llm_call_success ? "success" : "failed") : "not_attempted"}</span>
-              </div>
-            )}
-            {workflowSummary && (
-              <div className="mt-2 rounded border border-line bg-panel px-3 py-2">
-                <div className="flex flex-wrap gap-x-5 gap-y-1">
-                  <span>Workflow Engine: {workflowSummary.workflow_engine_used ?? "-"}</span>
-                  <span>requested: {workflowSummary.workflow_engine_requested ?? "-"}</span>
-                  <span>rework_count: {workflowSummary.rework_count ?? 0}</span>
-                  <span>final_status: {workflowSummary.final_status ?? "-"}</span>
-                  {!!workflowSummary.selected_dimensions?.length && <span>planner dimensions: {workflowSummary.selected_dimensions.join(", ")}</span>}
-                  {workflowSummary.workflow_engine_used === "langgraph" && <span className="font-semibold text-accent">LangGraph Runner</span>}
-                </div>
-                {!!workflowSummary.downstream_guidance?.writer?.length && (
-                  <div className="mt-1 text-xs text-slate-600">
-                    writer guidance: {workflowSummary.downstream_guidance.writer.slice(0, 3).join(" | ")}
-                  </div>
-                )}
-                {!!workflowSummary.conditional_routes_taken?.length && (
-                  <div className="mt-1 text-xs text-slate-600">
-                    routes: {workflowSummary.conditional_routes_taken.map((item) => `${item.from_node ?? "qa"} -> ${item.to_node ?? "-"} (${item.reason ?? "qa"})`).join(" | ")}
-                  </div>
-                )}
-                {workflowSummary.evidence_gate_output && (
-                  <div className={`mt-2 rounded border px-3 py-2 text-xs ${workflowSummary.evidence_gate_output.evidence_gate_passed ? "border-green-300 bg-green-50 text-success" : "border-amber-300 bg-amber-50 text-warning"}`}>
-                    EvidenceGate: {workflowSummary.evidence_gate_output.evidence_gate_passed ? "通过" : "相关证据不足"}
-                    {!!workflowSummary.evidence_gate_output.missing_relevant_evidence_competitors?.length && (
-                      <span> | missing: {workflowSummary.evidence_gate_output.missing_relevant_evidence_competitors.join(", ")}</span>
-                    )}
-                    {workflowSummary.evidence_gate_output.suggested_route && <span> | route_to: {workflowSummary.evidence_gate_output.suggested_route}</span>}
-                  </div>
-                )}
-              </div>
-            )}
-            {writerDiagnosticMessage && (
-              <div className={`mt-2 rounded border px-3 py-2 ${writerDiagnostics?.fallback_used ? "border-amber-300 bg-amber-50 text-warning" : "border-green-300 bg-green-50 text-success"}`}>
-                {writerDiagnosticMessage}
-              </div>
-            )}
-            {collectorDiagnosticMessage && (
-              <div className={`mt-2 rounded border px-3 py-2 ${collectorDiagnostics?.fallback_used ? "border-amber-300 bg-amber-50 text-warning" : "border-green-300 bg-green-50 text-success"}`}>
-                {collectorDiagnosticMessage}
-                {!!collectorDiagnostics?.effective_queries_preview_by_competitor && (
-                  <div className="mt-1 text-xs">
-                    planner queries: {Object.entries(collectorDiagnostics.effective_queries_preview_by_competitor).map(([competitor, queries]) => `${competitor}: ${(queries ?? []).slice(0, 2).join(" / ")}`).join(" | ")}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        <PlannerSummaryCard workflowSummary={workflowSummary} collectorDiagnostics={collectorDiagnostics} plannerAttempts={plannerAttempts} />
         {!workflowSummary?.debug_stage && <KnowledgeHitsPanel workflowSummary={workflowSummary} />}
 
         <div className="space-y-4">
-          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? (runStage === "full" ? undefined : runStage)} progress={workflowProgress} />
+          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? runStage} progress={workflowProgress} />
+          <PlannerSummaryCard workflowSummary={workflowSummary} plannerAttempts={plannerAttempts} />
           {workflowSummary?.debug_stage === "collector_only" && (
             <>
-              <section className="rounded border border-line bg-white p-4">
-                <h2 className="mb-3 text-lg font-semibold">Collector 采集结果</h2>
+              <details className="rounded border border-line bg-white">
+                <summary className="cursor-pointer list-none p-4">
+                  <h2 className="text-lg font-semibold">Collector 采集结果</h2>
+                  <p className="mt-1 text-xs text-slate-500">点击展开采集统计</p>
+                </summary>
+                <div className="border-t border-line p-4">
                 <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
                   <DebugMetric label="搜索 query 总数" value={collectorDiagnostics?.query_count ?? 0} />
                   <DebugMetric label="Evidence 总数" value={collectorDiagnostics?.evidence_count ?? evidence.length} />
@@ -757,32 +637,8 @@ export default function App() {
                     <div className="mt-1">{collectorDiagnostics.failed_queries.join("、")}</div>
                   </div>
                 )}
-              </section>
-              {manualEvidenceSelectionEnabled && (
-                <section className="rounded border border-blue-200 bg-blue-50 p-4 text-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <div className="font-semibold text-accent">手动选择 Evidence 已开启</div>
-                      <div className="mt-1 text-xs text-slate-600">
-                        已选择 {manualSelectedEvidenceIds.length} / {evidence.length} 条。确认后将跳过 EvidenceGate，直接进入 Analyst / Report。
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50"
-                      disabled={busy || !manualSelectedEvidenceIds.length || !selectedRunId}
-                      onClick={continueWithSelectedEvidence}
-                    >
-                      使用选中 Evidence 继续
-                    </button>
-                  </div>
-                  {manualEvidenceSelectionError && (
-                    <div className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
-                      {manualEvidenceSelectionError}
-                    </div>
-                  )}
-                </section>
-              )}
+                </div>
+              </details>
               <EvidencePanel
                 evidence={evidence}
                 evidenceIds={selectedEvidenceIds}
@@ -795,31 +651,20 @@ export default function App() {
                 onEvidenceIdsSelect={setSelectedEvidenceIds}
               />
               <QaPanel qa={qa} workflowSummary={workflowSummary} />
-              <section className="rounded border border-line bg-white p-4">
-                <h2 className="mb-3 text-lg font-semibold">调试原始 JSON</h2>
-                <DebugJson title="PlannerOutput" value={workflowSummary.planner_output} />
-                <DebugJson title="CollectorOutput Schema" value={COLLECTOR_OUTPUT_SCHEMA} />
-                <DebugJson title="CollectorOutput" value={workflowSummary.collector_output} />
-                <DebugJson title="QaOutput" value={workflowSummary.qa_output} />
-              </section>
             </>
           )}
-          {!workflowSummary?.debug_stage && (
-            <>
-              <KnowledgeView report={report} evidence={evidence} onEvidenceIdsSelect={(ids) => {
-                setSelectedFact(undefined);
-                setSelectedEvidenceIds(ids);
-              }} />
-              {!report && evidence.length > 0 && (
-                <EvidencePanel evidence={evidence} evidenceIds={selectedEvidenceIds} />
-              )}
-              <ReportView report={report} evidence={evidence} competitors={task?.competitors} selectedFact={selectedFact} selectedEvidenceIds={selectedEvidenceIds} onSelect={(fact) => {
-                setSelectedFact(fact);
-                setSelectedEvidenceIds(fact.evidence_ids);
-              }} />
-              <QaPanel qa={qa} workflowSummary={workflowSummary} />
-            </>
+          <KnowledgeView report={report} evidence={evidence} onEvidenceIdsSelect={(ids) => {
+            setSelectedFact(undefined);
+            setSelectedEvidenceIds(ids);
+          }} />
+          {!report && evidence.length > 0 && (
+            <EvidencePanel evidence={evidence} evidenceIds={selectedEvidenceIds} />
           )}
+          <ReportView report={report} evidence={evidence} competitors={task?.competitors} selectedFact={selectedFact} selectedEvidenceIds={selectedEvidenceIds} onSelect={(fact) => {
+            setSelectedFact(fact);
+            setSelectedEvidenceIds(fact.evidence_ids);
+          }} />
+          <QaPanel qa={qa} workflowSummary={workflowSummary} />
           <TraceViewer traces={traces} />
         </div>
       </div>
@@ -827,7 +672,38 @@ export default function App() {
   );
 }
 
-function editablePlanFromCollectionPlan(plan: CollectionPlan): EditableCollectionPlan {
+type EditableCollectorDefaults = {
+  max_results_per_query: number;
+  max_evidence_per_dimension: number;
+  min_valid_evidence_required: number;
+};
+
+function collectorDefaultsForTask(task: Task): EditableCollectorDefaults {
+  if (task.collection_strategy_mode === "simple") {
+    return {
+      max_results_per_query: 3,
+      max_evidence_per_dimension: 5,
+      min_valid_evidence_required: 1,
+    };
+  }
+  if (task.collection_strategy_mode === "expert") {
+    return {
+      max_results_per_query: 8,
+      max_evidence_per_dimension: 20,
+      min_valid_evidence_required: 3,
+    };
+  }
+  return {
+    max_results_per_query: 5,
+    max_evidence_per_dimension: 10,
+    min_valid_evidence_required: 2,
+  };
+}
+
+function editablePlanFromCollectionPlan(
+  plan: CollectionPlan,
+  defaults: EditableCollectorDefaults,
+): EditableCollectionPlan {
   return Object.fromEntries(
     Object.entries(plan.collector_search_plan ?? {}).map(([competitor, dimensions]) => [
       competitor,
@@ -841,9 +717,9 @@ function editablePlanFromCollectionPlan(plan: CollectionPlan): EditableCollectio
             queries: [...(item.queries ?? [])],
             research_goals: [...(item.research_goals ?? [])],
             source: item.source,
-            max_results_per_query: 8,
-            max_evidence_per_dimension: 3,
-            min_valid_evidence_required: 1,
+            max_results_per_query: defaults.max_results_per_query,
+            max_evidence_per_dimension: defaults.max_evidence_per_dimension,
+            min_valid_evidence_required: defaults.min_valid_evidence_required,
             include_domains: "",
             exclude_domains: "",
           },
@@ -853,17 +729,22 @@ function editablePlanFromCollectionPlan(plan: CollectionPlan): EditableCollectio
   );
 }
 
-function buildRunOverrides(editablePlan?: EditableCollectionPlan): RunTaskOverrides {
+function emptyEditablePlan(task: Task): EditableCollectionPlan {
+  return Object.fromEntries(task.competitors.map((competitor) => [competitor, {}]));
+}
+
+function buildRunOverrides(editablePlan: EditableCollectionPlan | undefined, task: Task): RunTaskOverrides {
   const collectionPlan = buildCollectionPlanOverride(editablePlan);
   return {
     collection_plan_override: collectionPlan,
-    collector_config: buildCollectorConfig(editablePlan),
+    collector_config: buildCollectorConfig(editablePlan, collectorDefaultsForTask(task)),
+    skip_initial_planner: true,
   };
 }
 
 function buildCollectionPlanOverride(editablePlan?: EditableCollectionPlan): CollectionPlan {
   if (!editablePlan) {
-    throw new Error("请先用 Planner 当前计划填充后再运行。");
+    throw new Error("请先创建人工计划并新增至少一个维度。");
   }
   const collectorSearchPlan: CollectionPlan["collector_search_plan"] = {};
   for (const [competitor, dimensions] of Object.entries(editablePlan)) {
@@ -887,9 +768,12 @@ function buildCollectionPlanOverride(editablePlan?: EditableCollectionPlan): Col
   return { collector_search_plan: collectorSearchPlan };
 }
 
-function buildCollectorConfig(editablePlan?: EditableCollectionPlan): CollectorConfig {
+function buildCollectorConfig(
+  editablePlan: EditableCollectionPlan | undefined,
+  defaults: EditableCollectorDefaults,
+): CollectorConfig {
   if (!editablePlan) {
-    throw new Error("请先用 Planner 当前计划填充后再运行。");
+    throw new Error("请先创建人工计划并新增至少一个维度。");
   }
   const overrides: NonNullable<CollectorConfig["overrides"]> = [];
   for (const [competitor, dimensions] of Object.entries(editablePlan)) {
@@ -899,9 +783,9 @@ function buildCollectorConfig(editablePlan?: EditableCollectionPlan): CollectorC
       overrides.push({
         competitor,
         dimension_id: dimensionId,
-        max_results_per_query: positiveNumber(item.max_results_per_query, 8),
-        max_evidence_per_dimension: positiveNumber(item.max_evidence_per_dimension, 3),
-        min_valid_evidence_required: positiveNumber(item.min_valid_evidence_required, 1),
+        max_results_per_query: positiveNumber(item.max_results_per_query, defaults.max_results_per_query),
+        max_evidence_per_dimension: positiveNumber(item.max_evidence_per_dimension, defaults.max_evidence_per_dimension),
+        min_valid_evidence_required: positiveNumber(item.min_valid_evidence_required, defaults.min_valid_evidence_required),
         include_domains: splitDomainList(item.include_domains),
         exclude_domains: splitDomainList(item.exclude_domains),
       });
@@ -909,9 +793,9 @@ function buildCollectorConfig(editablePlan?: EditableCollectionPlan): CollectorC
   }
   return {
     default: {
-      max_results_per_query: 8,
-      max_evidence_per_dimension: 3,
-      min_valid_evidence_required: 1,
+      max_results_per_query: defaults.max_results_per_query,
+      max_evidence_per_dimension: defaults.max_evidence_per_dimension,
+      min_valid_evidence_required: defaults.min_valid_evidence_required,
       include_domains: [],
       exclude_domains: [],
     },
@@ -933,20 +817,25 @@ function splitDomainList(value: string) {
 function CollectionPlanEditor({
   value,
   onChange,
+  defaults,
+  disabled = false,
 }: {
   value?: EditableCollectionPlan;
   onChange: (nextPlan: EditableCollectionPlan) => void;
+  defaults: EditableCollectorDefaults;
+  disabled?: boolean;
 }) {
   if (!value) {
     return (
       <div className="rounded border border-dashed border-line bg-panel px-3 py-6 text-center text-sm text-slate-500">
-        先运行 Planner 或点击“用当前计划填充”，再编辑维度和查询词。
+        点击“新建空白计划”后，为每个竞品新增维度。
       </div>
     );
   }
   const plan = value;
 
   function updateDimension(competitor: string, dimensionKey: string, patch: Partial<EditableCollectionPlanItem>) {
+    if (disabled) return;
     onChange({
       ...plan,
       [competitor]: {
@@ -960,6 +849,7 @@ function CollectionPlanEditor({
   }
 
   function addDimension(competitor: string) {
+    if (disabled) return;
     const dimensions = plan[competitor] ?? {};
     const nextIndex = Object.keys(dimensions).length + 1;
     const dimensionKey = `custom_dimension_${nextIndex}`;
@@ -974,13 +864,23 @@ function CollectionPlanEditor({
           queries: [`${competitor} 自定义维度 官方`],
           research_goals: [],
           source: "manual_override",
-          max_results_per_query: 8,
-          max_evidence_per_dimension: 3,
-          min_valid_evidence_required: 1,
+          max_results_per_query: defaults.max_results_per_query,
+          max_evidence_per_dimension: defaults.max_evidence_per_dimension,
+          min_valid_evidence_required: defaults.min_valid_evidence_required,
           include_domains: "",
           exclude_domains: "",
         },
       },
+    });
+  }
+
+  function deleteDimension(competitor: string, dimensionKey: string) {
+    if (disabled) return;
+    const nextDimensions = { ...plan[competitor] };
+    delete nextDimensions[dimensionKey];
+    onChange({
+      ...plan,
+      [competitor]: nextDimensions,
     });
   }
 
@@ -992,7 +892,8 @@ function CollectionPlanEditor({
             <div className="font-semibold">{competitor}</div>
             <button
               type="button"
-              className="rounded border border-line bg-white px-3 py-1.5 text-xs font-semibold"
+              disabled={disabled}
+              className="border border-line bg-white px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => addDimension(competitor)}
             >
               新增维度
@@ -1000,23 +901,36 @@ function CollectionPlanEditor({
           </div>
           <div className="space-y-3">
             {Object.entries(dimensions).map(([dimensionKey, item]) => (
-              <div key={dimensionKey} className="rounded border border-line bg-white p-3">
-                <div className="grid gap-2 lg:grid-cols-[80px_1fr_1fr]">
+              <div key={dimensionKey} className="relative rounded border border-line bg-white p-3">
+                <button
+                  type="button"
+                  disabled={disabled}
+                  className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center border border-red-200 bg-red-50 text-danger hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  onClick={() => deleteDimension(competitor, dimensionKey)}
+                  title="删除维度"
+                  aria-label={`删除 ${item.label || item.dimension_id}`}
+                >
+                  <X size={15} />
+                </button>
+                <div className="grid gap-2 pr-9 lg:grid-cols-[80px_1fr_1fr]">
                   <label className="inline-flex items-center gap-2 text-sm font-semibold">
                     <input
                       type="checkbox"
+                      disabled={disabled}
                       checked={item.enabled}
                       onChange={(event) => updateDimension(competitor, dimensionKey, { enabled: event.target.checked })}
                     />
                     启用
                   </label>
                   <input
+                    disabled={disabled}
                     className="rounded border border-line px-3 py-2 text-sm"
                     value={item.dimension_id}
                     onChange={(event) => updateDimension(competitor, dimensionKey, { dimension_id: event.target.value })}
                     placeholder="dimension_id"
                   />
                   <input
+                    disabled={disabled}
                     className="rounded border border-line px-3 py-2 text-sm"
                     value={item.label}
                     onChange={(event) => updateDimension(competitor, dimensionKey, { label: event.target.value })}
@@ -1024,22 +938,25 @@ function CollectionPlanEditor({
                   />
                 </div>
                 <textarea
+                  disabled={disabled}
                   className="mt-2 h-24 w-full rounded border border-line px-3 py-2 font-mono text-xs"
                   value={item.queries.join("\n")}
                   onChange={(event) => updateDimension(competitor, dimensionKey, { queries: event.target.value.split("\n") })}
                   placeholder="每行一条查询词"
                 />
                 <textarea
+                  disabled={disabled}
                   className="mt-2 h-16 w-full rounded border border-line px-3 py-2 text-xs"
                   value={item.research_goals.join("\n")}
                   onChange={(event) => updateDimension(competitor, dimensionKey, { research_goals: event.target.value.split("\n") })}
-                  placeholder="每行一个研究目标，可留空"
+                  placeholder="每行一个调研问题，EvidenceAnalyst 将逐题回答"
                 />
                 <div className="mt-3 grid gap-2 md:grid-cols-3">
                   <label className="text-xs text-slate-600">
                     每条 query 返回结果数
                     <input
                       type="number"
+                      disabled={disabled}
                       min={1}
                       max={50}
                       className="mt-1 w-full rounded border border-line px-3 py-2 text-sm"
@@ -1051,6 +968,7 @@ function CollectionPlanEditor({
                     本维度最多 evidence 数
                     <input
                       type="number"
+                      disabled={disabled}
                       min={1}
                       max={50}
                       className="mt-1 w-full rounded border border-line px-3 py-2 text-sm"
@@ -1062,6 +980,7 @@ function CollectionPlanEditor({
                     QA 至少有效 evidence 数
                     <input
                       type="number"
+                      disabled={disabled}
                       min={1}
                       max={50}
                       className="mt-1 w-full rounded border border-line px-3 py-2 text-sm"
@@ -1074,6 +993,7 @@ function CollectionPlanEditor({
                   <label className="text-xs text-slate-600">
                     include domains
                     <textarea
+                      disabled={disabled}
                       className="mt-1 h-16 w-full rounded border border-line px-3 py-2 font-mono text-xs"
                       value={item.include_domains}
                       onChange={(event) => updateDimension(competitor, dimensionKey, { include_domains: event.target.value })}
@@ -1083,6 +1003,7 @@ function CollectionPlanEditor({
                   <label className="text-xs text-slate-600">
                     exclude domains
                     <textarea
+                      disabled={disabled}
                       className="mt-1 h-16 w-full rounded border border-line px-3 py-2 font-mono text-xs"
                       value={item.exclude_domains}
                       onChange={(event) => updateDimension(competitor, dimensionKey, { exclude_domains: event.target.value })}
@@ -1183,12 +1104,13 @@ function EvidenceQuestionAnswerPanel({
   }
 
   return (
-    <section className="rounded border border-line bg-white p-4">
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+    <details className="rounded border border-line bg-white">
+      <summary className="cursor-pointer list-none p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Evidence 问题回答结果</h2>
           <p className="mt-1 text-sm text-slate-600">
-            按竞品和维度汇总 evidence，回答 Planner 规划的问题。点击问题会联动下方 Evidence 面板。
+            共 {results.length} 个竞品维度组，点击展开查看问题与答案
           </p>
         </div>
         {enabled === false && (
@@ -1196,6 +1118,10 @@ function EvidenceQuestionAnswerPanel({
             未启用 LLM 回答
           </span>
         )}
+        </div>
+      </summary>
+      <div className="border-t border-line p-4">
+      <div className="mb-3 flex flex-wrap items-start justify-end gap-3">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-slate-500">每页</span>
           <select
@@ -1228,7 +1154,6 @@ function EvidenceQuestionAnswerPanel({
           <details
             key={`${item.competitor ?? "unknown"}-${item.dimension_id ?? "unknown"}`}
             className="rounded border border-line bg-panel p-3"
-            open
           >
             <summary className="cursor-pointer">
               <div className="inline-flex flex-wrap items-center gap-2">
@@ -1301,7 +1226,8 @@ function EvidenceQuestionAnswerPanel({
           onPageChange={setPage}
         />
       )}
-    </section>
+      </div>
+    </details>
   );
 }
 
@@ -1371,100 +1297,3 @@ function answerStatusClass(value: string) {
   if (value === "partial") return "border-amber-300 bg-amber-50 text-warning";
   return "border-slate-300 bg-slate-50 text-slate-600";
 }
-
-function DebugJson({ title, value }: { title: string; value: unknown }) {
-  return (
-    <details className="mb-2 rounded border border-line bg-panel p-3">
-      <summary className="cursor-pointer font-semibold">{title}</summary>
-      <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded border border-line bg-white p-3 text-xs">
-        {JSON.stringify(value ?? {}, null, 2)}
-      </pre>
-    </details>
-  );
-}
-
-const COLLECTOR_OUTPUT_SCHEMA = {
-  CollectorOutput: {
-    evidence: [
-      {
-        evidence_id: "string; generated if missing",
-        run_id: "string | null; bound by current TaskRun",
-        competitor: "string | null; planned competitor bucket",
-        source_type: "web | public_web | knowledge_base | document | pricing_page | review | interview | survey",
-        url: "string | null; required unless local_ref exists",
-        local_ref: "string | null; required unless url exists",
-        collected_at: "ISO datetime",
-        snippet: "string; non-empty source summary",
-        confidence: "number; 0..1",
-        source_domain: "string | null",
-        source_quality: "official | documentation | media | review | unknown | low_quality",
-        relevance_score: "number; 0..1",
-        relevance_level: "high | medium | low | unrelated",
-        relevance_reason: "string",
-        entity_match_signals: {
-          collector_query: "string; query actually used",
-          collector_dimension: "string; dimension from Planner collection_plan",
-          planner_dimension: "string; dimension propagated for QA",
-          collector_query_source: "planner_collection_plan",
-          collector_query_intent: "string | null",
-          collector_query_source_detail: "string | null",
-          confidence_breakdown: "object; optional confidence details",
-          "...": "entity resolver and relevance matching signals",
-        },
-        content_mode: "snippet | page",
-        page_fetch_success: "boolean",
-        page_title: "string | null",
-        content_excerpt: "string | null",
-        content_chars: "number | null",
-        fetch_status_code: "number | null",
-        page_fetch_error: "string | null",
-        fetched_at: "ISO datetime | null",
-      },
-    ],
-    diagnostics: {
-      collector_mode_requested: "mock | web",
-      collector_mode_used: "mock | web",
-      search_provider: "string",
-      search_base_url_configured: "boolean",
-      has_search_api_key: "boolean",
-      web_search_attempted: "boolean",
-      web_search_success: "boolean",
-      collection_plan_used: "boolean",
-      collector_search_plan_source: "planner_collection_plan",
-      collector_search_plan_missing: "boolean",
-      collector_search_plan_used: "boolean",
-      entity_aliases_used: "boolean",
-      competitor_aliases_by_competitor: "Record<competitor, aliases[]>",
-      planned_query_count_by_competitor: "Record<competitor, number>",
-      effective_query_count_by_competitor: "Record<competitor, number>",
-      effective_queries_preview_by_competitor: "Record<competitor, queries[]>",
-      skipped_queries_by_competitor: "Record<competitor, skipped query metadata[]>",
-      query_policy: ["planner_collection_plan"],
-      query_dimensions_by_competitor: "Record<competitor, query dimension metadata[]>",
-      query_count: "number",
-      query_count_by_competitor: "Record<competitor, number>",
-      query_count_by_dimension: "Record<dimension_id, number>",
-      failed_queries: "string[]",
-      evidence_count: "number",
-      evidence_count_by_competitor: "Record<competitor, number>",
-      evidence_count_by_dimension: "Record<dimension_id, number>",
-      evidence_count_by_dimension_by_competitor: "Record<competitor, Record<dimension_id, number>>",
-      raw_evidence_count: "number",
-      deduplicated_evidence_count: "number",
-      duplicate_removed_count: "number",
-      source_quality_summary: "Record<source_quality, number>",
-      low_confidence_count: "number",
-      competitor_coverage: "Record<competitor, number>",
-      missing_competitors: "string[]",
-      fallback_by_competitor: "Record<competitor, string | null>",
-      raw_search_result_count_by_competitor: "Record<competitor, number>",
-      relevant_evidence_count_by_competitor: "Record<competitor, number>",
-      unrelated_evidence_count_by_competitor: "Record<competitor, number>",
-      filtered_unrelated_count: "number",
-      missing_relevant_evidence_competitors: "string[]",
-      fallback_used: "boolean",
-      fallback_reason: "string | null",
-      elapsed_time_ms: "number",
-    },
-  },
-};

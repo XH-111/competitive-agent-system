@@ -104,6 +104,15 @@ class EvidenceContentFetcher:
             if skip_reason:
                 skipped_count += 1
                 skipped_ids.append(updated.evidence_id)
+                if skip_reason == "skipped:already_fetched":
+                    enriched.append(
+                        self._mark_fetch_metadata(
+                            updated,
+                            success=True,
+                            error=None,
+                        )
+                    )
+                    continue
                 enriched.append(
                     self._mark_fetch_metadata(
                         updated.model_copy(

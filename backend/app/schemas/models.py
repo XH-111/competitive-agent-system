@@ -17,6 +17,7 @@ AgentName = Literal[
     "Indexer",
     "Retriever",
     "AnalystAgent",
+    "ReportAgent",
     "ReportWriterAgent",
     "QaAgent",
     "SurveyAgent",

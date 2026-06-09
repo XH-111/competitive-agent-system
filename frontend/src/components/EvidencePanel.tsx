@@ -21,7 +21,7 @@ export function EvidencePanel({
   const [relevanceFilter, setRelevanceFilter] = useState("all");
   const [onlyRelevant, setOnlyRelevant] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(5);
   const selectedIds = evidenceIds?.length ? evidenceIds : undefined;
   const selectedIdSet = useMemo(() => new Set(selectedIds ?? []), [selectedIds]);
   const manualSelection = new Set(selectedManualEvidenceIds);
@@ -80,19 +80,20 @@ export function EvidencePanel({
   }
 
   return (
-    <section className="rounded border border-line bg-white p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+    <details className="rounded border border-line bg-white">
+      <summary className="cursor-pointer list-none p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">采集证据结果</h2>
           <p className="mt-1 text-xs text-slate-500">
-            共 {evidence.length} 条 Evidence，当前显示 {related.length} 条
+            共 {evidence.length} 条 Evidence，点击展开查看
           </p>
-          {selectable && (
-            <p className="mt-1 text-xs text-slate-500">
-              已选择 {selectedManualEvidenceIds.length} 条 Evidence
-            </p>
-          )}
         </div>
+        {selectable ? <span className="text-xs text-slate-500">已选择 {selectedManualEvidenceIds.length} 条</span> : null}
+        </div>
+      </summary>
+      <div className="border-t border-line p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {selectable && (
             <>
@@ -134,6 +135,7 @@ export function EvidencePanel({
             value={pageSize}
             onChange={(event) => setPageSize(Number(event.target.value))}
           >
+            <option value={5}>5 / page</option>
             <option value={10}>10 / page</option>
             <option value={20}>20 / page</option>
             <option value={50}>50 / page</option>
@@ -223,12 +225,6 @@ export function EvidencePanel({
                 </div>
               </details>
             )}
-            {item.entity_match_signals && (
-              <details className="mt-2 text-xs text-slate-600">
-                <summary className="cursor-pointer font-semibold">开发者详情：entity_match_signals</summary>
-                <pre className="mt-1 whitespace-pre-wrap rounded border border-line bg-white p-2">{JSON.stringify(item.entity_match_signals, null, 2)}</pre>
-              </details>
-            )}
           </div>
         ))}
         {!related.length && <p className="text-sm text-slate-500">暂无可展示证据。</p>}
@@ -242,7 +238,8 @@ export function EvidencePanel({
           onPageChange={setPage}
         />
       )}
-    </section>
+      </div>
+    </details>
   );
 }
 

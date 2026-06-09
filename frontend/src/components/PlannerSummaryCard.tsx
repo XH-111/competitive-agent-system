@@ -1,370 +1,586 @@
-import type { ReactNode } from "react";
-import type { CollectorDiagnostics, PlannerAttempt, WorkflowSummary } from "../types";
+import { useState } from "react";
+import type { CollectorConfig, PlannerAttempt, WorkflowSummary } from "../types";
 
-const DIMENSION_LABELS: Record<string, string> = {
-  pricing: "价格",
-  feature: "功能",
-  persona: "用户画像",
-  strength: "优势",
-  weakness: "劣势",
-  opportunity: "机会",
-  threat: "威胁",
-  hardware_specs: "硬件参数",
-  camera_capability: "影像能力",
-  chip_performance: "芯片性能",
-  os_ecosystem: "系统生态",
-  channel_strategy: "渠道策略",
-  ai_capability: "AI 能力",
-  battery_range: "续航与电池",
-  battery_life: "续航表现",
-  health_monitoring: "健康监测",
-  ecosystem_compatibility: "生态兼容",
-  appearance_design: "外观设计",
-  positioning_accuracy: "定位精度",
-  sport_mode: "运动模式",
-  sensor_config: "传感器配置",
-  sports_mode_support: "运动模式支持",
+type JsonRecord = Record<string, unknown>;
+
+type DisplayAttempt = {
+  attemptNo: number;
+  status: PlannerAttempt["status"];
+  plannerOutput: JsonRecord;
+  diagnostics: JsonRecord;
+  reworkContext?: JsonRecord | null;
+  createdAt?: string;
 };
 
-type PlanQuery = {
-  dimension_id?: string;
-  dimension_label?: string;
-  queries?: string[];
-  intent?: string;
-  preferred_sources?: string[];
-  query_strategy?: string;
+type CollectionPlanItem = {
+  dimensionId: string;
+  label: string;
+  queries: string[];
+  researchGoals: string[];
+};
+
+type IncrementalTarget = {
+  competitor: string;
+  dimensionId: string;
+  queries: string[];
+  reason: string;
+  questionId?: string;
+  question?: string;
+  suggestions: string[];
+  maxEvidence?: number;
+  contentFetchPriority?: string;
+};
+
+const DIMENSION_LABELS: Record<string, string> = {
+  pricing: "定价与商业模式",
+  feature: "功能能力",
+  persona: "用户画像",
+  strength: "优势",
+  weakness: "不足",
+  opportunity: "机会",
+  threat: "威胁",
+  commercialization: "商业化",
+  capability: "产品能力",
+  content_ecosystem: "内容生态",
+  user_operation_strategy: "用户运营策略",
 };
 
 export function PlannerSummaryCard({
   workflowSummary,
-  collectorDiagnostics,
   plannerAttempts = [],
 }: {
   workflowSummary?: WorkflowSummary;
-  collectorDiagnostics?: CollectorDiagnostics;
   plannerAttempts?: PlannerAttempt[];
 }) {
-  const dimensions = workflowSummary?.selected_dimensions ?? [];
-  const dimensionPlans = workflowSummary?.analysis_dimension_plan?.dimension_plans ?? [];
-  const researchGoals = dimensionPlans.flatMap((dimension) => dimension.research_goals ?? []);
-  const collectorPlan = normalizeCollectorPlan(
-    workflowSummary?.collection_plan?.collector_search_plan,
-  );
-  const queryHints = Object.fromEntries(
-    Object.entries(collectorPlan).map(([competitor, byDimension]) => [
-      competitor,
-      Object.values(byDimension).flatMap((item) => item.queries ?? []),
-    ]),
-  );
-  const guidance = workflowSummary?.downstream_guidance;
-  const candidates = workflowSummary?.candidate_competitors ?? [];
-  const hasContent = Boolean(
-    workflowSummary?.planner_summary?.task_goal ||
-      workflowSummary?.intent_summary ||
-      dimensions.length ||
-      Object.keys(queryHints).length ||
-      Object.keys(collectorPlan).length ||
-      collectorDiagnostics?.effective_queries_preview_by_competitor ||
-      guidance,
-  );
+  const attempts = buildDisplayAttempts(workflowSummary, plannerAttempts);
+  if (!attempts.length) return null;
 
-  if (!hasContent) return null;
+  const latest = attempts[0];
+  const latestKind = isIncrementalOutput(latest.plannerOutput) ? "增量补采" : "完整规划";
 
   return (
-    <section className="mb-4 rounded border border-line bg-white p-4">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <details className="mb-4 border border-line bg-white">
+      <summary className="cursor-pointer list-none p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">PlannerAgent 任务规划</h2>
-          <p className="mt-1 text-xs text-slate-500">展示 Planner 如何理解任务、选择分析维度、为每个维度生成搜索词，并指导下游 Agent。</p>
+          <h2 className="text-lg font-semibold">Planner 规划记录</h2>
+          <p className="mt-1 text-xs text-slate-500">点击展开各轮规划结果</p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
-          <StatusPill label="搜索计划" value={collectorDiagnostics?.collector_search_plan_used ? "已使用" : "未使用"} />
-          <StatusPill label="采集模式" value={collectorDiagnostics?.collector_mode_used ?? collectorDiagnostics?.collector_mode_requested ?? "-"} />
+          <Metric label="规划轮次" value={`${attempts.length}`} />
+          <Metric label="最新类型" value={latestKind} />
+          <Metric label="最新状态" value={attemptStatusLabel(latest)} tone={statusTone(latest.status)} />
         </div>
       </div>
+      </summary>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Panel title="任务理解摘要">
-          <div className="rounded border border-line bg-panel p-3 text-sm leading-6 text-slate-800">
-            {workflowSummary?.planner_summary?.task_goal ||
-              workflowSummary?.intent_summary ||
-              "暂无 Planner 任务理解摘要。"}
-          </div>
-          {workflowSummary?.planner_summary ? (
-            <div className="mt-3 grid gap-2 text-xs text-slate-700 sm:grid-cols-2">
-              <div>产品：{workflowSummary.planner_summary.product_name ?? "-"}</div>
-              <div>产品类型：{workflowSummary.planner_summary.product_type ?? "-"}</div>
-              <div>行业：{workflowSummary.planner_summary.industry ?? "-"}</div>
-              <div>地区：{workflowSummary.planner_summary.region ?? "-"}</div>
-              <div className="sm:col-span-2">
-                竞品：{workflowSummary.planner_summary.competitors?.join("、") || "-"}
-              </div>
-            </div>
-          ) : null}
-          {!!candidates.length && (
-            <div className="mt-3">
-              <SubTitle>候选竞品</SubTitle>
-              <div className="flex flex-wrap gap-2">
-                {candidates.slice(0, 8).map((item, index) => (
-                  <span key={`${item.name ?? "candidate"}-${index}`} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700">
-                    {item.name ?? "unknown"}
-                    {typeof item.confidence === "number" ? ` (${Math.round(item.confidence * 100)}%)` : ""}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {!!researchGoals.length && (
-            <details className="mt-3 rounded border border-line bg-white p-3 text-xs leading-5 text-slate-700">
-              <summary className="cursor-pointer font-semibold">研究目标</summary>
-              <div className="mt-2 space-y-1">
-                {researchGoals.slice(0, 5).map((goal) => (
-                  <div key={goal}>- {goal}</div>
-                ))}
-              </div>
-            </details>
-          )}
-        </Panel>
-
-        <Panel title="分析维度规划">
-          <div className="flex flex-wrap gap-2">
-            {(dimensions.length ? dimensions : ["No planner-selected dimensions returned"]).map((dimension) => (
-              <span key={dimension} className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-accent">
-                {dimensionLabel(dimension)}
-              </span>
-            ))}
-          </div>
-          {!!dimensionPlans.length && (
-            <details className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
-              <summary className="cursor-pointer font-semibold">查看维度说明</summary>
-              <div className="mt-2 grid gap-2 md:grid-cols-2">
-                {dimensionPlans.slice(0, 20).map((dimension) => (
-                  <div key={dimension.dimension_id} className="rounded border border-line bg-white p-2">
-                    <div className="font-semibold">{dimensionLabel(dimension.dimension_id ?? "-")}</div>
-                    {dimension.description ? <div className="mt-1 text-slate-600">{dimension.description}</div> : null}
+      <div className="space-y-3 border-t border-line p-4">
+        {attempts.map((attempt, index) => {
+          const incremental = isIncrementalOutput(attempt.plannerOutput);
+          const source = attemptSource(attempt, incremental);
+          return (
+            <details
+              key={`${attempt.attemptNo}-${attempt.createdAt ?? index}`}
+              className="border border-line bg-white"
+            >
+              <summary className="cursor-pointer list-none bg-panel px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">第 {attempt.attemptNo} 轮</span>
+                    <Badge text={incremental ? "增量补采规划" : "完整任务规划"} tone={incremental ? "amber" : "blue"} />
+                    <Badge text={attemptStatusLabel(attempt)} tone={statusTone(attempt.status)} />
+                    {source ? <span className="text-xs text-slate-500">触发来源：{source}</span> : null}
                   </div>
-                ))}
-              </div>
-            </details>
-          )}
-        </Panel>
-
-        <Panel title="搜索关键词与采集计划" className="xl:col-span-2">
-          <div className="mb-3 flex flex-wrap gap-2 text-xs">
-            <StatusPill label="Planner 计划搜索词" value={sumRecord(collectorDiagnostics?.planned_query_count_by_competitor).toString()} />
-            <StatusPill label="实际执行搜索词" value={sumRecord(collectorDiagnostics?.effective_query_count_by_competitor).toString()} />
-            <StatusPill label="返工搜索词" value={sumRecord(collectorDiagnostics?.targeted_query_count_by_competitor).toString()} />
-          </div>
-
-          <div className="space-y-4">
-            {Object.entries(collectorPlan).map(([competitor, byDimension]) => (
-              <div key={competitor} className="rounded border border-line bg-panel p-3">
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <span className="font-semibold">{competitor}</span>
-                  <span className="text-xs text-slate-500">
-                    {Object.keys(byDimension).length} 个维度
-                    {typeof collectorDiagnostics?.planned_query_count_by_competitor?.[competitor] === "number"
-                      ? ` / Planner 计划 ${collectorDiagnostics.planned_query_count_by_competitor[competitor]} 条`
-                      : ""}
-                    {typeof collectorDiagnostics?.effective_query_count_by_competitor?.[competitor] === "number"
-                      ? ` / 实际执行 ${collectorDiagnostics.effective_query_count_by_competitor[competitor]} 条`
-                      : ""}
-                  </span>
+                  {attempt.createdAt ? (
+                    <span className="text-xs text-slate-500">{formatTime(attempt.createdAt)}</span>
+                  ) : null}
                 </div>
-                <div className="grid gap-2 lg:grid-cols-2">
-                  {dimensionsForCompetitor(dimensions, byDimension).map((dimensionId) => {
-                    const plan = byDimension[dimensionId];
-                    return (
-                      <div key={dimensionId} className="rounded border border-line bg-white p-2">
-                        <div className="mb-2 flex flex-wrap items-center gap-2">
-                          <span className="font-semibold">{dimensionLabel(plan?.dimension_id ?? dimensionId)}</span>
-                          {plan?.query_strategy ? <span className="text-xs text-slate-400">{plan.query_strategy}</span> : null}
-                        </div>
-                        <TagGroup values={plan?.queries ?? []} limit={6} />
-                        {plan?.intent ? <div className="mt-2 text-xs leading-5 text-slate-500">{plan.intent}</div> : null}
-                      </div>
-                    );
-                  })}
-                </div>
+              </summary>
 
-                {!!collectorDiagnostics?.skipped_queries_by_competitor?.[competitor]?.length && (
-                  <details className="mt-3 text-xs text-slate-600">
-                    <summary className="cursor-pointer font-semibold text-amber-700">查看未执行搜索词</summary>
-                    <div className="mt-2 space-y-1">
-                      {collectorDiagnostics.skipped_queries_by_competitor[competitor].slice(0, 30).map((item, index) => (
-                        <div key={`${item.query ?? "query"}-${index}`} className="rounded border border-amber-200 bg-amber-50 px-2 py-1">
-                          <span className="font-semibold">{dimensionLabel(item.dimension_id ?? "-")}</span>
-                          <span className="ml-2">{item.query ?? "-"}</span>
-                          <span className="ml-2 text-amber-700">原因：{skipReasonLabel(item.reason)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
+              <div className="p-3">
+                {incremental ? (
+                  <IncrementalAttempt output={attempt.plannerOutput} reworkContext={attempt.reworkContext} />
+                ) : (
+                  <FullAttempt output={attempt.plannerOutput} workflowSummary={workflowSummary} />
                 )}
               </div>
-            ))}
-            {!Object.keys(collectorPlan).length && Object.entries(queryHints).map(([competitor, queries]) => (
-              <div key={competitor} className="rounded border border-line bg-panel p-3">
-                <div className="mb-2 font-semibold">{competitor}</div>
-                <TagGroup values={queries} limit={12} />
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel title="下游 Agent 指导" className="xl:col-span-2">
-          <div className="grid gap-3 md:grid-cols-3">
-            <GuidanceBlock title="CollectorAgent" items={guidance?.collector} />
-            <GuidanceBlock title="AnalystAgent" items={guidance?.analyst} />
-            <GuidanceBlock title="ReportWriterAgent" items={guidance?.writer} />
-          </div>
-        </Panel>
-
-        <Panel title="Planner 运行诊断" className="xl:col-span-2">
-          {!!plannerAttempts.length && (
-            <div className="mb-3 space-y-2">
-              {plannerAttempts.map((attempt) => (
-                <details key={`${attempt.run_id}-${attempt.attempt_no}`} className="rounded border border-line bg-panel p-3">
-                  <summary className="cursor-pointer list-none">
-                    <div className="flex flex-wrap items-center gap-3 text-xs">
-                      <span className="font-semibold">第 {attempt.attempt_no} 次规划</span>
-                      <span className={attempt.status === "generated" ? "text-success" : attempt.status === "fallback" ? "text-warning" : "text-danger"}>
-                        {attemptStatusLabel(attempt.status)}
-                      </span>
-                      <span>模式：{String(attempt.diagnostics.planner_mode_used ?? "-")}</span>
-                      <span>fallback：{attempt.diagnostics.fallback_used ? "是" : "否"}</span>
-                      <span>维度：{attemptDimensions(attempt).join("、") || "-"}</span>
-                      <span className="text-slate-500">{formatAttemptTime(attempt.created_at)}</span>
-                    </div>
-                  </summary>
-                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded border border-line bg-white p-3 text-xs leading-5 text-slate-700">
-                    {JSON.stringify(attempt.planner_output, null, 2)}
-                  </pre>
-                </details>
-              ))}
-            </div>
-          )}
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
-            {JSON.stringify(workflowSummary?.diagnostics ?? {}, null, 2)}
-          </pre>
-          {!!workflowSummary?.planner_notes?.length && (
-            <div className="mt-3 space-y-1 text-xs leading-5 text-slate-700">
-              {workflowSummary.planner_notes.map((note) => <div key={note}>- {note}</div>)}
-            </div>
-          )}
-        </Panel>
-
-        <details className="xl:col-span-2 rounded border border-line bg-white p-3">
-          <summary className="cursor-pointer text-sm font-semibold">原始 PlannerOutput JSON</summary>
-          <pre className="mt-3 max-h-[32rem] overflow-auto whitespace-pre-wrap rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
-            {JSON.stringify(workflowSummary?.planner_output ?? {}, null, 2)}
-          </pre>
-        </details>
+            </details>
+          );
+        })}
       </div>
-    </section>
+    </details>
   );
 }
 
-function attemptStatusLabel(status: PlannerAttempt["status"]) {
+function FullAttempt({
+  output,
+  workflowSummary,
+}: {
+  output: JsonRecord;
+  workflowSummary?: WorkflowSummary;
+}) {
+  const summary = objectValue(output.planner_summary);
+  const dimensionPlan = objectValue(output.analysis_dimension_plan);
+  const dimensions = stringList(output.selected_dimensions);
+  const dimensionDefinitions = arrayOfRecords(dimensionPlan.dimension_plans);
+  const collectionPlan = normalizeCollectionPlan(objectValue(output.collection_plan).collector_search_plan);
+  const notes = stringList(output.planner_notes);
+  const taskGoal =
+    stringValue(summary.task_goal) ||
+    workflowSummary?.planner_summary?.task_goal ||
+    workflowSummary?.intent_summary ||
+    "";
+  const competitors =
+    stringList(summary.competitors).length > 0
+      ? stringList(summary.competitors)
+      : workflowSummary?.planner_summary?.competitors ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]">
+        <div>
+          <SectionTitle>任务目标</SectionTitle>
+          <p className="text-sm leading-5 text-slate-800">{taskGoal || "本轮未返回任务目标。"}</p>
+        </div>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+          <Field label="竞品" value={competitors.join("、") || "-"} wide />
+          <Field label="行业" value={stringValue(summary.industry) || workflowSummary?.planner_summary?.industry || "-"} />
+          <Field label="地区" value={stringValue(summary.region) || workflowSummary?.planner_summary?.region || "-"} />
+          <Field label="产品类型" value={stringValue(summary.product_type) || "-"} />
+          <Field
+            label="计划来源"
+            value={workflowSummary?.manual_collection_plan_override_used ? "人工覆盖" : "Planner 生成"}
+          />
+        </dl>
+      </div>
+
+      <div>
+        <SectionTitle>分析维度</SectionTitle>
+        <div className="flex flex-wrap gap-2">
+          {dimensions.map((dimension) => (
+            <Badge key={dimension} text={dimensionLabel(dimension)} tone="blue" />
+          ))}
+          {!dimensions.length ? <span className="text-xs text-slate-500">未返回维度。</span> : null}
+        </div>
+      </div>
+
+      <div>
+        <SectionTitle>各竞品采集计划</SectionTitle>
+        <div className="space-y-3">
+          {Object.entries(collectionPlan).map(([competitor, plans]) => (
+            <CompetitorPlan
+              key={competitor}
+              competitor={competitor}
+              plans={plans}
+              dimensionDefinitions={dimensionDefinitions}
+              collectorConfig={workflowSummary?.collector_config}
+            />
+          ))}
+          {!Object.keys(collectionPlan).length ? (
+            <div className="text-sm text-slate-500">本轮未返回可执行的采集计划。</div>
+          ) : null}
+        </div>
+      </div>
+
+      {notes.length ? (
+        <div>
+          <SectionTitle>规划备注</SectionTitle>
+          <TextList values={notes} emptyText="" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CompetitorPlan({
+  competitor,
+  plans,
+  dimensionDefinitions,
+  collectorConfig,
+}: {
+  competitor: string;
+  plans: CollectionPlanItem[];
+  dimensionDefinitions: JsonRecord[];
+  collectorConfig?: CollectorConfig | null;
+}) {
+  const [selectedDimension, setSelectedDimension] = useState(plans[0]?.dimensionId ?? "");
+  const selectedPlan = plans.find((plan) => plan.dimensionId === selectedDimension) ?? plans[0];
+  if (!selectedPlan) return null;
+
+  const definition = dimensionDefinitions.find(
+    (item) => stringValue(item.dimension_id) === selectedPlan.dimensionId,
+  );
+  const goals = selectedPlan.researchGoals.length
+    ? selectedPlan.researchGoals
+    : stringList(definition?.research_goals);
+  const config = resolveCollectorConfig(collectorConfig, competitor, selectedPlan.dimensionId);
+
+  return (
+    <div className="border-t border-line pt-3 first:border-t-0 first:pt-0">
+      <div className="mb-2 font-semibold">{competitor}</div>
+      <div className="mb-2 flex flex-wrap gap-1">
+        {plans.map((plan) => {
+          const active = plan.dimensionId === selectedPlan.dimensionId;
+          return (
+            <button
+              key={plan.dimensionId}
+              type="button"
+              onClick={() => setSelectedDimension(plan.dimensionId)}
+              className={`border px-2.5 py-1 text-xs font-medium ${
+                active
+                  ? "border-blue-500 bg-blue-50 text-blue-700"
+                  : "border-line bg-white text-slate-600 hover:border-blue-300 hover:text-blue-700"
+              }`}
+            >
+              {plan.label || dimensionLabel(plan.dimensionId)}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="border border-line bg-panel/40 p-3">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-baseline gap-2">
+            <span className="font-semibold">
+              {selectedPlan.label || dimensionLabel(selectedPlan.dimensionId)}
+            </span>
+            <span className="text-xs text-slate-400">{selectedPlan.dimensionId}</span>
+          </div>
+          <span className="text-xs text-slate-500">{selectedPlan.queries.length} 条查询词</span>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <TextList title="调研目标" values={goals} emptyText="未设置调研目标" />
+          <TextList title="搜索词" values={selectedPlan.queries} emptyText="未设置搜索词" numbered />
+        </div>
+
+        {config ? (
+          <div className="mt-2 border-t border-line pt-2">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+              <span>每条 query：{config.max_results_per_query ?? "-"}</span>
+              <span>最多 evidence：{config.max_evidence_per_dimension ?? "-"}</span>
+              <span>QA 最少有效：{config.min_valid_evidence_required ?? "-"}</span>
+              {config.include_domains?.length ? (
+                <span>包含域名：{config.include_domains.join("、")}</span>
+              ) : null}
+              {config.exclude_domains?.length ? (
+                <span>排除域名：{config.exclude_domains.join("、")}</span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function IncrementalAttempt({
+  output,
+  reworkContext,
+}: {
+  output: JsonRecord;
+  reworkContext?: JsonRecord | null;
+}) {
+  const targets = normalizeIncrementalTargets(output.targets);
+  const coverageGap = objectValue(reworkContext?.coverage_gap);
+  const gapTargets = arrayOfRecords(coverageGap.targets);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 text-xs">
+        <Metric label="补采目标" value={`${targets.length}`} />
+        <Metric label="基础规划轮次" value={numberOrText(output.base_attempt_no) || "-"} />
+        <Metric
+          label="正文要求"
+          value={targets.some((target) => target.contentFetchPriority === "required") ? "需要正文" : "常规"}
+        />
+      </div>
+
+      {targets.map((target, index) => {
+        const gap = gapTargets.find(
+          (item) =>
+            stringValue(item.competitor) === target.competitor &&
+            stringValue(item.dimension_id) === target.dimensionId &&
+            (!target.questionId || stringValue(item.question_id) === target.questionId),
+        );
+        const originalQueries = stringList(gap?.original_queries);
+        return (
+          <div key={`${target.competitor}-${target.dimensionId}-${target.questionId ?? index}`} className="border border-line p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="font-semibold">{target.competitor}</span>
+              <Badge text={dimensionLabel(target.dimensionId)} tone="blue" />
+              {target.questionId ? <span className="text-xs text-slate-500">{target.questionId}</span> : null}
+              {target.maxEvidence ? <span className="text-xs text-slate-500">最多补采 {target.maxEvidence} 条</span> : null}
+              {target.contentFetchPriority === "required" ? <Badge text="补采后抓取正文" tone="amber" /> : null}
+            </div>
+
+            {target.question ? (
+              <div className="mb-3">
+                <SectionTitle>待补充问题</SectionTitle>
+                <p className="text-sm leading-6 text-slate-800">{target.question}</p>
+              </div>
+            ) : null}
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div>
+                <SectionTitle>返工原因</SectionTitle>
+                <p className="text-sm leading-6 text-slate-700">{target.reason || "证据覆盖不足"}</p>
+                {target.suggestions.length ? (
+                  <div className="mt-3">
+                    <TextList title="补采建议" values={target.suggestions} emptyText="" />
+                  </div>
+                ) : null}
+              </div>
+              <div>
+                {originalQueries.length ? (
+                  <div className="mb-3">
+                    <TextList title="原查询词" values={originalQueries} emptyText="" />
+                  </div>
+                ) : null}
+                <TextList title="新查询词" values={target.queries} emptyText="未生成新查询词" numbered />
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {!targets.length ? <div className="text-sm text-slate-500">本轮未生成有效的补采目标。</div> : null}
+    </div>
+  );
+}
+
+function buildDisplayAttempts(
+  workflowSummary: WorkflowSummary | undefined,
+  plannerAttempts: PlannerAttempt[],
+): DisplayAttempt[] {
+  if (plannerAttempts.length) {
+    return [...plannerAttempts]
+      .sort((left, right) => right.attempt_no - left.attempt_no)
+      .map((attempt) => ({
+        attemptNo: attempt.attempt_no,
+        status: attempt.status,
+        plannerOutput: attempt.planner_output,
+        diagnostics: attempt.diagnostics,
+        reworkContext: attempt.rework_context,
+        createdAt: attempt.created_at,
+      }));
+  }
+
+  const plannerOutput = objectValue(workflowSummary?.planner_output);
+  if (!Object.keys(plannerOutput).length && !workflowSummary?.collection_plan) return [];
+
+  return [
+    {
+      attemptNo: 1,
+      status: "generated",
+      plannerOutput: Object.keys(plannerOutput).length
+        ? plannerOutput
+        : {
+            planner_summary: workflowSummary?.planner_summary,
+            selected_dimensions: workflowSummary?.selected_dimensions,
+            analysis_dimension_plan: workflowSummary?.analysis_dimension_plan,
+            collection_plan: workflowSummary?.collection_plan,
+            planner_notes: workflowSummary?.planner_notes,
+          },
+      diagnostics: {},
+    },
+  ];
+}
+
+function normalizeCollectionPlan(value: unknown): Record<string, CollectionPlanItem[]> {
+  const result: Record<string, CollectionPlanItem[]> = {};
+  for (const [competitor, dimensions] of Object.entries(objectValue(value))) {
+    const items: CollectionPlanItem[] = [];
+    for (const [dimensionKey, rawItem] of Object.entries(objectValue(dimensions))) {
+      const item = objectValue(rawItem);
+      items.push({
+        dimensionId: stringValue(item.dimension_id) || dimensionKey,
+        label: stringValue(item.label) || dimensionLabel(dimensionKey),
+        queries: stringList(item.queries),
+        researchGoals: stringList(item.research_goals),
+      });
+    }
+    result[competitor] = items;
+  }
+  return result;
+}
+
+function normalizeIncrementalTargets(value: unknown): IncrementalTarget[] {
+  return arrayOfRecords(value).map((target) => ({
+    competitor: stringValue(target.competitor) || "未知竞品",
+    dimensionId: stringValue(target.dimension_id) || "unknown",
+    queries: stringList(target.queries),
+    reason: stringValue(target.reason),
+    questionId: stringValue(target.question_id) || undefined,
+    question: stringValue(target.question) || undefined,
+    suggestions: stringList(target.suggestions),
+    maxEvidence: typeof target.max_evidence === "number" ? target.max_evidence : undefined,
+    contentFetchPriority: stringValue(target.content_fetch_priority) || undefined,
+  }));
+}
+
+function resolveCollectorConfig(
+  config: CollectorConfig | null | undefined,
+  competitor: string,
+  dimensionId: string,
+): CollectorConfig["default"] | undefined {
+  if (!config) return undefined;
+  const override = config.overrides?.find(
+    (item) => item.competitor === competitor && item.dimension_id === dimensionId,
+  );
+  return {
+    ...config.default,
+    ...override,
+    include_domains: override?.include_domains?.length
+      ? override.include_domains
+      : config.default?.include_domains,
+    exclude_domains: override?.exclude_domains?.length
+      ? override.exclude_domains
+      : config.default?.exclude_domains,
+  };
+}
+
+function isIncrementalOutput(output: JsonRecord): boolean {
+  return output.mode === "incremental_collection_plan" || Array.isArray(output.targets);
+}
+
+function attemptSource(attempt: DisplayAttempt, incremental: boolean): string | null {
+  const explicit = stringValue(attempt.reworkContext?.source);
+  if (explicit) return explicit;
+  if (!incremental) return null;
+  const targets = normalizeIncrementalTargets(attempt.plannerOutput.targets);
+  return targets.some((target) => target.questionId || target.contentFetchPriority === "required")
+    ? "AnalystQA"
+    : "EvidenceQA";
+}
+
+function statusLabel(status: PlannerAttempt["status"]): string {
   if (status === "generated") return "LLM 生成";
-  if (status === "fallback") return "确定性兜底";
-  return "失败";
+  if (status === "fallback") return "规则兜底";
+  return "生成失败";
 }
 
-function attemptDimensions(attempt: PlannerAttempt): string[] {
-  const dimensions = attempt.planner_output.selected_dimensions;
-  return Array.isArray(dimensions)
-    ? dimensions.filter((item): item is string => typeof item === "string")
-    : [];
+function attemptStatusLabel(attempt: DisplayAttempt): string {
+  if (attempt.diagnostics.planner_mode_used === "manual") return "人工规划";
+  return statusLabel(attempt.status);
 }
 
-function formatAttemptTime(value: string) {
+function statusTone(status: PlannerAttempt["status"]): "green" | "amber" | "red" {
+  if (status === "generated") return "green";
+  if (status === "fallback") return "amber";
+  return "red";
+}
+
+function dimensionLabel(dimensionId: string): string {
+  const label = DIMENSION_LABELS[dimensionId];
+  return label ? `${label}（${dimensionId}）` : dimensionId;
+}
+
+function formatTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function Panel({ title, className = "", children }: { title: string; className?: string; children: ReactNode }) {
+function objectValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+}
+
+function arrayOfRecords(value: unknown): JsonRecord[] {
+  return Array.isArray(value) ? value.map(objectValue).filter((item) => Object.keys(item).length > 0) : [];
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function numberOrText(value: unknown): string {
+  return typeof value === "number" || typeof value === "string" ? String(value) : "";
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <div className="mb-1 text-xs font-semibold text-slate-500">{children}</div>;
+}
+
+function Field({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
   return (
-    <div className={`rounded border border-line bg-white p-3 ${className}`}>
-      <h3 className="mb-3 text-sm font-semibold">{title}</h3>
-      {children}
+    <div className={wide ? "col-span-2" : ""}>
+      <dt className="text-slate-500">{label}</dt>
+      <dd className="font-medium text-slate-800">{value}</dd>
     </div>
   );
 }
 
-function GuidanceBlock({ title, items }: { title: string; items?: string[] }) {
+function TextList({
+  title,
+  values,
+  emptyText,
+  numbered = false,
+}: {
+  title?: string;
+  values: string[];
+  emptyText: string;
+  numbered?: boolean;
+}) {
   return (
-    <div className="rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
-      <div className="mb-2 font-semibold text-ink">{title}</div>
-      {items?.length ? items.slice(0, 5).map((item) => <div key={item}>- {item}</div>) : <div className="text-slate-500">暂无指导</div>}
+    <div>
+      {title ? <SectionTitle>{title}</SectionTitle> : null}
+      {values.length ? (
+        <div className="space-y-0.5 text-sm leading-5 text-slate-700">
+          {values.map((value, index) => (
+            <div key={`${value}-${index}`} className="flex gap-2">
+              <span className="shrink-0 text-slate-400">{numbered ? `${index + 1}.` : "·"}</span>
+              <span>{value}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-slate-500">{emptyText}</div>
+      )}
     </div>
   );
 }
 
-function SubTitle({ children }: { children: ReactNode }) {
-  return <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{children}</div>;
-}
-
-function StatusPill({ label, value }: { label: string; value: string }) {
+function Metric({
+  label,
+  value,
+  tone = "slate",
+}: {
+  label: string;
+  value: string;
+  tone?: "slate" | "green" | "amber" | "red";
+}) {
+  const toneClass = {
+    slate: "text-slate-800",
+    green: "text-success",
+    amber: "text-warning",
+    red: "text-danger",
+  }[tone];
   return (
-    <span className="rounded border border-line bg-panel px-3 py-1">
+    <span className="border border-line bg-panel px-3 py-1.5">
       <span className="text-slate-500">{label}：</span>
-      <span className="font-semibold text-ink">{value}</span>
+      <span className={`font-semibold ${toneClass}`}>{value}</span>
     </span>
   );
 }
 
-function TagGroup({ values, limit }: { values?: string[]; limit: number }) {
-  if (!values?.length) return <div className="text-xs text-slate-500">暂无搜索词</div>;
-  return (
-    <div className="flex flex-wrap gap-2">
-      {values.slice(0, limit).map((value) => (
-        <span key={value} className="rounded border border-line bg-white px-2 py-1 text-xs text-slate-700">
-          {value}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function dimensionLabel(dimension: string): string {
-  const label = DIMENSION_LABELS[dimension];
-  return label ? `${label} ${dimension}` : dimension;
-}
-
-function sumRecord(record?: Record<string, number>): number {
-  return Object.values(record ?? {}).reduce((sum, value) => sum + value, 0);
-}
-
-function normalizeCollectorPlan(value: unknown): Record<string, Record<string, PlanQuery>> {
-  if (!value || typeof value !== "object") return {};
-  const output: Record<string, Record<string, PlanQuery>> = {};
-  for (const [competitor, byDimension] of Object.entries(value as Record<string, unknown>)) {
-    if (!byDimension || typeof byDimension !== "object") continue;
-    output[competitor] = {};
-    for (const [dimensionId, item] of Object.entries(byDimension as Record<string, unknown>)) {
-      if (!item || typeof item !== "object") continue;
-      const plan = item as PlanQuery;
-      output[competitor][dimensionId] = {
-        ...plan,
-        dimension_id: plan.dimension_id ?? dimensionId,
-        queries: Array.isArray(plan.queries) ? plan.queries : [],
-      };
-    }
-  }
-  return output;
-}
-
-function dimensionsForCompetitor(allDimensions: string[], byDimension: Record<string, PlanQuery>): string[] {
-  const ordered = [...allDimensions.filter((dimension) => byDimension[dimension]), ...Object.keys(byDimension).filter((dimension) => !allDimensions.includes(dimension))];
-  return Array.from(new Set(ordered));
-}
-
-function skipReasonLabel(reason?: string | null): string {
-  const labels: Record<string, string> = {
-    exceeded_max_query_count_per_competitor: "超过每个竞品最大搜索词数量",
-    max_evidence_per_competitor_reached: "该竞品 Evidence 数量已达上限",
-    max_evidence_per_dimension_reached: "该维度 Evidence 数量已达上限",
-  };
-  return reason ? labels[reason] ?? reason : "-";
+function Badge({
+  text,
+  tone,
+}: {
+  text: string;
+  tone: "blue" | "green" | "amber" | "red";
+}) {
+  const className = {
+    blue: "border-blue-200 bg-blue-50 text-blue-700",
+    green: "border-green-200 bg-green-50 text-green-700",
+    amber: "border-amber-200 bg-amber-50 text-amber-700",
+    red: "border-red-200 bg-red-50 text-red-700",
+  }[tone];
+  return <span className={`border px-2 py-0.5 text-xs font-medium ${className}`}>{text}</span>;
 }

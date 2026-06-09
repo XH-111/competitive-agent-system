@@ -107,6 +107,7 @@ export type Report = {
     dimension_results?: DimensionResult[];
     claims?: Claim[];
     writer_diagnostics?: WriterDiagnostics;
+    report_agent?: Record<string, unknown>;
   };
   dimension_results?: DimensionResult[];
   claims?: Claim[];
@@ -389,6 +390,14 @@ export type WorkflowSummary = {
   };
   analyst_qa_result?: QaResult;
   analyst_incremental_attempts?: Array<Record<string, unknown>>;
+  report_agent_output?: {
+    markdown_report?: string;
+    executive_summary?: string[];
+    dimension_sections?: Array<Record<string, unknown>>;
+    evidence_gaps?: Array<Record<string, unknown>>;
+    diagnostics?: Record<string, unknown>;
+  };
+  markdown_report?: string | null;
   knowledge_hits?: KnowledgeHit[];
   retrieved_knowledge_chunk_count?: number;
   knowledge_retrieval_strategy?: KnowledgeRetrievalStrategy;
@@ -445,6 +454,7 @@ export type PlannerRunResult = {
 export type RunTaskOverrides = {
   collection_plan_override?: CollectionPlan;
   collector_config?: CollectorConfig;
+  skip_initial_planner?: boolean;
   manual_evidence_selection_enabled?: boolean;
   selected_evidence_ids?: string[];
   source_run_id?: string;

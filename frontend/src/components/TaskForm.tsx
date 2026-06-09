@@ -11,8 +11,8 @@ const examples: Array<{ label: string; values: TaskFormValues }> = [
       competitors: "Cursor, Trae, GitHub Copilot",
       region: "全球",
       industry: "AI Coding Agent",
-      collectionStrategyMode: "balanced"
-    }
+      collectionStrategyMode: "balanced",
+    },
   },
   {
     label: "使用示例：企业协作工具",
@@ -21,8 +21,8 @@ const examples: Array<{ label: string; values: TaskFormValues }> = [
       competitors: "飞书, 钉钉, 企业微信",
       region: "中国",
       industry: "B2B SaaS",
-      collectionStrategyMode: "balanced"
-    }
+      collectionStrategyMode: "balanced",
+    },
   },
   {
     label: "使用示例：美妆电商平台",
@@ -31,9 +31,9 @@ const examples: Array<{ label: string; values: TaskFormValues }> = [
       competitors: "Sephora, Ulta Beauty, Watsons",
       region: "全球",
       industry: "Beauty Retail",
-      collectionStrategyMode: "balanced"
-    }
-  }
+      collectionStrategyMode: "balanced",
+    },
+  },
 ];
 
 function Field({
@@ -42,7 +42,7 @@ function Field({
   placeholder,
   helper,
   error,
-  onChange
+  onChange,
 }: {
   label: string;
   value: string;
@@ -115,7 +115,9 @@ export function TaskForm({ onCreated }: { onCreated: (task: Task) => void }) {
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">创建分析任务</h2>
-          <p className="mt-1 text-sm text-slate-600">创建任务只保存分析目标；点击“运行 Demo 工作流”后才会执行 Mock Agent DAG。</p>
+          <p className="mt-1 text-sm text-slate-600">
+            填写分析目标和竞品范围。创建任务后，点击“运行竞品分析流程”开始执行。
+          </p>
         </div>
         <Sparkles className="mt-1 text-accent" size={20} />
       </div>
@@ -137,10 +139,10 @@ export function TaskForm({ onCreated }: { onCreated: (task: Task) => void }) {
       </div>
 
       <form onSubmit={submit} className="grid gap-4 md:grid-cols-2">
-        <Field label="Task Name / 分析任务名称" value={form.taskName} placeholder="例如：企业协作工具竞品分析" helper="用于标识本次分析任务，方便后续查看 Trace 和报告。" error={errors.taskName} onChange={(value) => update("taskName", value)} />
+        <Field label="Task Name / 分析任务名称" value={form.taskName} placeholder="例如：企业协作工具竞品分析" helper="用于标识本次分析任务，并作为 Planner 的分析主题。" error={errors.taskName} onChange={(value) => update("taskName", value)} />
         <Field label="Competitors / 竞品名称" value={form.competitors} placeholder="例如：飞书, 钉钉, 企业微信" helper="多个竞品请用中文逗号或英文逗号分隔。" error={errors.competitors} onChange={(value) => update("competitors", value)} />
-        <Field label="Region / 分析区域" value={form.region} placeholder="例如：中国 / 全球 / 北美" helper="用于限定信息采集范围和市场分析口径。" error={errors.region} onChange={(value) => update("region", value)} />
-        <Field label="Industry / 行业或产品类型" value={form.industry} placeholder="例如：B2B SaaS / 电商平台 / AI 编程工具" helper="用于选择竞品知识 Schema 和分析维度。" error={errors.industry} onChange={(value) => update("industry", value)} />
+        <Field label="Region / 分析区域" value={form.region} placeholder="例如：中国 / 全球 / 北美" helper="用于限定 Planner 和信息采集的地域口径。" error={errors.region} onChange={(value) => update("region", value)} />
+        <Field label="Industry / 行业或产品类型" value={form.industry} placeholder="例如：B2B SaaS / 电商平台 / AI 编程工具" helper="用于辅助 Planner 规划维度、问题和查询词。" error={errors.industry} onChange={(value) => update("industry", value)} />
         <label className="block md:col-span-2">
           <span className="text-sm font-semibold text-ink">采集策略模式</span>
           <select
@@ -156,14 +158,14 @@ export function TaskForm({ onCreated }: { onCreated: (task: Task) => void }) {
             <option value="expert">专家模式：query 8 / 维度 20 / QA 3</option>
           </select>
           <span className="mt-1 block text-xs leading-5 text-slate-500">
-            作为该任务的默认采集强度；正文抽取会尝试处理全部通过 EvidenceQA 的 eligible evidence。
+            控制 Collector 的采集数量、EvidenceQA 最低证据数和正文抽取范围。
           </span>
         </label>
         <div className="md:col-span-2">
           <button className="inline-flex items-center justify-center gap-2 rounded bg-accent px-4 py-2 font-semibold text-white disabled:opacity-50" disabled={busy}>
             <Plus size={16} /> 创建任务
           </button>
-          <span className="ml-3 align-middle text-sm text-slate-600">只创建任务，不运行 Agent。</span>
+          <span className="ml-3 align-middle text-sm text-slate-600">创建后可在任务列表中选择并运行。</span>
         </div>
       </form>
     </section>
