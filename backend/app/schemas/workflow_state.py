@@ -125,4 +125,5 @@ class WorkflowState(TypedDict, total=False):
     node_sequence: list[str]
     conditional_routes_taken: list[ConditionalRoute]
     workflow_summary: dict[str, Any]
+    workflow_result: dict[str, Any]
     debug_stage: str | None

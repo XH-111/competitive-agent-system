@@ -225,6 +225,8 @@ export type WorkflowSummary = {
   task_id?: string;
   workflow_engine_requested?: string;
   workflow_engine_used?: string;
+  workflow_orchestration?: string;
+  checkpoint_provider?: string;
   debug_stage?: "planner_only" | "main_flow" | "collector_only" | null;
   planner_summary?: {
     intent_classification?: string;

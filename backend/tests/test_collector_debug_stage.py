@@ -429,6 +429,8 @@ def test_main_flow_runs_planner_collector_qa_analyst_and_report(db_session, monk
     )
 
     assert result["workflow_summary"]["debug_stage"] == "main_flow"
+    assert result["workflow_summary"]["workflow_orchestration"] == "langgraph_stategraph"
+    assert result["workflow_summary"]["checkpoint_provider"] == "in_memory"
     node_sequence = result["workflow_summary"]["node_sequence"]
     assert node_sequence[:3] == ["planner", "collector", "qa"]
     assert "evidence_content_fetcher" in node_sequence

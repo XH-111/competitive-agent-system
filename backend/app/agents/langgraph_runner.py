@@ -3,6 +3,8 @@ import os
 import time
 from uuid import uuid4
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
 from app.agents.base import AgentExecutionError
@@ -79,6 +81,9 @@ class LangGraphWorkflowRunner:
         self.report_agent = ReportAgent(self.trace_service)
         self.survey_agent = SurveyAgent(self.trace_service)
         self.qa = QaAgent(self.trace_service)
+        # 第一版真实 LangGraph 编排使用内存 checkpointer，先验证 StateGraph 调度不影响现有业务输出。
+        # 后续如需跨进程断点续传，再替换为 sqlite/postgres checkpointer。
+        self.graph_checkpointer = InMemorySaver()
 
     @staticmethod
     def _default_collector_config(task: Task, override: CollectorConfig | None) -> CollectorConfig:
@@ -686,8 +691,8 @@ class LangGraphWorkflowRunner:
         }
         summary = {
             "run_id": task_run.run_id,
-            "task_id": initial_state["task_id"],
-            "workflow_engine_requested": initial_state["workflow_engine_requested"],
+            "task_id": planner_state["task_id"],
+            "workflow_engine_requested": planner_state["workflow_engine_requested"],
             "workflow_engine_used": "langgraph",
             "debug_stage": "planner_only",
             "planner_summary": planner_output.planner_summary.model_dump(mode="json"),
@@ -716,7 +721,7 @@ class LangGraphWorkflowRunner:
             "elapsed_time_ms": elapsed,
             "run_isolation_strategy": "run_id",
         }
-        self._save_workflow_trace(initial_state["task_id"], task_run.run_id, summary, elapsed)
+        self._save_workflow_trace(planner_state["task_id"], task_run.run_id, summary, elapsed)
         self.task_service.update_status(initial_state["task_id"], "completed", rework_count=initial_state["rework_count"])
         finished_run = self.task_run_service.finish_run(
             task_run.run_id,
@@ -746,8 +751,28 @@ class LangGraphWorkflowRunner:
         }
 
     def _run_main_flow(self, initial_state: WorkflowState, task_run, started: float) -> dict:
-        # 主流程第一步由 Planner 产出可执行 collection_plan；后续 Collector/QA/Analyst 都依赖这份计划。
-        planner_state = self.planner_node(initial_state)
+        graph = self._build_main_flow_graph(task_run, started)
+        final_state = graph.invoke(
+            initial_state,
+            config={"configurable": {"thread_id": task_run.run_id}},
+        )
+        return final_state["workflow_result"]
+
+    def _build_main_flow_graph(self, task_run, started: float):
+        graph = StateGraph(WorkflowState)
+        graph.add_node("planner", self.planner_node)
+        graph.add_node(
+            "main_flow_tail",
+            lambda state: {
+                "workflow_result": self._run_main_flow_after_planner(state, task_run, started)
+            },
+        )
+        graph.add_edge(START, "planner")
+        graph.add_edge("planner", "main_flow_tail")
+        graph.add_edge("main_flow_tail", END)
+        return graph.compile(checkpointer=self.graph_checkpointer)
+
+    def _run_main_flow_after_planner(self, planner_state: WorkflowState, task_run, started: float) -> dict:
         self._check_cancelled(task_run.run_id)
         collector_error: str | None = None
         try:
@@ -1137,9 +1162,11 @@ class LangGraphWorkflowRunner:
         }
         summary = {
             "run_id": task_run.run_id,
-            "task_id": initial_state["task_id"],
-            "workflow_engine_requested": initial_state["workflow_engine_requested"],
+            "task_id": planner_state["task_id"],
+            "workflow_engine_requested": planner_state["workflow_engine_requested"],
             "workflow_engine_used": "langgraph",
+            "workflow_orchestration": "langgraph_stategraph",
+            "checkpoint_provider": "in_memory",
             "debug_stage": "main_flow",
             "planner_summary": planner_output.planner_summary.model_dump(mode="json"),
             "selected_dimensions": planner_output.selected_dimensions,
@@ -1246,7 +1273,7 @@ class LangGraphWorkflowRunner:
             "elapsed_time_ms": elapsed,
             "run_isolation_strategy": "run_id",
         }
-        self._save_workflow_trace(initial_state["task_id"], task_run.run_id, summary, elapsed)
+        self._save_workflow_trace(planner_state["task_id"], task_run.run_id, summary, elapsed)
         final_failed = qa_result.status == "failed" or analyst_qa_result.status == "failed"
         task_status = "qa_failed" if final_failed else "completed"
         run_status = "qa_failed" if final_failed else "completed"
@@ -1262,7 +1289,7 @@ class LangGraphWorkflowRunner:
                 "SurveyAgent": "failed" if survey_error else ("completed" if survey else "skipped"),
             },
         )
-        self.task_service.update_status(initial_state["task_id"], task_status, rework_count=attempt_no + analyst_attempt_no)
+        self.task_service.update_status(planner_state["task_id"], task_status, rework_count=attempt_no + analyst_attempt_no)
         finished_run = self.task_run_service.finish_run(
             task_run.run_id,
             status=run_status,
