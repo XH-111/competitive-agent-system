@@ -43,6 +43,7 @@ export default function App() {
   const [selectedFact, setSelectedFact] = useState<DimensionResult>();
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const demoMode = "normal";
   const autoRework = true;
   const writerMode = "llm";
@@ -257,6 +258,25 @@ export default function App() {
     }
   }
 
+  async function cancelCurrentRun() {
+    if (!task || !selectedRunId || cancelling) return;
+    setCancelling(true);
+    try {
+      const cancelled = await api.cancelRun(task.task_id, selectedRunId);
+      setRuns((current) => current.map((item) => item.run_id === cancelled.run_id ? cancelled : item));
+      setWorkflowProgress((current) => ({
+        ...(current ?? { run_id: selectedRunId }),
+        run_id: selectedRunId,
+        status: cancelled.status,
+        current_agent: "WorkflowEngine",
+        current_stage: "cancel_requested",
+        message: "已请求取消，当前节点结束后会停止。",
+      }));
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   async function continueWithSelectedEvidence() {
     if (!task || !selectedRunId) return;
     if (!manualSelectedEvidenceIds.length) {
@@ -319,7 +339,7 @@ export default function App() {
         setRuns(nextRuns);
         activeRunId = activeRunId
           ?? nextRuns.find((item) => !knownRunIds.has(item.run_id))?.run_id
-          ?? nextRuns.find((item) => item.status === "running")?.run_id;
+          ?? nextRuns.find((item) => item.status === "running" || item.status === "cancel_requested")?.run_id;
         if (activeRunId) {
           setSelectedRunId(activeRunId);
           const [nextTraces, nextPlannerAttempts] = await Promise.all([

@@ -91,6 +91,7 @@ export const api = {
   runTraces: (taskId: string, runId: string) => request<TraceRecord[]>(`/api/tasks/${taskId}/runs/${runId}/traces`, { label: "runTraces", method: "GET" }),
   runProgress: (taskId: string, runId: string) => request<WorkflowProgress>(`/api/tasks/${taskId}/runs/${runId}/progress`, { label: "runProgress", method: "GET" }),
   runPlannerAttempts: (taskId: string, runId: string) => request<PlannerAttempt[]>(`/api/tasks/${taskId}/runs/${runId}/planner-attempts`, { label: "runPlannerAttempts", method: "GET" }),
+  cancelRun: (taskId: string, runId: string) => request<TaskRun>(`/api/tasks/${taskId}/runs/${runId}/cancel`, { label: "cancelRun", method: "POST" }),
   llmStatus: () => request<LlmStatus>("/api/llm/status", { label: "llmStatus", method: "GET" }),
   testLlm: () => request<LlmStatus>("/api/llm/test", { label: "testLlm", method: "POST" }),
   collectorStatus: () => request<CollectorStatus>("/api/search/status", { label: "collectorStatus", method: "GET" }),

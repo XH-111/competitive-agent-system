@@ -244,6 +244,14 @@ def get_task_run(task_id: str, run_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Task run not found") from exc
 
 
+@router.post("/tasks/{task_id}/runs/{run_id}/cancel")
+def cancel_task_run(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    try:
+        return TaskRunService(db).request_cancel(task_id, run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task run not found") from exc
+
+
 @router.get("/tasks/{task_id}/runs/{run_id}/evidence")
 def get_task_run_evidence(task_id: str, run_id: str, db: Session = Depends(get_db)):
     return EvidenceService(db).list_for_task(task_id, run_id=run_id)

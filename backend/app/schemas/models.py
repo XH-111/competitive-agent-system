@@ -5,8 +5,17 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-TaskStatus = Literal["created", "running", "qa_failed", "manual_review", "completed", "failed"]
-TaskRunStatus = Literal["running", "completed", "qa_failed", "manual_review", "failed", "insufficient_evidence"]
+TaskStatus = Literal["created", "running", "qa_failed", "manual_review", "completed", "failed", "cancelled"]
+TaskRunStatus = Literal[
+    "running",
+    "cancel_requested",
+    "cancelled",
+    "completed",
+    "qa_failed",
+    "manual_review",
+    "failed",
+    "insufficient_evidence",
+]
 AgentName = Literal[
     "PlannerAgent",
     "CollectorAgent",

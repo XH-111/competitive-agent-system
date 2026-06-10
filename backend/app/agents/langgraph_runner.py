@@ -63,6 +63,10 @@ from app.services.trace_service import TraceService
 from app.services.workflow_progress_service import set_workflow_progress
 
 
+class WorkflowCancelled(Exception):
+    pass
+
+
 class LangGraphWorkflowRunner:
     def __init__(self, db: Session):
         self.db = db
@@ -90,6 +94,50 @@ class LangGraphWorkflowRunner:
     @staticmethod
     def _default_collector_config(task: Task, override: CollectorConfig | None) -> CollectorConfig:
         return override or collector_config_for_strategy(task.collection_strategy_mode)
+
+    def _check_cancelled(self, run_id: str | None) -> None:
+        if run_id and self.task_run_service.is_cancel_requested(run_id):
+            raise WorkflowCancelled(f"Workflow run {run_id} was cancelled by user request.")
+
+    def _cancel_run_response(self, task_id: str, run_id: str, started: float) -> dict:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        message = "Workflow cancelled by user request."
+        set_workflow_progress(
+            run_id,
+            current_agent="WorkflowEngine",
+            current_stage="cancelled",
+            message=message,
+            status="cancelled",
+        )
+        self.task_service.update_status(task_id, "cancelled")
+        summary = {
+            "run_id": run_id,
+            "task_id": task_id,
+            "workflow_engine_requested": "langgraph",
+            "workflow_engine_used": "langgraph",
+            "node_sequence": [],
+            "conditional_routes_taken": [],
+            "final_status": "cancelled",
+            "elapsed_time_ms": elapsed,
+            "error_message": message,
+        }
+        self._save_workflow_trace(task_id, run_id, summary, elapsed)
+        finished_run = self.task_run_service.finish_run(
+            run_id,
+            status="cancelled",
+            final_status="cancelled",
+            elapsed_time_ms=elapsed,
+            error_message=message,
+        )
+        return {
+            "run": finished_run,
+            "run_id": run_id,
+            "plan": None,
+            "qa_result": None,
+            "report": None,
+            "knowledge_hits": [],
+            "workflow_summary": summary,
+        }
 
     def run(
         self,
@@ -245,6 +293,8 @@ class LangGraphWorkflowRunner:
                 "knowledge_hits": final_state.get("knowledge_hits", []),
                 "workflow_summary": summary,
             }
+        except WorkflowCancelled:
+            return self._cancel_run_response(task_id, task_run.run_id, started)
         except Exception as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
             self.task_run_service.finish_run(
@@ -512,6 +562,7 @@ class LangGraphWorkflowRunner:
 
     def _run_collector_only(self, initial_state: WorkflowState, task_run, started: float) -> dict:
         planner_state = self.planner_node(initial_state)
+        self._check_cancelled(task_run.run_id)
         collector_error: str | None = None
         try:
             collector_state = self.collector_node(planner_state)
@@ -530,6 +581,7 @@ class LangGraphWorkflowRunner:
                 "node_sequence": [*planner_state["node_sequence"], "collector"],
                 "errors": [*planner_state.get("errors", []), collector_error],
             }
+        self._check_cancelled(task_run.run_id)
 
         planner_output = collector_state["planner_output"]
         collector_output = collector_state["collector_output"]
@@ -563,6 +615,7 @@ class LangGraphWorkflowRunner:
         current_collector_diagnostics = collector_output.diagnostics
         attempt_no = 0
         while attempt_no < MAX_REWORK:
+            self._check_cancelled(task_run.run_id)
             coverage_gap_payload = qa_result.metadata.get("coverage_gap") if qa_result.metadata else None
             if not (qa_result.status == "failed" and isinstance(coverage_gap_payload, dict) and coverage_gap_payload.get("targets")):
                 break
@@ -680,8 +733,11 @@ class LangGraphWorkflowRunner:
                     "qa_result": qa_result.model_dump(mode="json"),
                 }
             )
+        self._check_cancelled(task_run.run_id)
         collector_state = self.evidence_content_fetcher_node(collector_state)
+        self._check_cancelled(task_run.run_id)
         collector_state = self.evidence_analyst_node(collector_state)
+        self._check_cancelled(task_run.run_id)
         set_workflow_progress(
             task_run.run_id,
             current_agent="QaAgent",
@@ -707,6 +763,7 @@ class LangGraphWorkflowRunner:
         analyst_incremental_attempts: list[dict] = []
         analyst_attempt_no = 0
         while analyst_attempt_no < MAX_REWORK:
+            self._check_cancelled(task_run.run_id)
             coverage_gap_payload = analyst_qa_result.metadata.get("coverage_gap") if analyst_qa_result.metadata else None
             if not (
                 analyst_qa_result.status == "failed"
@@ -811,7 +868,9 @@ class LangGraphWorkflowRunner:
                 unit="evidence",
             )
             collector_state = self.evidence_content_fetcher_node(collector_state)
+            self._check_cancelled(task_run.run_id)
             collector_state = self.evidence_analyst_node(collector_state)
+            self._check_cancelled(task_run.run_id)
             set_workflow_progress(
                 task_run.run_id,
                 current_agent="QaAgent",
@@ -848,6 +907,7 @@ class LangGraphWorkflowRunner:
         content_fetch_output = collector_state.get("evidence_content_fetch_output", {})
         evidence_analyst_output = collector_state.get("evidence_analyst_output")
         if evidence_analyst_output is not None:
+            self._check_cancelled(task_run.run_id)
             collector_state = self.report_agent_node({**collector_state, "rework_count": analyst_attempt_no})
         report_agent_output = collector_state.get("report_agent_output")
         saved_report = collector_state.get("report")
@@ -1172,6 +1232,9 @@ class LangGraphWorkflowRunner:
             "llm_enabled": False,
             "llm_call_attempted": False,
             "llm_call_success": False,
+            "llm_prompt_tokens": 0,
+            "llm_completion_tokens": 0,
+            "llm_total_tokens": 0,
             "fallback_used": False,
             "manual_planning": True,
         }
@@ -1207,6 +1270,7 @@ class LangGraphWorkflowRunner:
         )
 
     def collector_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         set_workflow_progress(
             state.get("run_id"),
@@ -1242,6 +1306,7 @@ class LangGraphWorkflowRunner:
         }
 
     def evidence_gate_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         evidence = state.get("evidence", [])
         relevant_count = {
@@ -1405,6 +1470,7 @@ class LangGraphWorkflowRunner:
         }
 
     def analyst_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         retrieved_chunks = self.kb_retriever_service.retrieve_for_task(
             task,
@@ -1443,6 +1509,7 @@ class LangGraphWorkflowRunner:
         }
 
     def page_fetcher_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         fetch_enabled = state.get("content_mode") == "page" or (state.get("content_mode") is None and state.get("collector_mode") == "web")
         evidence, output = self.page_fetcher.enrich(state.get("evidence", []), run_id=state.get("run_id"), enabled=fetch_enabled)
@@ -1460,6 +1527,7 @@ class LangGraphWorkflowRunner:
         }
 
     def evidence_content_fetcher_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         all_evidence = state.get("evidence", [])
         target_ids = set(state.get("evidence_content_fetch_target_ids", []))
@@ -1541,6 +1609,7 @@ class LangGraphWorkflowRunner:
             time.sleep(delay)
 
     def evidence_analyst_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         set_workflow_progress(
             state.get("run_id"),
@@ -1589,6 +1658,7 @@ class LangGraphWorkflowRunner:
         }
 
     def report_writer_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         output = self.writer.run(
             ReportWriterInput(
@@ -1614,6 +1684,7 @@ class LangGraphWorkflowRunner:
         }
 
     def report_agent_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         set_workflow_progress(
             state.get("run_id"),
@@ -1653,6 +1724,7 @@ class LangGraphWorkflowRunner:
         }
 
     def qa_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         set_workflow_progress(
             state.get("run_id"),
@@ -1729,6 +1801,7 @@ class LangGraphWorkflowRunner:
         return next_state
 
     def final_report_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         writer_output = state.get("report_writer_output")
         qa_result = state.get("qa_result")

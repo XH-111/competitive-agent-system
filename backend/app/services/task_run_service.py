@@ -85,6 +85,25 @@ class TaskRunService:
         self.db.refresh(row)
         return _to_schema(row)
 
+    def request_cancel(self, task_id: str, run_id: str) -> TaskRun:
+        row = self.db.get(TaskRunRecord, run_id)
+        if row is None or row.task_id != task_id:
+            raise KeyError(run_id)
+        if row.status == "running":
+            row.status = "cancel_requested"
+            self.db.commit()
+            self.db.refresh(row)
+        return _to_schema(row)
+
+    def is_cancel_requested(self, run_id: str) -> bool:
+        row = (
+            self.db.query(TaskRunRecord)
+            .filter_by(run_id=run_id)
+            .populate_existing()
+            .first()
+        )
+        return row is not None and row.status == "cancel_requested"
+
     def get_run(self, task_id: str, run_id: str) -> TaskRun:
         row = self.db.get(TaskRunRecord, run_id)
         if row is None or row.task_id != task_id:
