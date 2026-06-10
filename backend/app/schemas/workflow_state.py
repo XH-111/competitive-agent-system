@@ -114,6 +114,7 @@ class WorkflowState(TypedDict, total=False):
     chunks: list[Chunk]
     retrieval_results: list[RetrievalResult]
     knowledge_hits: list[dict[str, Any]]
+    analyst_answer_kb_ingestion: dict[str, Any]
     claim_support_results: list[ClaimSupportResult]
     rework_context: ReworkContext | None
     report: Report | None

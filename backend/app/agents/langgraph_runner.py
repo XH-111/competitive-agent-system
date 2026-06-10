@@ -46,6 +46,7 @@ from app.constants.collection_strategy import (
 from app.services.evidence_service import EvidenceService
 from app.services.evidence_content_fetcher import EvidenceContentFetcher
 from app.services.entity_resolver_service import EntityResolverService
+from app.services.analyst_knowledge_service import AnalystKnowledgeService
 from app.services.planner_attempt_service import PlannerAttemptService
 from app.services.report_service import ReportService
 from app.services.survey_service import SurveyService
@@ -66,6 +67,7 @@ class LangGraphWorkflowRunner:
         self.trace_service = TraceService(db)
         self.evidence_service = EvidenceService(db)
         self.evidence_content_fetcher = EvidenceContentFetcher()
+        self.analyst_knowledge_service = AnalystKnowledgeService(db)
         self.report_service = ReportService(db)
         self.survey_service = SurveyService(db)
         self.task_run_service = TaskRunService(db)
@@ -236,6 +238,7 @@ class LangGraphWorkflowRunner:
             "chunks": [],
             "retrieval_results": [],
             "knowledge_hits": [],
+            "analyst_answer_kb_ingestion": {},
             "claim_support_results": [],
             "rework_context": None,
             "report": None,
@@ -376,6 +379,7 @@ class LangGraphWorkflowRunner:
             "chunks": [],
             "retrieval_results": [],
             "knowledge_hits": [],
+            "analyst_answer_kb_ingestion": {},
             "claim_support_results": [],
             "rework_context": None,
             "report": None,
@@ -581,6 +585,7 @@ class LangGraphWorkflowRunner:
             "node_sequence": [*state["node_sequence"], "analyst_qa"],
         }
         if state.get("evidence_analyst_output") is not None:
+            state = self.ingest_analyst_answers_node(state)
             state = self.report_agent_node(state)
             state = self.survey_agent_node(state)
         elapsed = int((time.perf_counter() - started) * 1000)
@@ -1084,6 +1089,7 @@ class LangGraphWorkflowRunner:
         evidence_analyst_output = collector_state.get("evidence_analyst_output")
         if evidence_analyst_output is not None:
             self._check_cancelled(task_run.run_id)
+            collector_state = self.ingest_analyst_answers_node(collector_state)
             collector_state = self.report_agent_node({**collector_state, "rework_count": analyst_attempt_no})
             collector_state = self.survey_agent_node(collector_state)
         report_agent_output = collector_state.get("report_agent_output")
@@ -1178,6 +1184,7 @@ class LangGraphWorkflowRunner:
             ),
             "survey": survey,
             "survey_error": survey_error,
+            "analyst_answer_kb_ingestion": collector_state.get("analyst_answer_kb_ingestion", {}),
             "markdown_report": saved_report.markdown if saved_report else None,
             "incremental_collection_plan": (
                 incremental_output.incremental_collection_plan.model_dump(mode="json")
@@ -1657,6 +1664,35 @@ class LangGraphWorkflowRunner:
             "node_sequence": [*state["node_sequence"], "report_agent"],
         }
 
+    def ingest_analyst_answers_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
+        task = self._current_task(state)
+        qa_result = state.get("qa_result")
+        if qa_result is not None and qa_result.status == "failed":
+            return {
+                **state,
+                "task": task,
+                "analyst_answer_kb_ingestion": {
+                    "source_type": "evidence_analyst_answer",
+                    "candidate_count": 0,
+                    "ingested": 0,
+                    "skipped_duplicate": 0,
+                    "skipped_no_evidence": 0,
+                    "failed": 0,
+                    "skipped_reason": "analyst_qa_failed",
+                },
+            }
+        result = self.analyst_knowledge_service.ingest_answered_questions(
+            task=task,
+            run_id=state.get("run_id"),
+            evidence_analyst_output=state.get("evidence_analyst_output"),
+        )
+        return {
+            **state,
+            "task": task,
+            "analyst_answer_kb_ingestion": result,
+        }
+
     def survey_agent_node(self, state: WorkflowState) -> WorkflowState:
         self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
@@ -1796,6 +1832,7 @@ class LangGraphWorkflowRunner:
             "survey": state.get("survey"),
             "survey_error": state.get("survey_error"),
             "knowledge_hits": state.get("knowledge_hits", []),
+            "analyst_answer_kb_ingestion": state.get("analyst_answer_kb_ingestion", {}),
             "run_isolation_strategy": state.get("run_isolation_strategy", "run_id"),
             "run_cleanup_summary": state.get("run_cleanup_summary", {}),
             "rework_count": state.get("qa_result").rework_count if state.get("qa_result") else state.get("rework_count", 0),

@@ -773,6 +773,7 @@ export default function App() {
                 workflowSummary={workflowSummary}
                 onEvidenceIdsSelect={setSelectedEvidenceIds}
               />
+              <AnalystAnswerKbIngestionNotice workflowSummary={workflowSummary} />
               <QaPanel qa={qa} workflowSummary={workflowSummary} />
               <SurveyPanel taskId={task?.task_id} runId={selectedRunId} />
             </>
@@ -799,6 +800,26 @@ export default function App() {
 function publicSurveyInviteCode(): string | undefined {
   const match = window.location.pathname.match(/^\/survey\/([^/]+)$/);
   return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+}
+
+function AnalystAnswerKbIngestionNotice({ workflowSummary }: { workflowSummary?: WorkflowSummary }) {
+  const result = workflowSummary?.analyst_answer_kb_ingestion;
+  if (!result) return null;
+  const ingested = result.ingested ?? 0;
+  const duplicate = result.skipped_duplicate ?? 0;
+  const candidate = result.candidate_count ?? 0;
+  const failed = result.failed ?? 0;
+  if (!candidate && !ingested && !duplicate && !failed) return null;
+  return (
+    <section className="rounded border border-emerald-200 bg-emerald-50 p-4 text-sm">
+      <div className="font-semibold text-emerald-900">长期知识库沉淀</div>
+      <p className="mt-1 text-emerald-800">
+        已将 {ingested} 条 answered 问答沉淀到长期知识库，用于后续 RAG 检索。
+        {duplicate > 0 ? ` 跳过重复 ${duplicate} 条。` : ""}
+        {failed > 0 ? ` ${failed} 条写入失败。` : ""}
+      </p>
+    </section>
+  );
 }
 
 type EditableCollectorDefaults = {

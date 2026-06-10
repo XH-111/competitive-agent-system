@@ -401,6 +401,15 @@ export type WorkflowSummary = {
   knowledge_hits?: KnowledgeHit[];
   retrieved_knowledge_chunk_count?: number;
   knowledge_retrieval_strategy?: KnowledgeRetrievalStrategy;
+  analyst_answer_kb_ingestion?: {
+    source_type?: string;
+    candidate_count?: number;
+    ingested?: number;
+    skipped_no_evidence?: number;
+    skipped_duplicate?: number;
+    failed?: number;
+    skipped_reason?: string;
+  };
 };
 
 export type EvidenceQuestionAnswer = {
