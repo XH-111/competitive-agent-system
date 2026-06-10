@@ -34,7 +34,7 @@ class ReportAgent:
             task_id=input_data.task.task_id,
             run_id=input_data.run_id,
             agent_name=self.name,
-            to_agent="FinalReport",
+            to_agent="WorkflowEngine",
             message_type="report",
             schema_name="ReportAgentOutput",
             input_summary=(

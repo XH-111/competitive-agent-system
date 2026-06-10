@@ -50,7 +50,7 @@ export default function App() {
   const [collectorMode, setCollectorMode] = useState<"mock" | "web">("web");
   const analystMode = "llm";
   const workflowEngine: "langgraph" = "langgraph";
-  const runStage: "collector_only" = "collector_only";
+  const runStage: "main_flow" = "main_flow";
   const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
   const [workflowProgress, setWorkflowProgress] = useState<WorkflowProgress>();
   const [plannerAttempts, setPlannerAttempts] = useState<PlannerAttempt[]>([]);
@@ -420,7 +420,7 @@ export default function App() {
           ? "测试失败"
           : "已配置";
   const canManualSelectEvidence = Boolean(
-    selectedRunId && evidence.length > 0 && workflowSummary?.debug_stage === "collector_only",
+    selectedRunId && evidence.length > 0 && workflowSummary?.debug_stage === "main_flow",
   );
 
   return (
@@ -666,7 +666,7 @@ export default function App() {
         <div className="space-y-4">
           <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? runStage} progress={workflowProgress} totalElapsedTimeMs={workflowSummary?.elapsed_time_ms} />
           <PlannerSummaryCard workflowSummary={workflowSummary} plannerAttempts={plannerAttempts} />
-          {workflowSummary?.debug_stage === "collector_only" && (
+          {workflowSummary?.debug_stage === "main_flow" && (
             <>
               <details className="rounded border border-line bg-white">
                 <summary className="cursor-pointer list-none p-4">

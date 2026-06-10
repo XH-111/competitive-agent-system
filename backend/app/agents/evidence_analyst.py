@@ -41,7 +41,7 @@ class EvidenceAnalystAgent:
             task_id=task.task_id,
             run_id=input_data.run_id,
             agent_name=self.name,
-            to_agent="ReportWriterAgent",
+            to_agent="ReportAgent",
             message_type="analysis",
             schema_name="EvidenceAnalystOutput",
             input_summary=f"Answer planner questions from {len(input_data.evidence)} evidence records",
@@ -63,7 +63,7 @@ class EvidenceAnalystAgent:
         ):
             return self._produce_incremental(input_data, progress_callback=progress_callback)
 
-        groups = self._group_evidence(input_data.evidence)
+        groups = self._analysis_groups(input_data)
         group_questions: dict[tuple[str | None, str | None], int] = {
             key: len(self._questions(self._plan_item(input_data, key[0], key[1]), key[1]))
             for key in groups
@@ -122,7 +122,26 @@ class EvidenceAnalystAgent:
                         "dimension_id": dimension_id,
                     }
                 )
-            result, item_diagnostics = self._answer_group(input_data, competitor, dimension_id, evidence_items, index)
+            if not evidence_items:
+                result = self._fallback_result(
+                    input_data,
+                    competitor,
+                    dimension_id,
+                    evidence_items,
+                    "no_evidence_for_competitor_dimension",
+                )
+                item_diagnostics = {
+                    "status": "fallback",
+                    "llm_call_attempted": False,
+                    "llm_elapsed_time_ms": 0,
+                    "llm_prompt_tokens": 0,
+                    "llm_completion_tokens": 0,
+                    "llm_total_tokens": 0,
+                    "llm_usage_available": False,
+                    "errors": ["no_evidence_for_competitor_dimension"],
+                }
+            else:
+                result, item_diagnostics = self._answer_group(input_data, competitor, dimension_id, evidence_items, index)
             completed_questions += question_count
             results.append(result)
             diagnostics["completed_group_count"] += 1
@@ -535,6 +554,20 @@ class EvidenceAnalystAgent:
                 continue
             groups[(item.competitor, EvidenceAnalystAgent._dimension_id(item))].append(item)
         return dict(groups)
+
+    @staticmethod
+    def _analysis_groups(input_data: EvidenceAnalystInput) -> dict[tuple[str | None, str | None], list[Evidence]]:
+        groups = EvidenceAnalystAgent._group_evidence(input_data.evidence)
+        if not input_data.collection_plan:
+            return groups
+        ordered: dict[tuple[str | None, str | None], list[Evidence]] = {}
+        for competitor, dimensions in input_data.collection_plan.collector_search_plan.items():
+            for dimension_id in dimensions:
+                key = (competitor, dimension_id)
+                ordered[key] = groups.get(key, [])
+        for key, evidence_items in groups.items():
+            ordered.setdefault(key, evidence_items)
+        return ordered
 
     @staticmethod
     def _dimension_id(evidence: Evidence) -> str | None:

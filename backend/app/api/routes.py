@@ -2,7 +2,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.agents.runner import default_dag
 from app.agents.runner_factory import create_workflow_runner
 from app.database import get_db
 from app.schemas import CollectorConfig, CreateTaskRequest, PlannerCollectionPlan
@@ -17,6 +16,29 @@ from app.services.web_search_client import WebSearchClient
 from app.services.workflow_progress_service import get_workflow_progress
 
 router = APIRouter(prefix="/api")
+
+
+def default_dag(status: str) -> dict:
+    completed = status == "completed"
+    active = status in {"running", "qa_failed", "completed", "manual_review"}
+    return {
+        "nodes": [
+            {"id": "PlannerAgent", "label": "规划分析维度与采集策略", "status": "completed" if active else "pending"},
+            {"id": "CollectorAgent", "label": "采集公开 Evidence", "status": "completed" if active else "pending"},
+            {"id": "QaAgent", "label": "检查 Evidence 与问题回答覆盖", "status": "completed" if completed else ("failed" if status == "qa_failed" else "pending")},
+            {"id": "EvidenceContentFetcher", "label": "抓取高质量 Evidence 正文", "status": "completed" if active else "pending"},
+            {"id": "EvidenceAnalystAgent", "label": "基于 Evidence 回答规划问题", "status": "completed" if active else "pending"},
+            {"id": "ReportAgent", "label": "生成结构化竞品分析报告", "status": "completed" if completed else "pending"},
+        ],
+        "edges": [
+            {"source": "PlannerAgent", "target": "CollectorAgent", "label": "collection_plan"},
+            {"source": "CollectorAgent", "target": "QaAgent", "label": "EvidenceQA"},
+            {"source": "QaAgent", "target": "EvidenceContentFetcher", "label": "正文抓取"},
+            {"source": "EvidenceContentFetcher", "target": "EvidenceAnalystAgent", "label": "问题回答"},
+            {"source": "EvidenceAnalystAgent", "target": "QaAgent", "label": "AnalystQA"},
+            {"source": "QaAgent", "target": "ReportAgent", "label": "报告生成"},
+        ],
+    }
 
 
 class RunTaskRequest(BaseModel):
@@ -83,11 +105,14 @@ def run_task(
     analyst_mode: str = Query("evidence", pattern="^(mock|evidence|llm)$"),
     workflow_engine: str | None = Query(None, pattern="^(custom|langgraph)$"),
     content_mode: str | None = Query(None),
-    debug_stage: str | None = Query(None, pattern="^(planner_only|collector_only)$"),
+    debug_stage: str | None = Query(None, pattern="^(planner_only|main_flow|collector_only)$"),
     db: Session = Depends(get_db),
 ):
     try:
-        effective_engine = "langgraph" if debug_stage in {"planner_only", "collector_only"} else workflow_engine
+        if workflow_engine == "custom":
+            raise HTTPException(status_code=410, detail="custom workflow engine has been retired; use langgraph.")
+        effective_engine = "langgraph"
+        effective_debug_stage = "main_flow" if debug_stage in {None, "collector_only"} else debug_stage
         runner, engine = create_workflow_runner(db, effective_engine)
         if engine == "langgraph":
             return runner.run(
@@ -99,7 +124,7 @@ def run_task(
                 analyst_mode=analyst_mode,
                 workflow_engine_requested=workflow_engine or "env/default",
                 content_mode=content_mode,
-                debug_stage=debug_stage,
+                debug_stage=effective_debug_stage,
                 collection_plan_override=request.collection_plan_override if request else None,
                 collector_config=request.collector_config if request else None,
                 skip_initial_planner=request.skip_initial_planner if request else False,
@@ -109,69 +134,7 @@ def run_task(
                 selected_evidence_ids=request.selected_evidence_ids if request else None,
                 source_run_id=request.source_run_id if request else None,
             )
-        run_service = TaskRunService(db)
-        task_run = run_service.create_run(
-            task_id=task_id,
-            workflow_engine="custom",
-            collector_mode=collector_mode,
-            analyst_mode=analyst_mode,
-            writer_mode=writer_mode,
-            content_mode=content_mode,
-            demo_mode=demo_mode,
-            auto_rework=auto_rework,
-        )
-        result = runner.run(
-            task_id,
-            demo_mode=demo_mode,
-            auto_rework=auto_rework,
-            writer_mode=writer_mode,
-            collector_mode=collector_mode,
-            analyst_mode=analyst_mode,
-            run_id=task_run.run_id,
-        )
-        result["workflow_summary"] = {
-            "workflow_engine_requested": workflow_engine or "env/default",
-            "workflow_engine_used": "custom",
-            "intent_classification": (
-                result["plan"].planner_summary.intent_classification if result.get("plan") else None
-            ),
-            "ambiguity_level": result["plan"].ambiguity_level if result.get("plan") else None,
-            "scope_type": result["plan"].scope_type if result.get("plan") else None,
-            "scope_size": result["plan"].scope_size if result.get("plan") else None,
-            "survey_needed": result["plan"].survey_needed if result.get("plan") else False,
-            "selected_dimensions": result["plan"].selected_dimensions if result.get("plan") else [],
-            "recommended_next_constraints": result["plan"].recommended_next_constraints if result.get("plan") else [],
-            "clarification_targets": result["plan"].clarification_targets if result.get("plan") else [],
-            "candidate_competitors": [item.model_dump(mode="json") for item in result["plan"].candidate_competitors] if result.get("plan") else [],
-            "planning_stages": [item.model_dump(mode="json") for item in result["plan"].planning_stages] if result.get("plan") else [],
-            "node_sequence": ["planner", "collector", "analyst", "report_writer", "qa"] + (["final_report"] if result.get("report") else []),
-            "conditional_routes_taken": [],
-            "rework_count": result["qa_result"].rework_count if result.get("qa_result") else 0,
-            "final_status": result["qa_result"].status if result.get("qa_result") else "failed",
-            "knowledge_hits": [],
-            "retrieved_knowledge_chunk_count": 0,
-            "knowledge_retrieval_strategy": {
-                "retriever": "disabled_for_custom_runner",
-                "vector_store": "sqlite_json_embedding",
-                "embedding_provider": "local_hash_embedding",
-                "similarity": "cosine_similarity",
-                "top_k": 0,
-                "current_run_evidence_priority": True,
-            },
-        }
-        final_status = result["workflow_summary"]["final_status"]
-        finished_run = run_service.finish_run(
-            task_run.run_id,
-            status="completed" if final_status in {"passed", "completed"} else str(final_status),
-            final_status=final_status,
-            elapsed_time_ms=None,
-        )
-        result["run"] = finished_run
-        result["run_id"] = finished_run.run_id
-        result["knowledge_hits"] = []
-        result["workflow_summary"]["run_id"] = finished_run.run_id
-        result["workflow_summary"]["run_isolation_strategy"] = "legacy_custom_no_run_binding"
-        return result
+        raise HTTPException(status_code=500, detail="workflow runner factory returned unsupported engine.")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
 

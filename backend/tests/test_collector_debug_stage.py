@@ -388,7 +388,7 @@ def test_planner_scopes_research_goals_to_single_competitor(db_session):
     assert beta_goals[0].startswith("针对 BetaAI")
 
 
-def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, monkeypatch):
+def test_main_flow_runs_planner_collector_qa_analyst_and_report(db_session, monkeypatch):
     task = TaskService(db_session).create_task(
         CreateTaskRequest(
             product_name="测试产品",
@@ -410,31 +410,24 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
                 available=False,
                 attempted=False,
                 success=False,
-                fallback_reason="disabled for collector_only test",
+                fallback_reason="disabled for main_flow test",
             )
 
     runner.planner.llm_client = UnavailablePlannerLlm()
     runner.report_agent.llm_client = UnavailablePlannerLlm()
-    monkeypatch.setattr(
-        runner,
-        "evidence_gate_node",
-        lambda *_args, **_kwargs: pytest.fail("collector_only executed EvidenceGate"),
-    )
-    for agent in (runner.analyst, runner.writer, runner.final_report):
-        monkeypatch.setattr(
-            agent,
-            "run",
-            lambda *_args, **_kwargs: pytest.fail("collector_only executed a frozen agent"),
-        )
+    assert not hasattr(runner, "evidence_gate_node")
+    assert not hasattr(runner, "analyst")
+    assert not hasattr(runner, "writer")
+    assert not hasattr(runner, "final_report")
 
     result = runner.run(
         task.task_id,
         collector_mode="mock",
         workflow_engine_requested="langgraph",
-        debug_stage="collector_only",
+        debug_stage="main_flow",
     )
 
-    assert result["workflow_summary"]["debug_stage"] == "collector_only"
+    assert result["workflow_summary"]["debug_stage"] == "main_flow"
     node_sequence = result["workflow_summary"]["node_sequence"]
     assert node_sequence[:3] == ["planner", "collector", "qa"]
     assert "evidence_content_fetcher" in node_sequence
@@ -459,13 +452,18 @@ def test_collector_only_runs_planner_collector_and_evidence_qa_only(db_session, 
         node["id"]: node["status"]
         for node in result["dag"]["nodes"]
     }
-    assert statuses["EvidenceGate"] == "skipped"
+    assert set(statuses) == {
+        "PlannerAgent",
+        "CollectorAgent",
+        "QaAgent",
+        "EvidenceContentFetcher",
+        "EvidenceAnalystAgent",
+        "ReportAgent",
+    }
+    assert statuses["QaAgent"] == "completed"
     assert statuses["EvidenceContentFetcher"] == "completed"
     assert statuses["EvidenceAnalystAgent"] == "completed"
     assert statuses["ReportAgent"] == "completed"
-    assert statuses["PageFetcher"] == "skipped"
-    assert statuses["AnalystAgent"] == "skipped"
-    assert statuses["ReportWriterAgent"] == "skipped"
     trace_agents = {
         trace.agent_name
         for trace in TraceService(db_session).list_for_task(
@@ -500,7 +498,7 @@ def test_manual_evidence_selection_continues_same_run_without_evidence_gate(db_s
         analyst_mode="mock",
         writer_mode="mock",
         workflow_engine_requested="langgraph",
-        debug_stage="collector_only",
+        debug_stage="main_flow",
     )
     selected_id = collector_result["evidence"][0].evidence_id
 
@@ -519,11 +517,9 @@ def test_manual_evidence_selection_continues_same_run_without_evidence_gate(db_s
     assert result["run_id"] == collector_result["run_id"]
     assert summary["manual_evidence_selection_used"] is True
     assert summary["manual_selected_evidence_ids"] == [selected_id]
-    assert summary["evidence_gate_output"]["manual_evidence_selection_used"] is True
     assert summary["node_sequence"][0] == "manual_evidence_selection"
     assert "evidence_content_fetcher" in summary["node_sequence"]
     assert "collector" not in summary["node_sequence"]
-    assert "evidence_gate" not in summary["node_sequence"]
     assert "evidence_analyst" in summary["node_sequence"]
     assert "analyst_qa" in summary["node_sequence"]
     assert "report_agent" in summary["node_sequence"]
@@ -545,7 +541,7 @@ def test_task_collection_strategy_sets_collector_and_content_fetch_defaults(db_s
         task.task_id,
         collector_mode="mock",
         workflow_engine_requested="langgraph",
-        debug_stage="collector_only",
+        debug_stage="main_flow",
     )
 
     summary = result["workflow_summary"]
@@ -769,6 +765,66 @@ def test_evidence_analyst_answers_planner_questions_with_evidence_ids(db_session
     trace = TraceService(db_session).list_for_task(task.task_id)[0]
     assert trace.model_name == "test-model"
     assert trace.token_usage == 150
+
+
+def test_evidence_analyst_keeps_unselected_competitor_questions(db_session):
+    class StubLlmClient:
+        is_available = False
+        provider = "test"
+        model = "test-model"
+
+        def chat_json(self, messages, timeout=None):
+            raise AssertionError("No LLM call is needed for fallback coverage.")
+
+    now = datetime.utcnow()
+    task = Task(
+        task_id="task_evidence_analyst_missing_competitor",
+        product_name="Test Product",
+        competitors=["AcmeAI", "BetaAI"],
+        region="US",
+        industry="AI",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    evidence = Evidence(
+        evidence_id="ev_acme",
+        competitor="AcmeAI",
+        source_type="public_web",
+        url="https://acmeai.com/pricing",
+        snippet="AcmeAI Pro starts at $19 per user per month.",
+        confidence=0.9,
+        source_domain="acmeai.com",
+        source_quality="official",
+        relevance_level="high",
+        entity_match_signals={"collector_dimension": "pricing"},
+    )
+    plan_item = PlannerCollectionPlanItem(
+        dimension_id="pricing",
+        label="pricing",
+        queries=["pricing"],
+        research_goals=["Question 1", "Question 2"],
+    )
+
+    output = EvidenceAnalystAgent(TraceService(db_session), llm_client=StubLlmClient()).run(
+        EvidenceAnalystInput(
+            task=task,
+            evidence=[evidence],
+            selected_dimensions=["pricing"],
+            collection_plan=PlannerCollectionPlan(
+                collector_search_plan={
+                    "AcmeAI": {"pricing": plan_item},
+                    "BetaAI": {"pricing": plan_item},
+                }
+            ),
+        )
+    )
+
+    by_competitor = {item.competitor: item for item in output.question_results}
+    assert set(by_competitor) == {"AcmeAI", "BetaAI"}
+    assert output.diagnostics["question_answer_count"] == 4
+    assert all(answer.answer_status == "not_found" for answer in by_competitor["AcmeAI"].question_answers)
+    assert all(answer.answer_status == "not_found" for answer in by_competitor["BetaAI"].question_answers)
 
 
 def test_evidence_analyst_incremental_only_reanswers_not_found_targets(db_session):

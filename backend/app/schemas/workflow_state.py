@@ -1,21 +1,17 @@
 from typing import Any, Literal, TypedDict
 
 from app.schemas.agent_io import (
-    AnalystOutput,
     CollectorOutput,
     EvidenceAnalystOutput,
-    FinalReportOutput,
     PlannerOutput,
     PlannerIncrementalOutput,
     QaOutput,
     ReportAgentOutput,
-    ReportWriterOutput,
 )
 from app.schemas.models import (
     AnalysisDimensionPlan,
     Chunk,
     ClaimSupportResult,
-    DimensionResult,
     Evidence,
     EvidenceAnalystReworkContext,
     CollectorConfig,
@@ -33,9 +29,7 @@ from app.schemas.models import (
     QaResult,
     Report,
     RetrievalResult,
-    RetrievedKnowledgeChunk,
     ReworkContext,
-    SwotAnalysis,
     SurveyEvidence,
     Task,
     TaskRun,
@@ -80,17 +74,12 @@ class WorkflowState(TypedDict, total=False):
     planner_summary: dict[str, Any]
     collection_plan: dict[str, Any]
     collector_output: CollectorOutput | None
-    analyst_output: AnalystOutput | None
     evidence_analyst_output: EvidenceAnalystOutput | None
     evidence_analyst_rework_context: EvidenceAnalystReworkContext | None
     report_agent_output: ReportAgentOutput | None
-    report_writer_output: ReportWriterOutput | None
     qa_output: QaOutput | None
-    final_report_output: FinalReportOutput | None
-    evidence_gate_output: dict[str, Any]
     evidence_content_fetch_output: dict[str, Any]
     evidence_content_fetch_target_ids: list[str]
-    page_fetch_output: dict[str, Any]
     entity_resolution: dict[str, Any]
     competitor_aliases: dict[str, list[str]]
     evidence: list[Evidence]
@@ -117,12 +106,9 @@ class WorkflowState(TypedDict, total=False):
     planning_stages: list[PlannerStage]
     planner_notes: list[str]
     planner_confidence: float | None
-    dimension_results: list[DimensionResult]
-    swot_analysis: SwotAnalysis | None
     survey_evidence: list[SurveyEvidence]
     chunks: list[Chunk]
     retrieval_results: list[RetrievalResult]
-    retrieved_knowledge_chunks: list[RetrievedKnowledgeChunk]
     knowledge_hits: list[dict[str, Any]]
     claim_support_results: list[ClaimSupportResult]
     rework_context: ReworkContext | None

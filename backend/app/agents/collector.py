@@ -66,7 +66,7 @@ class CollectorAgent:
             trace_service=self.trace_service,
             task_id=task.task_id,
             agent_name=self.name,
-            to_agent="AnalystAgent",
+            to_agent="QaAgent",
             message_type="evidence",
             schema_name="CollectorOutput",
             input_summary=f"collector_mode_requested={input_data.collector_mode}; collect evidence for {len(task.competitors)} competitors",

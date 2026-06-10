@@ -74,7 +74,7 @@ export const api = {
   createTask: (payload: { product_name: string; competitors: string[]; region: string; industry: string; collection_strategy_mode?: "simple" | "balanced" | "expert" }) =>
     request<Task>("/api/tasks", { label: "createTask", method: "POST", body: JSON.stringify(payload) }),
   listTasks: () => request<Task[]>("/api/tasks", { label: "listTasks", method: "GET" }),
-  runTask: (taskId: string, demoMode = "normal", autoRework = false, writerMode = "mock", collectorMode = "mock", analystMode = "evidence", workflowEngine = "custom", debugStage?: "planner_only" | "collector_only", overrides?: RunTaskOverrides) => {
+  runTask: (taskId: string, demoMode = "normal", autoRework = false, writerMode = "mock", collectorMode = "mock", analystMode = "evidence", workflowEngine = "custom", debugStage?: "planner_only" | "main_flow" | "collector_only", overrides?: RunTaskOverrides) => {
     const debugQuery = debugStage ? `&debug_stage=${encodeURIComponent(debugStage)}` : "";
     return request<PlannerRunResult>(`/api/tasks/${taskId}/run?demo_mode=${encodeURIComponent(demoMode)}&auto_rework=${autoRework}&writer_mode=${encodeURIComponent(writerMode)}&collector_mode=${encodeURIComponent(collectorMode)}&analyst_mode=${encodeURIComponent(analystMode)}&workflow_engine=${encodeURIComponent(workflowEngine)}${debugQuery}`, { label: "runTask", method: "POST", body: JSON.stringify(overrides ?? {}) });
   },
