@@ -1,4 +1,5 @@
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from typing import Any, Callable
 
@@ -16,6 +17,9 @@ from app.schemas import (
 )
 from app.services.llm_client import LlmClient, parse_llm_json
 from app.services.trace_service import TraceService
+
+
+MAX_PARALLEL_ANALYSIS_GROUPS = 3
 
 
 class EvidenceAnalystAgent:
@@ -78,6 +82,7 @@ class EvidenceAnalystAgent:
             "llm_model": self.llm_client.model,
             "total_evidence": len(input_data.evidence),
             "target_group_count": len(groups),
+            "parallel_group_limit": MAX_PARALLEL_ANALYSIS_GROUPS,
             "completed_group_count": 0,
             "failed_group_count": 0,
             "llm_call_attempted": False,
@@ -91,10 +96,11 @@ class EvidenceAnalystAgent:
             "schema_validation_errors": [],
         }
 
-        results: list[EvidenceDimensionAnswerResult] = []
+        results_by_index: dict[int, EvidenceDimensionAnswerResult] = {}
         if not input_data.enabled:
-            for (competitor, dimension_id), evidence_items in groups.items():
-                results.append(self._fallback_result(input_data, competitor, dimension_id, evidence_items, "evidence_analyst_disabled"))
+            for index, ((competitor, dimension_id), evidence_items) in enumerate(groups.items(), start=1):
+                results_by_index[index] = self._fallback_result(input_data, competitor, dimension_id, evidence_items, "evidence_analyst_disabled")
+            results = [results_by_index[index] for index in sorted(results_by_index)]
             diagnostics.update(
                 {
                     "completed_group_count": len(results),
@@ -105,56 +111,52 @@ class EvidenceAnalystAgent:
             )
             return EvidenceAnalystOutput(question_results=results, diagnostics=diagnostics)
 
-        for index, ((competitor, dimension_id), evidence_items) in enumerate(groups.items(), start=1):
-            question_count = group_questions.get((competitor, dimension_id), 0)
-            start_question = completed_questions + 1 if question_count else completed_questions
-            end_question = completed_questions + question_count
-            if progress_callback:
-                progress_callback(
-                    {
-                        "current": min(end_question, total_questions),
-                        "start": start_question,
-                        "end": end_question,
-                        "total": total_questions,
-                        "unit": "question",
-                        "detail": f"{competitor or '-'} / {dimension_id or '-'}",
-                        "competitor": competitor,
-                        "dimension_id": dimension_id,
-                    }
-                )
-            if not evidence_items:
-                result = self._fallback_result(
+        items = list(groups.items())
+        max_workers = min(MAX_PARALLEL_ANALYSIS_GROUPS, max(1, len(items)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    self._answer_group_or_fallback,
                     input_data,
                     competitor,
                     dimension_id,
                     evidence_items,
-                    "no_evidence_for_competitor_dimension",
+                    index,
+                ): (index, competitor, dimension_id)
+                for index, ((competitor, dimension_id), evidence_items) in enumerate(items, start=1)
+            }
+            for future in as_completed(futures):
+                index, competitor, dimension_id = futures[future]
+                result, item_diagnostics = future.result()
+                question_count = group_questions.get((competitor, dimension_id), 0)
+                completed_questions += question_count
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "current": min(completed_questions, total_questions),
+                            "start": max(1, completed_questions - question_count + 1) if question_count else completed_questions,
+                            "end": completed_questions,
+                            "total": total_questions,
+                            "unit": "question",
+                            "detail": f"{competitor or '-'} / {dimension_id or '-'}",
+                            "competitor": competitor,
+                            "dimension_id": dimension_id,
+                            "parallel_group_limit": MAX_PARALLEL_ANALYSIS_GROUPS,
+                        }
                 )
-                item_diagnostics = {
-                    "status": "fallback",
-                    "llm_call_attempted": False,
-                    "llm_elapsed_time_ms": 0,
-                    "llm_prompt_tokens": 0,
-                    "llm_completion_tokens": 0,
-                    "llm_total_tokens": 0,
-                    "llm_usage_available": False,
-                    "errors": ["no_evidence_for_competitor_dimension"],
-                }
-            else:
-                result, item_diagnostics = self._answer_group(input_data, competitor, dimension_id, evidence_items, index)
-            completed_questions += question_count
-            results.append(result)
-            diagnostics["completed_group_count"] += 1
-            diagnostics["llm_call_attempted"] = diagnostics["llm_call_attempted"] or item_diagnostics["llm_call_attempted"]
-            diagnostics["llm_elapsed_time_ms"] += item_diagnostics["llm_elapsed_time_ms"]
-            self._accumulate_token_usage(diagnostics, item_diagnostics)
-            if item_diagnostics["status"] == "llm":
-                diagnostics["llm_call_success_count"] += 1
-            else:
-                diagnostics["failed_group_count"] += 1
-                diagnostics["llm_call_failed_count"] += 1
-                diagnostics["schema_validation_errors"].extend(item_diagnostics.get("errors", []))
+                results_by_index[index] = result
+                diagnostics["completed_group_count"] += 1
+                diagnostics["llm_call_attempted"] = diagnostics["llm_call_attempted"] or item_diagnostics["llm_call_attempted"]
+                diagnostics["llm_elapsed_time_ms"] += item_diagnostics["llm_elapsed_time_ms"]
+                self._accumulate_token_usage(diagnostics, item_diagnostics)
+                if item_diagnostics["status"] == "llm":
+                    diagnostics["llm_call_success_count"] += 1
+                else:
+                    diagnostics["failed_group_count"] += 1
+                    diagnostics["llm_call_failed_count"] += 1
+                    diagnostics["schema_validation_errors"].extend(item_diagnostics.get("errors", []))
 
+        results = [results_by_index[index] for index in sorted(results_by_index)]
         diagnostics["question_answer_count"] = sum(len(item.question_answers) for item in results)
         diagnostics["answered_question_count"] = sum(
             1
@@ -244,6 +246,33 @@ class EvidenceAnalystAgent:
         )
         diagnostics["warning_count"] = sum(len(item.warnings) for item in merged_results)
         return EvidenceAnalystOutput(question_results=merged_results, diagnostics=diagnostics)
+
+    def _answer_group_or_fallback(
+        self,
+        input_data: EvidenceAnalystInput,
+        competitor: str | None,
+        dimension_id: str | None,
+        evidence_items: list[Evidence],
+        index: int,
+    ) -> tuple[EvidenceDimensionAnswerResult, dict[str, Any]]:
+        if not evidence_items:
+            return self._fallback_result(
+                input_data,
+                competitor,
+                dimension_id,
+                evidence_items,
+                "no_evidence_for_competitor_dimension",
+            ), {
+                "status": "fallback",
+                "llm_call_attempted": False,
+                "llm_elapsed_time_ms": 0,
+                "llm_prompt_tokens": 0,
+                "llm_completion_tokens": 0,
+                "llm_total_tokens": 0,
+                "llm_usage_available": False,
+                "errors": ["no_evidence_for_competitor_dimension"],
+            }
+        return self._answer_group(input_data, competitor, dimension_id, evidence_items, index)
 
     def _answer_group(
         self,

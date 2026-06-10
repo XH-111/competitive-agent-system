@@ -1,4 +1,6 @@
 from datetime import datetime
+import threading
+import time
 
 import pytest
 from sqlalchemy import create_engine
@@ -985,6 +987,114 @@ def test_evidence_analyst_incremental_only_reanswers_not_found_targets(db_sessio
     assert answers[1].evidence_ids == ["ev_new"]
     assert output.diagnostics["evidence_analyst_mode"] == "incremental_answer_not_found_only"
     assert output.diagnostics["incremental_reanswer_target_count"] == 1
+
+
+def test_evidence_analyst_answers_groups_with_max_three_parallel_calls(db_session):
+    class BlockingLlmClient:
+        is_available = True
+        provider = "test"
+        model = "test-model"
+
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.active = 0
+            self.max_active = 0
+            self.calls = 0
+
+        def chat_json(self, messages, timeout=None):
+            with self.lock:
+                self.active += 1
+                self.calls += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.05)
+                return LlmResponse(
+                    available=True,
+                    attempted=True,
+                    success=True,
+                    content=(
+                        '{"question_answers":[{"question_id":"q1",'
+                        '"question":"Question",'
+                        '"answer":"Answered from evidence.",'
+                        '"evidence_ids":[],'
+                        '"answer_status":"answered",'
+                        '"suggestions":[]}],'
+                        '"dimension_summary":"Answered.",'
+                        '"warnings":[]}'
+                    ),
+                    elapsed_time_ms=50,
+                )
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    now = datetime.utcnow()
+    task = Task(
+        task_id="task_parallel_evidence_analyst",
+        product_name="Test Product",
+        competitors=["A", "B"],
+        region="US",
+        industry="AI",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    dimensions = ["pricing", "feature", "support", "security"]
+    plan_items = {
+        dimension: PlannerCollectionPlanItem(
+            dimension_id=dimension,
+            label=dimension,
+            queries=[f"{dimension} query"],
+            research_goals=[f"What is {dimension}?"],
+        )
+        for dimension in dimensions
+    }
+    evidence = [
+        Evidence(
+            evidence_id=f"ev_{competitor}_{dimension}",
+            competitor=competitor,
+            source_type="public_web",
+            url=f"https://example.com/{competitor}/{dimension}",
+            snippet=f"{competitor} {dimension} evidence.",
+            confidence=0.9,
+            source_domain="example.com",
+            source_quality="official",
+            relevance_level="high",
+            entity_match_signals={"collector_dimension": dimension},
+        )
+        for competitor in ["A", "B"]
+        for dimension in dimensions
+    ]
+    llm_client = BlockingLlmClient()
+
+    output = EvidenceAnalystAgent(TraceService(db_session), llm_client=llm_client).run(
+        EvidenceAnalystInput(
+            task=task,
+            evidence=evidence,
+            selected_dimensions=dimensions,
+            collection_plan=PlannerCollectionPlan(
+                collector_search_plan={
+                    "A": plan_items,
+                    "B": plan_items,
+                }
+            ),
+        )
+    )
+
+    assert llm_client.calls == 8
+    assert 1 < llm_client.max_active <= 3
+    assert output.diagnostics["parallel_group_limit"] == 3
+    assert output.diagnostics["completed_group_count"] == 8
+    assert [(item.competitor, item.dimension_id) for item in output.question_results] == [
+        ("A", "pricing"),
+        ("A", "feature"),
+        ("A", "support"),
+        ("A", "security"),
+        ("B", "pricing"),
+        ("B", "feature"),
+        ("B", "support"),
+        ("B", "security"),
+    ]
 
 
 def test_report_agent_fallback_generates_markdown_from_evidence_analyst_output(db_session):
