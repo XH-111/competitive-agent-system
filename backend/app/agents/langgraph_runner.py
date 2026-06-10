@@ -285,6 +285,7 @@ class LangGraphWorkflowRunner:
         collection_plan_override: PlannerCollectionPlan | None,
         collector_config: CollectorConfig | None,
     ) -> dict:
+        # 人工选择 Evidence 复用已有 run，不重新执行 Planner/Collector；只对所选 Evidence 抓正文、回答问题、生成报告。
         if not source_run_id:
             raise ValueError("source_run_id is required for manual evidence selection.")
         selected_ids = list(dict.fromkeys(item for item in selected_evidence_ids if item))
@@ -301,6 +302,7 @@ class LangGraphWorkflowRunner:
         if missing_ids:
             raise ValueError(f"selected Evidence ids not found in source run: {', '.join(missing_ids)}")
         selected_evidence = [evidence_by_id[evidence_id] for evidence_id in selected_ids]
+        # 允许用户在复用 Evidence 的同时覆盖 collection_plan，这样 Analyst 仍按当前人工维度回答。
         effective_collector_config = self._default_collector_config(task, collector_config)
         collection_plan = collection_plan_override or planner_output.collection_plan
         collection_plan_override_used = collection_plan_override is not None
@@ -439,6 +441,7 @@ class LangGraphWorkflowRunner:
         analyst_incremental_attempts: list[dict] = []
         analyst_attempt_no = 0
         while analyst_attempt_no < MAX_REWORK:
+            # 人工选择后的 AnalystQA 仍可补采：只补“所选 Evidence 仍回答不了”的具体问题。
             self._check_cancelled(task_run.run_id)
             coverage_gap_payload = analyst_qa_result.metadata.get("coverage_gap") if analyst_qa_result.metadata else None
             if not (
@@ -585,6 +588,7 @@ class LangGraphWorkflowRunner:
             "node_sequence": [*state["node_sequence"], "analyst_qa"],
         }
         if state.get("evidence_analyst_output") is not None:
+            # AnalystQA 通过后先做知识沉淀，再生成报告；这是副作用步骤，不额外暴露为 DAG 节点。
             state = self.ingest_analyst_answers_node(state)
             state = self.report_agent_node(state)
             state = self.survey_agent_node(state)
@@ -742,10 +746,12 @@ class LangGraphWorkflowRunner:
         }
 
     def _run_main_flow(self, initial_state: WorkflowState, task_run, started: float) -> dict:
+        # 主流程第一步由 Planner 产出可执行 collection_plan；后续 Collector/QA/Analyst 都依赖这份计划。
         planner_state = self.planner_node(initial_state)
         self._check_cancelled(task_run.run_id)
         collector_error: str | None = None
         try:
+            # Collector 负责把规划维度转成 Evidence；采集失败时保留诊断并让 QA/summary 能给出明确失败原因。
             collector_state = self.collector_node(planner_state)
         except AgentExecutionError as exc:
             collector_error = str(exc)
@@ -796,6 +802,7 @@ class LangGraphWorkflowRunner:
         current_collector_diagnostics = collector_output.diagnostics
         attempt_no = 0
         while attempt_no < MAX_REWORK:
+            # EvidenceQA 发现缺口时，由 Planner 只针对缺口生成增量补采计划，避免整轮重跑。
             self._check_cancelled(task_run.run_id)
             coverage_gap_payload = qa_result.metadata.get("coverage_gap") if qa_result.metadata else None
             if not (qa_result.status == "failed" and isinstance(coverage_gap_payload, dict) and coverage_gap_payload.get("targets")):
@@ -915,6 +922,7 @@ class LangGraphWorkflowRunner:
                 }
             )
         self._check_cancelled(task_run.run_id)
+        # 首轮/补采 Evidence 合并后统一抓正文，后续 Analyst 回答优先使用更完整的页面内容。
         collector_state = self.evidence_content_fetcher_node(collector_state)
         self._check_cancelled(task_run.run_id)
         collector_state = self.evidence_analyst_node(collector_state)
@@ -944,6 +952,7 @@ class LangGraphWorkflowRunner:
         analyst_incremental_attempts: list[dict] = []
         analyst_attempt_no = 0
         while analyst_attempt_no < MAX_REWORK:
+            # AnalystQA 检查“规划问题是否被回答”；缺口会触发面向具体问题的补采和重答。
             self._check_cancelled(task_run.run_id)
             coverage_gap_payload = analyst_qa_result.metadata.get("coverage_gap") if analyst_qa_result.metadata else None
             if not (
@@ -1089,6 +1098,7 @@ class LangGraphWorkflowRunner:
         evidence_analyst_output = collector_state.get("evidence_analyst_output")
         if evidence_analyst_output is not None:
             self._check_cancelled(task_run.run_id)
+            # answered 问答落库只用于长期 RAG 积累，失败不会阻断报告主流程。
             collector_state = self.ingest_analyst_answers_node(collector_state)
             collector_state = self.report_agent_node({**collector_state, "rework_count": analyst_attempt_no})
             collector_state = self.survey_agent_node(collector_state)
@@ -1317,6 +1327,7 @@ class LangGraphWorkflowRunner:
             and manual_plan
             and state.get("planner_output") is None
         )
+        # 手动规划模式下跳过 Planner LLM，但仍包装成标准 PlannerOutput，保证下游节点协议不变。
         set_workflow_progress(
             run_id,
             current_agent="PlannerAgent",
@@ -1460,6 +1471,7 @@ class LangGraphWorkflowRunner:
     def collector_node(self, state: WorkflowState) -> WorkflowState:
         self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
+        # Collector 是唯一负责外部搜索/证据生成的节点，输出会持久化并绑定当前 run_id。
         set_workflow_progress(
             state.get("run_id"),
             current_agent="CollectorAgent",
@@ -1498,6 +1510,7 @@ class LangGraphWorkflowRunner:
         task = self._current_task(state)
         all_evidence = state.get("evidence", [])
         target_ids = set(state.get("evidence_content_fetch_target_ids", []))
+        # 增量补采时只抓新增 Evidence 正文；普通主流程则按策略抓取完整候选 Evidence。
         evidence_to_fetch = (
             [item for item in all_evidence if item.evidence_id in target_ids]
             if target_ids
@@ -1542,6 +1555,7 @@ class LangGraphWorkflowRunner:
         )
         output["collection_strategy_mode"] = task.collection_strategy_mode
         if target_ids:
+            # 只抓新增 Evidence 时，需要把 enriched 结果合并回完整列表，避免丢失历史证据。
             enriched_by_id = {item.evidence_id: item for item in evidence}
             merged_evidence = [
                 enriched_by_id.get(item.evidence_id, item)
@@ -1578,6 +1592,7 @@ class LangGraphWorkflowRunner:
     def evidence_analyst_node(self, state: WorkflowState) -> WorkflowState:
         self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
+        # EvidenceAnalyst 按规划问题逐条作答，是 ReportAgent 之前的结构化事实层。
         set_workflow_progress(
             state.get("run_id"),
             current_agent="EvidenceAnalystAgent",
@@ -1627,6 +1642,7 @@ class LangGraphWorkflowRunner:
     def report_agent_node(self, state: WorkflowState) -> WorkflowState:
         self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
+        # ReportAgent 只消费结构化问答和 evidence_ids，避免报告直接从原始网页自由发挥。
         set_workflow_progress(
             state.get("run_id"),
             current_agent="ReportAgent",
@@ -1668,6 +1684,7 @@ class LangGraphWorkflowRunner:
         self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
         qa_result = state.get("qa_result")
+        # AnalystQA 失败时不沉淀，避免把覆盖不足或质量未通过的回答写入长期知识库。
         if qa_result is not None and qa_result.status == "failed":
             return {
                 **state,
@@ -1696,6 +1713,7 @@ class LangGraphWorkflowRunner:
     def survey_agent_node(self, state: WorkflowState) -> WorkflowState:
         self._check_cancelled(state.get("run_id"))
         task = self._current_task(state)
+        # SurveyAgent 是报告后的补充调研能力；没有报告或问题回答时直接跳过。
         if state.get("report_agent_output") is None or state.get("evidence_analyst_output") is None:
             return {
                 **state,
@@ -1907,6 +1925,7 @@ class LangGraphWorkflowRunner:
         current_evidence: list[Evidence],
         retrieved_chunks: list,
     ) -> list[Evidence]:
+        # RAG 命中的长期知识会被包装成 Evidence，让后续 QA/Analyst 复用同一套 evidence_ids 协议。
         if not retrieved_chunks:
             return current_evidence
 
@@ -1918,6 +1937,7 @@ class LangGraphWorkflowRunner:
                 continue
             metadata = chunk.metadata or {}
             competitor = metadata.get("competitor") or chunk.competitor
+            # 只注入当前任务竞品范围内的知识，避免跨任务/跨竞品污染分析。
             if competitor and competitor not in task.competitors:
                 continue
             confidence = self._knowledge_evidence_confidence(chunk)

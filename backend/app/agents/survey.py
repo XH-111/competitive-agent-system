@@ -18,6 +18,12 @@ MAX_SURVEY_QUESTIONS = 12
 
 
 class SurveyAgent:
+    """根据报告和 EvidenceAnalyst 缺口自动生成补充问卷。
+
+    SurveyAgent 是主流程的后置节点：报告已经能生成时，它只负责把 partial/not_found
+    缺口转成可发给外部用户或专家的问题，不重新搜索、不抓正文，也不阻塞报告。
+    """
+
     name = "SurveyAgent"
 
     def __init__(self, trace_service: TraceService, llm_client: LlmClient | None = None):
@@ -42,6 +48,7 @@ class SurveyAgent:
         )
 
     def _produce(self, input_data: SurveyAgentInput) -> SurveyAgentOutput:
+        # fallback_questions 是问卷设计的边界：LLM 只能围绕这些缺口改写，避免生成脱离报告的问题。
         fallback_questions = self._fallback_questions(input_data)
         diagnostics = {
             "survey_agent_mode": "llm_survey_design",
@@ -63,6 +70,7 @@ class SurveyAgent:
                 diagnostics=diagnostics,
             )
         if not input_data.enabled or not self.llm_client.is_available:
+            # 非 LLM 模式或 LLM 不可用时仍生成可用问卷，保证演示和主流程稳定。
             diagnostics.update(
                 {
                     "survey_agent_mode": "deterministic_fallback",
@@ -212,6 +220,7 @@ class SurveyAgent:
         if isinstance(output, EvidenceAnalystOutput):
             for group in output.question_results:
                 for answer in group.question_answers:
+                    # 只把未解决或部分解决的问题转成问卷；answered 已经进入报告/知识沉淀链路。
                     if answer.answer_status not in {"not_found", "partial"}:
                         continue
                     gap_type = answer.answer_status
@@ -235,6 +244,7 @@ class SurveyAgent:
                     )
         if questions:
             return questions[:MAX_SURVEY_QUESTIONS]
+        # 没有结构化缺口时生成少量通用追问，避免问卷为空导致前端无可测试内容。
         for competitor in input_data.task.competitors:
             for dimension_id in (input_data.selected_dimensions or ["general"])[:2]:
                 questions.append(

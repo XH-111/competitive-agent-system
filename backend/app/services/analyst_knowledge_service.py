@@ -14,6 +14,13 @@ from app.services.embedding_service import EmbeddingService
 
 
 class AnalystKnowledgeService:
+    """把 EvidenceAnalyst 已回答的问题沉淀为长期知识。
+
+    这里不处理 partial / not_found，只沉淀 answered 且带 evidence_ids 的问答。
+    这些内容是基于已采集 Evidence 的二次结构化结果，适合用于后续 RAG 加速，
+    但不能替代原始 Evidence，因此会用独立 source_type 与 public_evidence 区分。
+    """
+
     def __init__(self, db: Session, embedding_service: EmbeddingService | None = None):
         self.db = db
         self.embedding_service = embedding_service or EmbeddingService()
@@ -39,9 +46,11 @@ class AnalystKnowledgeService:
 
         for group in evidence_analyst_output.question_results:
             for answer in group.question_answers:
+                # 只有经过 EvidenceAnalyst 明确回答的问题才有积累价值；缺口问题留给补采或问卷处理。
                 if answer.answer_status != "answered":
                     continue
                 result["candidate_count"] += 1
+                # 没有 evidence_ids 的 answered 不可信，避免把无来源的分析结果写进长期知识库。
                 if not answer.evidence_ids:
                     result["skipped_no_evidence"] += 1
                     continue
@@ -77,6 +86,7 @@ class AnalystKnowledgeService:
         answer: str,
         evidence_ids: list[str],
     ) -> bool:
+        # 去重维度绑定 task/question/answer/evidence，避免同一轮或重复运行时反复写入相同问答。
         text = self._knowledge_text(
             competitor=competitor,
             dimension_id=dimension_id,
@@ -129,6 +139,7 @@ class AnalystKnowledgeService:
             )
         )
         metadata = {
+            # RAG 检索时可以通过 metadata 识别这是分析产物，而不是原始网页或问卷回答。
             "source_type": "evidence_analyst_answer",
             "task_id": task.task_id,
             "run_id": run_id,

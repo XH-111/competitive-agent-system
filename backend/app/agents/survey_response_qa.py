@@ -8,6 +8,12 @@ from app.services.trace_service import TraceService
 
 
 class SurveyResponseQaAgent:
+    """问卷回答入长期知识库前的质量闸。
+
+    公开邀请码可能被乱填或恶意提交，所以问卷回答不能直接进入 KB。
+    LLM 可用时用语义审查；不可用时用保守规则兜底，宁可不入库也避免污染 RAG。
+    """
+
     name = "SurveyResponseQaAgent"
 
     def __init__(self, trace_service: TraceService, llm_client: LlmClient | None = None):
@@ -39,6 +45,7 @@ class SurveyResponseQaAgent:
         )
 
     def _produce(self, *, survey: dict[str, Any], answers: list[dict[str, Any]]) -> dict[str, Any]:
+        # 先算规则兜底结果；后续 LLM 不可用、失败或输出坏 JSON 时都回退到它。
         fallback = self._rule_review(answers)
         diagnostics = {
             "survey_response_qa_mode": "llm_review",
@@ -111,6 +118,7 @@ class SurveyResponseQaAgent:
     @staticmethod
     def _normalize_llm_payload(payload: dict[str, Any], answers: list[dict[str, Any]], diagnostics: dict) -> dict[str, Any]:
         answer_ids = {str(item.get("answer_id")) for item in answers if item.get("answer_id")}
+        # LLM 只能在本次提交的 answer_id 范围内做分类，防止幻觉出不存在的 ID。
         accepted = [item for item in payload.get("accepted_answer_ids", []) if item in answer_ids]
         rejected = [item for item in payload.get("rejected_answer_ids", []) if item in answer_ids and item not in accepted]
         needs_review = [
@@ -144,6 +152,8 @@ class SurveyResponseQaAgent:
 
     @staticmethod
     def _rule_review(answers: list[dict[str, Any]]) -> dict[str, Any]:
+        # 规则审查只做低成本防污染：过滤太短、测试内容、广告和明显 prompt injection。
+        # 更细的相关性判断交给 LLM；无 LLM 时只接受有事实信号的回答。
         accepted: list[str] = []
         rejected: list[str] = []
         needs_review: list[str] = []

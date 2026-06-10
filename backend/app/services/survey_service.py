@@ -179,6 +179,7 @@ class SurveyService:
                 )
             )
         self.db.commit()
+        # 原始回答先保存，再做 QA 和 KB 入库；即使未通过 QA，也保留 response 供后续人工查看。
         self.review_response_for_kb(response.response_id)
         self.ingest_response_to_kb(response.response_id)
         return self.get_response(response.response_id)
@@ -212,6 +213,7 @@ class SurveyService:
         questions = {row.question_id: row for row in self._question_rows(survey.survey_id)}
         qa_result = self._response_qa_result(response)
         if not qa_result:
+            # 兼容老数据或手动触发入库：没有 QA 结果时先补审查，不能直接入库。
             qa_result = self.review_response_for_kb(response_id)
         accepted_answer_ids = set(qa_result.get("accepted_answer_ids") or [])
         if not accepted_answer_ids:
@@ -227,6 +229,7 @@ class SurveyService:
         ingested = 0
         skipped_duplicate = 0
         for answer in answers:
+            # 只把 SurveyResponseQaAgent 判定 accepted 的答案写入长期知识库。
             if answer.answer_id not in accepted_answer_ids:
                 continue
             question = questions.get(answer.question_id)
@@ -296,6 +299,7 @@ class SurveyService:
         return {"ingested": ingested, "skipped_duplicate": skipped_duplicate}
 
     def review_response_for_kb(self, response_id: str) -> dict[str, Any]:
+        """审查问卷回答能否进入长期知识库，并把审查结果写入 response metadata。"""
         response = self.db.get(SurveyResponseRecordRow, response_id)
         if response is None:
             raise KeyError("Survey response not found")
