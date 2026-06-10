@@ -7,6 +7,7 @@ from app.schemas.agent_io import (
     PlannerIncrementalOutput,
     QaOutput,
     ReportAgentOutput,
+    SurveyAgentOutput,
 )
 from app.schemas.models import (
     AnalysisDimensionPlan,
@@ -77,6 +78,9 @@ class WorkflowState(TypedDict, total=False):
     evidence_analyst_output: EvidenceAnalystOutput | None
     evidence_analyst_rework_context: EvidenceAnalystReworkContext | None
     report_agent_output: ReportAgentOutput | None
+    survey_agent_output: SurveyAgentOutput | None
+    survey: dict[str, Any] | None
+    survey_error: str | None
     qa_output: QaOutput | None
     evidence_content_fetch_output: dict[str, Any]
     evidence_content_fetch_target_ids: list[str]

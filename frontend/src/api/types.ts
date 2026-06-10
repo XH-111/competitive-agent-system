@@ -486,6 +486,57 @@ export type WorkflowProgress = {
   updated_at?: string;
 };
 
+export type SurveyQuestion = {
+  question_id: string;
+  survey_id: string;
+  competitor?: string | null;
+  dimension_id?: string | null;
+  source_question_id?: string | null;
+  source_gap_type: string;
+  question_text: string;
+  question_type: string;
+  options: string[];
+  required: boolean;
+  order_index: number;
+};
+
+export type Survey = {
+  survey_id: string;
+  task_id: string;
+  run_id?: string | null;
+  title: string;
+  description: string;
+  invite_code?: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  response_count: number;
+  questions?: SurveyQuestion[];
+};
+
+export type SurveyResponse = {
+  response_id: string;
+  survey_id: string;
+  respondent_token: string;
+  submitted_at: string;
+  kb_ingested: boolean;
+  qa_result?: {
+    status?: "accepted" | "rejected" | "needs_review";
+    score?: number;
+    accepted_answer_ids?: string[];
+    rejected_answer_ids?: string[];
+    needs_review_answer_ids?: string[];
+    reasons?: string[];
+    kb_summary?: string;
+    diagnostics?: Record<string, unknown>;
+  };
+  answers: Array<{
+    answer_id: string;
+    question_id: string;
+    answer_text: string;
+  }>;
+};
+
 export type CollectorDiagnostics = {
   collector_mode_requested?: string;
   collector_mode_used?: string;

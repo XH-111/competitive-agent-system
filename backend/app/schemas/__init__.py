@@ -77,6 +77,9 @@ from app.schemas.agent_io import (
     ReportAgentOutput,
     ReportEvidenceRef,
     ReportSection,
+    SurveyAgentInput,
+    SurveyAgentOutput,
+    SurveyQuestionDraft,
 )
 from app.schemas.workflow_state import ConditionalRoute, WorkflowEngine, WorkflowState
 
@@ -154,6 +157,9 @@ __all__ = [
     "ReportAgentOutput",
     "ReportEvidenceRef",
     "ReportSection",
+    "SurveyAgentInput",
+    "SurveyAgentOutput",
+    "SurveyQuestionDraft",
     "ConditionalRoute",
     "WorkflowEngine",
     "WorkflowState",

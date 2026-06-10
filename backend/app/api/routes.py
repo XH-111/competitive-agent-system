@@ -9,6 +9,7 @@ from app.services.evidence_service import EvidenceService
 from app.services.llm_client import LlmClient
 from app.services.planner_attempt_service import PlannerAttemptService
 from app.services.report_service import ReportService
+from app.services.survey_service import SurveyService
 from app.services.task_run_service import TaskRunService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
@@ -29,8 +30,10 @@ def default_dag(status: str) -> dict:
             {"id": "EvidenceContentFetcher", "label": "抓取高质量 Evidence 正文", "status": "completed" if active else "pending"},
             {"id": "EvidenceAnalystAgent", "label": "基于 Evidence 回答规划问题", "status": "completed" if active else "pending"},
             {"id": "ReportAgent", "label": "生成结构化竞品分析报告", "status": "completed" if completed else "pending"},
+            {"id": "SurveyAgent", "label": "根据报告缺口设计问卷", "status": "completed" if completed else "pending"},
         ],
         "edges": [
+            {"source": "ReportAgent", "target": "SurveyAgent", "label": "报告缺口问卷"},
             {"source": "PlannerAgent", "target": "CollectorAgent", "label": "collection_plan"},
             {"source": "CollectorAgent", "target": "QaAgent", "label": "EvidenceQA"},
             {"source": "QaAgent", "target": "EvidenceContentFetcher", "label": "正文抓取"},
@@ -48,6 +51,11 @@ class RunTaskRequest(BaseModel):
     manual_evidence_selection_enabled: bool = False
     selected_evidence_ids: list[str] = []
     source_run_id: str | None = None
+
+
+class SurveyResponseRequest(BaseModel):
+    answers: list[dict]
+    metadata: dict | None = None
 
 
 @router.get("/llm/status")
@@ -254,6 +262,66 @@ def get_task_run_planner_attempts(task_id: str, run_id: str, db: Session = Depen
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Run not found") from exc
     return PlannerAttemptService(db).list_for_run(run_id)
+
+
+@router.post("/tasks/{task_id}/runs/{run_id}/survey")
+def generate_run_survey(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    try:
+        TaskRunService(db).get_run(task_id, run_id)
+        return SurveyService(db).generate_for_run(task_id, run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/tasks/{task_id}/runs/{run_id}/surveys")
+def list_run_surveys(task_id: str, run_id: str, db: Session = Depends(get_db)):
+    TaskRunService(db).get_run(task_id, run_id)
+    return SurveyService(db).list_for_run(task_id, run_id)
+
+
+@router.get("/surveys/{survey_id}")
+def get_survey(survey_id: str, db: Session = Depends(get_db)):
+    try:
+        return SurveyService(db).get_survey(survey_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Survey not found") from exc
+
+
+@router.get("/surveys/{survey_id}/responses")
+def list_survey_responses(survey_id: str, db: Session = Depends(get_db)):
+    SurveyService(db).get_survey(survey_id)
+    return SurveyService(db).list_responses(survey_id)
+
+
+@router.post("/surveys/{survey_id}/responses/{response_id}/ingest-kb")
+def ingest_survey_response(survey_id: str, response_id: str, db: Session = Depends(get_db)):
+    service = SurveyService(db)
+    response = service.get_response(response_id)
+    if response["survey_id"] != survey_id:
+        raise HTTPException(status_code=404, detail="Survey response not found")
+    return service.ingest_response_to_kb(response_id)
+
+
+@router.get("/survey-invites/{invite_code}")
+def get_survey_invite(invite_code: str, db: Session = Depends(get_db)):
+    try:
+        return SurveyService(db).get_by_invite(invite_code)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Survey invite not found") from exc
+
+
+@router.post("/survey-invites/{invite_code}/responses")
+def submit_survey_invite_response(
+    invite_code: str,
+    request: SurveyResponseRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return SurveyService(db).submit_response(invite_code, request.answers, request.metadata)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _latest_run_id_or_none(task_id: str, db: Session) -> str | None:

@@ -6,8 +6,10 @@ import { EvidencePanel } from "./components/EvidencePanel";
 import { KnowledgeHitsPanel } from "./components/KnowledgeHitsPanel";
 import { KnowledgeView } from "./components/KnowledgeView";
 import { PlannerSummaryCard } from "./components/PlannerSummaryCard";
+import { PublicSurveyPage } from "./components/PublicSurveyPage";
 import { QaPanel } from "./components/QaPanel";
 import { ReportView } from "./components/ReportView";
+import { SurveyPanel } from "./components/SurveyPanel";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
@@ -31,6 +33,11 @@ type EditableCollectionPlanItem = {
 type EditableCollectionPlan = Record<string, Record<string, EditableCollectionPlanItem>>;
 
 export default function App() {
+  const surveyInviteCode = publicSurveyInviteCode();
+  if (surveyInviteCode) {
+    return <PublicSurveyPage inviteCode={surveyInviteCode} />;
+  }
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [task, setTask] = useState<Task>();
   const [dag, setDag] = useState<Dag>();
@@ -767,6 +774,7 @@ export default function App() {
                 onEvidenceIdsSelect={setSelectedEvidenceIds}
               />
               <QaPanel qa={qa} workflowSummary={workflowSummary} />
+              <SurveyPanel taskId={task?.task_id} runId={selectedRunId} />
             </>
           )}
           <KnowledgeView report={report} evidence={evidence} onEvidenceIdsSelect={(ids) => {
@@ -786,6 +794,11 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+function publicSurveyInviteCode(): string | undefined {
+  const match = window.location.pathname.match(/^\/survey\/([^/]+)$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined;
 }
 
 type EditableCollectorDefaults = {

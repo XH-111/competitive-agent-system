@@ -130,3 +130,56 @@ class KnowledgeChunkRecordRow(Base):
     token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SurveyRecordRow(Base):
+    __tablename__ = "surveys"
+
+    survey_id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    invite_code: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="published", nullable=False)
+    source_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SurveyQuestionRecordRow(Base):
+    __tablename__ = "survey_questions"
+
+    question_id: Mapped[str] = mapped_column(String, primary_key=True)
+    survey_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    competitor: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    dimension_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    source_question_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_gap_type: Mapped[str] = mapped_column(String, nullable=False)
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    question_type: Mapped[str] = mapped_column(String, default="short_text", nullable=False)
+    options_json: Mapped[str] = mapped_column(Text, nullable=False)
+    required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    order_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class SurveyResponseRecordRow(Base):
+    __tablename__ = "survey_responses"
+
+    response_id: Mapped[str] = mapped_column(String, primary_key=True)
+    survey_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    respondent_token: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False)
+    kb_ingested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SurveyAnswerRecordRow(Base):
+    __tablename__ = "survey_answers"
+
+    answer_id: Mapped[str] = mapped_column(String, primary_key=True)
+    response_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    survey_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    question_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    answer_json: Mapped[str] = mapped_column(Text, nullable=False)
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False)

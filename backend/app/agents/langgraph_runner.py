@@ -11,6 +11,7 @@ from app.agents.evidence_analyst import EvidenceAnalystAgent
 from app.agents.planner import PlannerAgent
 from app.agents.qa import MAX_REWORK, QaAgent
 from app.agents.report_agent import ReportAgent
+from app.agents.survey import SurveyAgent
 from app.schemas import (
     AnalysisDimension,
     AnalysisDimensionPlan,
@@ -33,6 +34,7 @@ from app.schemas import (
     QaResult,
     ReworkContext,
     ReportAgentInput,
+    SurveyAgentInput,
     Task,
     TraceRecord,
 )
@@ -46,6 +48,7 @@ from app.services.evidence_content_fetcher import EvidenceContentFetcher
 from app.services.entity_resolver_service import EntityResolverService
 from app.services.planner_attempt_service import PlannerAttemptService
 from app.services.report_service import ReportService
+from app.services.survey_service import SurveyService
 from app.services.task_run_service import TaskRunService
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
@@ -64,6 +67,7 @@ class LangGraphWorkflowRunner:
         self.evidence_service = EvidenceService(db)
         self.evidence_content_fetcher = EvidenceContentFetcher()
         self.report_service = ReportService(db)
+        self.survey_service = SurveyService(db)
         self.task_run_service = TaskRunService(db)
         self.planner_attempt_service = PlannerAttemptService(db)
         self.entity_resolver_service = EntityResolverService()
@@ -71,6 +75,7 @@ class LangGraphWorkflowRunner:
         self.collector = CollectorAgent(self.trace_service)
         self.evidence_analyst = EvidenceAnalystAgent(self.trace_service)
         self.report_agent = ReportAgent(self.trace_service)
+        self.survey_agent = SurveyAgent(self.trace_service)
         self.qa = QaAgent(self.trace_service)
 
     @staticmethod
@@ -196,6 +201,9 @@ class LangGraphWorkflowRunner:
             "evidence_analyst_output": None,
             "evidence_analyst_rework_context": None,
             "report_agent_output": None,
+            "survey_agent_output": None,
+            "survey": None,
+            "survey_error": None,
             "qa_output": None,
             "evidence_content_fetch_output": {},
             "entity_resolution": {},
@@ -333,6 +341,9 @@ class LangGraphWorkflowRunner:
             "evidence_analyst_output": None,
             "evidence_analyst_rework_context": None,
             "report_agent_output": None,
+            "survey_agent_output": None,
+            "survey": None,
+            "survey_error": None,
             "qa_output": None,
             "evidence_content_fetch_output": {},
             "entity_resolution": entity_resolution,
@@ -571,9 +582,12 @@ class LangGraphWorkflowRunner:
         }
         if state.get("evidence_analyst_output") is not None:
             state = self.report_agent_node(state)
+            state = self.survey_agent_node(state)
         elapsed = int((time.perf_counter() - started) * 1000)
         summary = self._workflow_summary(state, elapsed)
         saved_report = state.get("report")
+        survey = state.get("survey")
+        survey_error = state.get("survey_error")
         manual_selection_dag = {
             "nodes": [
                 {"id": "PlannerAgent", "label": "复用来源 run 的规划结果", "status": "skipped"},
@@ -582,11 +596,17 @@ class LangGraphWorkflowRunner:
                 {"id": "EvidenceContentFetcher", "label": "抓取人工选择 Evidence 正文", "status": "completed"},
                 {"id": "EvidenceAnalystAgent", "label": "基于所选 Evidence 回答规划问题", "status": "completed"},
                 {"id": "ReportAgent", "label": "基于 EvidenceAnalystOutput 生成报告", "status": "completed" if saved_report else "skipped"},
+                {
+                    "id": "SurveyAgent",
+                    "label": "根据报告缺口设计问卷",
+                    "status": "failed" if survey_error else ("completed" if survey else "skipped"),
+                },
             ],
             "edges": [
                 {"source": "EvidenceContentFetcher", "target": "EvidenceAnalystAgent", "label": "正文内容"},
                 {"source": "EvidenceAnalystAgent", "target": "QaAgent", "label": "AnalystQA"},
                 {"source": "QaAgent", "target": "ReportAgent", "label": "通过后生成报告"},
+                {"source": "ReportAgent", "target": "SurveyAgent", "label": "报告缺口问卷"},
             ],
         }
         summary.update(
@@ -600,6 +620,8 @@ class LangGraphWorkflowRunner:
                 "analyst_qa_output": analyst_qa_output.model_dump(mode="json"),
                 "analyst_qa_result": analyst_qa_result.model_dump(mode="json"),
                 "analyst_incremental_attempts": analyst_incremental_attempts,
+                "survey": survey,
+                "survey_error": survey_error,
             }
         )
         self._save_workflow_trace(task_id, source_run_id, summary, elapsed)
@@ -613,6 +635,7 @@ class LangGraphWorkflowRunner:
             node_statuses={
                 "QaAgent": "failed" if final_failed else "completed",
                 "ReportAgent": "completed" if state.get("report") is not None else "skipped",
+                "SurveyAgent": "failed" if survey_error else ("completed" if survey else "skipped"),
             },
         )
         self.task_service.update_status(task_id, "qa_failed" if final_failed else "completed", rework_count=analyst_attempt_no)
@@ -629,6 +652,7 @@ class LangGraphWorkflowRunner:
             "plan": planner_output,
             "qa_result": state.get("qa_result"),
             "report": state.get("report"),
+            "survey": survey,
             "knowledge_hits": state.get("knowledge_hits", []),
             "workflow_summary": summary,
             "evidence": state.get("evidence", []),
@@ -647,6 +671,7 @@ class LangGraphWorkflowRunner:
                 {"id": "EvidenceContentFetcher", "label": "已冻结，不抓取正文", "status": "skipped"},
                 {"id": "EvidenceAnalystAgent", "label": "已冻结，不回答问题", "status": "skipped"},
                 {"id": "ReportAgent", "label": "已冻结，不生成报告", "status": "skipped"},
+                {"id": "SurveyAgent", "label": "已冻结，不设计问卷", "status": "skipped"},
             ],
             "edges": [],
         }
@@ -1060,8 +1085,11 @@ class LangGraphWorkflowRunner:
         if evidence_analyst_output is not None:
             self._check_cancelled(task_run.run_id)
             collector_state = self.report_agent_node({**collector_state, "rework_count": analyst_attempt_no})
+            collector_state = self.survey_agent_node(collector_state)
         report_agent_output = collector_state.get("report_agent_output")
         saved_report = collector_state.get("report")
+        survey = collector_state.get("survey")
+        survey_error = collector_state.get("survey_error")
         elapsed = int((time.perf_counter() - started) * 1000)
         collector_failed = collector_error is not None
         frozen_dag = {
@@ -1076,6 +1104,11 @@ class LangGraphWorkflowRunner:
                 {"id": "EvidenceContentFetcher", "label": "Tavily Extract 正文抽取", "status": "completed"},
                 {"id": "EvidenceAnalystAgent", "label": "逐条 Evidence 事实抽取", "status": "completed"},
                 {"id": "ReportAgent", "label": "基于 EvidenceAnalystOutput 生成最终报告", "status": "completed" if saved_report else "skipped"},
+                {
+                    "id": "SurveyAgent",
+                    "label": "根据报告缺口设计问卷",
+                    "status": "failed" if survey_error else ("completed" if survey else "skipped"),
+                },
             ],
             "edges": [
                 {"source": "PlannerAgent", "target": "CollectorAgent", "label": "collection_plan"},
@@ -1083,6 +1116,7 @@ class LangGraphWorkflowRunner:
                 {"source": "QaAgent", "target": "EvidenceContentFetcher", "label": "正文抽取"},
                 {"source": "EvidenceContentFetcher", "target": "EvidenceAnalystAgent", "label": "事实抽取"},
                 {"source": "EvidenceAnalystAgent", "target": "ReportAgent", "label": "final_report"},
+                {"source": "ReportAgent", "target": "SurveyAgent", "label": "报告缺口问卷"},
             ],
         }
         summary = {
@@ -1137,6 +1171,13 @@ class LangGraphWorkflowRunner:
                 if report_agent_output
                 else None
             ),
+            "survey_agent_output": (
+                collector_state.get("survey_agent_output").model_dump(mode="json")
+                if collector_state.get("survey_agent_output")
+                else None
+            ),
+            "survey": survey,
+            "survey_error": survey_error,
             "markdown_report": saved_report.markdown if saved_report else None,
             "incremental_collection_plan": (
                 incremental_output.incremental_collection_plan.model_dump(mode="json")
@@ -1169,6 +1210,7 @@ class LangGraphWorkflowRunner:
                     ]
                 ]
                 + (["report_agent"] if saved_report else [])
+                + (["survey_agent"] if collector_state.get("survey_agent_output") or survey_error else [])
             ),
             "conditional_routes_taken": (
                 [
@@ -1200,6 +1242,7 @@ class LangGraphWorkflowRunner:
             node_statuses={
                 "QaAgent": "failed" if final_failed else "completed",
                 "ReportAgent": "completed" if saved_report else "skipped",
+                "SurveyAgent": "failed" if survey_error else ("completed" if survey else "skipped"),
             },
         )
         self.task_service.update_status(initial_state["task_id"], task_status, rework_count=attempt_no + analyst_attempt_no)
@@ -1221,6 +1264,7 @@ class LangGraphWorkflowRunner:
             "qa_result": qa_result,
             "dag": frozen_dag,
             "report": saved_report,
+            "survey": survey,
             "knowledge_hits": [],
             "workflow_summary": summary,
         }
@@ -1613,6 +1657,60 @@ class LangGraphWorkflowRunner:
             "node_sequence": [*state["node_sequence"], "report_agent"],
         }
 
+    def survey_agent_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
+        task = self._current_task(state)
+        if state.get("report_agent_output") is None or state.get("evidence_analyst_output") is None:
+            return {
+                **state,
+                "task": task,
+                "survey_agent_output": None,
+                "survey": None,
+                "survey_error": None,
+            }
+        set_workflow_progress(
+            state.get("run_id"),
+            current_agent="SurveyAgent",
+            current_stage="survey_design",
+            message="正在根据报告缺口设计补充问卷...",
+        )
+        try:
+            output = self.survey_agent.run(
+                SurveyAgentInput(
+                    task=task,
+                    run_id=state.get("run_id"),
+                    evidence_analyst_output=state.get("evidence_analyst_output"),
+                    qa_result=state.get("qa_result"),
+                    report_agent_output=state.get("report_agent_output"),
+                    selected_dimensions=state.get("selected_dimensions", []),
+                    collection_plan=state.get("collection_plan"),
+                    enabled=state.get("writer_mode") == "llm",
+                    retry_count=state.get("rework_count", 0),
+                )
+            )
+            survey = (
+                self.survey_service.create_from_agent_output(task.task_id, state.get("run_id"), output)
+                if output.questions
+                else None
+            )
+            return {
+                **state,
+                "task": task,
+                "survey_agent_output": output,
+                "survey": survey,
+                "survey_error": None,
+                "node_sequence": [*state["node_sequence"], "survey_agent"],
+            }
+        except Exception as exc:  # noqa: BLE001 - survey generation should not invalidate the report.
+            return {
+                **state,
+                "task": task,
+                "survey_agent_output": None,
+                "survey": None,
+                "survey_error": str(exc),
+                "node_sequence": [*state["node_sequence"], "survey_agent"],
+            }
+
     @staticmethod
     def _workflow_summary(state: WorkflowState, elapsed_time_ms: int) -> dict:
         return {
@@ -1690,6 +1788,13 @@ class LangGraphWorkflowRunner:
                 if state.get("report_agent_output")
                 else None
             ),
+            "survey_agent_output": (
+                state.get("survey_agent_output").model_dump(mode="json")
+                if state.get("survey_agent_output")
+                else None
+            ),
+            "survey": state.get("survey"),
+            "survey_error": state.get("survey_error"),
             "knowledge_hits": state.get("knowledge_hits", []),
             "run_isolation_strategy": state.get("run_isolation_strategy", "run_id"),
             "run_cleanup_summary": state.get("run_cleanup_summary", {}),

@@ -1,4 +1,4 @@
-import { Activity, CheckCircle2, LoaderCircle } from "lucide-react";
+﻿import { Activity, CheckCircle2, LoaderCircle } from "lucide-react";
 import type { Dag, TraceRecord, WorkflowProgress } from "../types";
 import { Pill } from "../types";
 
@@ -9,6 +9,7 @@ const flowAgents = [
   "EvidenceContentFetcher",
   "EvidenceAnalystAgent",
   "ReportAgent",
+  "SurveyAgent",
 ];
 
 const schemaByAgent: Record<string, { input: string; output: string }> = {
@@ -18,6 +19,7 @@ const schemaByAgent: Record<string, { input: string; output: string }> = {
   EvidenceContentFetcher: { input: "Evidence[]", output: "Enriched Evidence[]" },
   EvidenceAnalystAgent: { input: "Evidence[]", output: "EvidenceAnalystOutput" },
   ReportAgent: { input: "EvidenceAnalystOutput", output: "ReportAgentOutput" },
+  SurveyAgent: { input: "ReportAgentOutput", output: "SurveyAgentOutput" },
 };
 
 const agentDescriptions: Record<string, string> = {
@@ -27,8 +29,8 @@ const agentDescriptions: Record<string, string> = {
   EvidenceContentFetcher: "抓取高质量 Evidence 正文",
   EvidenceAnalystAgent: "基于 Evidence 回答规划问题",
   ReportAgent: "生成结构化竞品分析报告",
+  SurveyAgent: "根据报告缺口设计问卷",
 };
-
 type DagViewProps = {
   dag?: Dag;
   traces: TraceRecord[];
@@ -75,7 +77,7 @@ export function DagView({
     : completedCount >= flowAgents.length
       ? "当前主流程已完成"
       : `已完成 ${completedCount} / ${flowAgents.length} 个节点`;
-  const llmAgents = new Set(["PlannerAgent", "EvidenceAnalystAgent", "ReportAgent"]);
+  const llmAgents = new Set(["PlannerAgent", "EvidenceAnalystAgent", "ReportAgent", "SurveyAgent"]);
   const tokenStages = flowAgents.map((agent) => {
     const stageTraces = traces.filter((trace) => traceAgentName(trace) === agent);
     const knownUsage = llmAgents.has(agent)
@@ -117,7 +119,7 @@ export function DagView({
         </div>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-6">
+      <div className="grid gap-3 lg:grid-cols-7">
         {nodes.map((node, index) => {
           const agentTraces = traces.filter((trace) => traceAgentName(trace) === node.id);
           const elapsed = agentTraces.reduce((sum, trace) => sum + displayElapsedMs(trace), 0);
@@ -193,6 +195,7 @@ function stageLabel(agent: string): string {
   if (agent === "EvidenceContentFetcher") return "正文抓取";
   if (agent === "EvidenceAnalystAgent") return "EvidenceAnalyst";
   if (agent === "ReportAgent") return "Report";
+  if (agent === "SurveyAgent") return "Survey";
   return agent;
 }
 
@@ -218,3 +221,4 @@ function stableRange(seed: string, min: number, max: number): number {
   }
   return min + (hash % (max - min + 1));
 }
+

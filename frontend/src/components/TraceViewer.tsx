@@ -66,6 +66,7 @@ const historyAgents = [
   "EvidenceContentFetcher",
   "EvidenceAnalystAgent",
   "ReportAgent",
+  "SurveyAgent",
   "QaAgent",
   "AnalystAgent",
   "ReportWriterAgent",

@@ -155,3 +155,34 @@ class QaInput(BaseModel):
 class QaOutput(BaseModel):
     qa_result: QaResult
     diagnostics: dict = Field(default_factory=dict)
+
+
+class SurveyQuestionDraft(BaseModel):
+    competitor: str | None = None
+    dimension_id: str | None = None
+    source_question_id: str | None = None
+    source_gap_type: str = "unknown_gap"
+    question_text: str = Field(min_length=1)
+    question_type: Literal["short_text", "single_choice", "multiple_choice", "rating"] = "short_text"
+    options: list[str] = Field(default_factory=list)
+    required: bool = True
+    reason: str = ""
+
+
+class SurveyAgentInput(BaseModel):
+    task: Task
+    run_id: str | None = None
+    evidence_analyst_output: EvidenceAnalystOutput | None = None
+    qa_result: QaResult | None = None
+    report_agent_output: ReportAgentOutput | None = None
+    selected_dimensions: list[str] = Field(default_factory=list)
+    collection_plan: PlannerCollectionPlan | None = None
+    enabled: bool = True
+    retry_count: int = 0
+
+
+class SurveyAgentOutput(BaseModel):
+    survey_title: str
+    survey_description: str
+    questions: list[SurveyQuestionDraft] = Field(default_factory=list)
+    diagnostics: dict = Field(default_factory=dict)

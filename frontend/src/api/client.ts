@@ -1,4 +1,4 @@
-import type { CollectorStatus, Dag, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Task, TaskRun, TraceRecord, WorkflowProgress } from "./types";
+import type { CollectorStatus, Dag, Evidence, LlmStatus, PlannerAttempt, PlannerRunResult, QaResult, Report, RunTaskOverrides, SearchTestResult, Survey, SurveyResponse, Task, TaskRun, TraceRecord, WorkflowProgress } from "./types";
 import { apiRecorder } from "./recorder";
 
 const baseUrl = "";
@@ -92,6 +92,13 @@ export const api = {
   runProgress: (taskId: string, runId: string) => request<WorkflowProgress>(`/api/tasks/${taskId}/runs/${runId}/progress`, { label: "runProgress", method: "GET" }),
   runPlannerAttempts: (taskId: string, runId: string) => request<PlannerAttempt[]>(`/api/tasks/${taskId}/runs/${runId}/planner-attempts`, { label: "runPlannerAttempts", method: "GET" }),
   cancelRun: (taskId: string, runId: string) => request<TaskRun>(`/api/tasks/${taskId}/runs/${runId}/cancel`, { label: "cancelRun", method: "POST" }),
+  generateSurvey: (taskId: string, runId: string) => request<Survey>(`/api/tasks/${taskId}/runs/${runId}/survey`, { label: "generateSurvey", method: "POST" }),
+  runSurveys: (taskId: string, runId: string) => request<Survey[]>(`/api/tasks/${taskId}/runs/${runId}/surveys`, { label: "runSurveys", method: "GET" }),
+  survey: (surveyId: string) => request<Survey>(`/api/surveys/${surveyId}`, { label: "survey", method: "GET" }),
+  surveyResponses: (surveyId: string) => request<SurveyResponse[]>(`/api/surveys/${surveyId}/responses`, { label: "surveyResponses", method: "GET" }),
+  surveyInvite: (inviteCode: string) => request<Survey>(`/api/survey-invites/${encodeURIComponent(inviteCode)}`, { label: "surveyInvite", method: "GET" }),
+  submitSurveyInvite: (inviteCode: string, answers: Array<{ question_id: string; answer: unknown }>, metadata?: Record<string, unknown>) =>
+    request<SurveyResponse>(`/api/survey-invites/${encodeURIComponent(inviteCode)}/responses`, { label: "submitSurveyInvite", method: "POST", body: JSON.stringify({ answers, metadata }) }),
   llmStatus: () => request<LlmStatus>("/api/llm/status", { label: "llmStatus", method: "GET" }),
   testLlm: () => request<LlmStatus>("/api/llm/test", { label: "testLlm", method: "POST" }),
   collectorStatus: () => request<CollectorStatus>("/api/search/status", { label: "collectorStatus", method: "GET" }),

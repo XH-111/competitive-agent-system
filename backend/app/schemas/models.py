@@ -27,6 +27,7 @@ AgentName = Literal[
     "ReportAgent",
     "QaAgent",
     "SurveyAgent",
+    "SurveyResponseQaAgent",
     "QuestionnaireAgent",
     "HumanReviewAgent",
     "WorkflowEngine",

@@ -415,6 +415,7 @@ def test_main_flow_runs_planner_collector_qa_analyst_and_report(db_session, monk
 
     runner.planner.llm_client = UnavailablePlannerLlm()
     runner.report_agent.llm_client = UnavailablePlannerLlm()
+    runner.survey_agent.llm_client = UnavailablePlannerLlm()
     assert not hasattr(runner, "evidence_gate_node")
     assert not hasattr(runner, "analyst")
     assert not hasattr(runner, "writer")
@@ -434,6 +435,7 @@ def test_main_flow_runs_planner_collector_qa_analyst_and_report(db_session, monk
     assert "evidence_analyst" in node_sequence
     assert "analyst_qa" in node_sequence
     assert "report_agent" in node_sequence
+    assert "survey_agent" in node_sequence
     assert result["qa_result"].qa_stage == "evidence"
     assert result["qa_result"].status == "warning"
     assert result["qa_result"].metadata["coverage_gap"]["summary"]["target_count"] == 0
@@ -459,11 +461,13 @@ def test_main_flow_runs_planner_collector_qa_analyst_and_report(db_session, monk
         "EvidenceContentFetcher",
         "EvidenceAnalystAgent",
         "ReportAgent",
+        "SurveyAgent",
     }
     assert statuses["QaAgent"] == "completed"
     assert statuses["EvidenceContentFetcher"] == "completed"
     assert statuses["EvidenceAnalystAgent"] == "completed"
     assert statuses["ReportAgent"] == "completed"
+    assert statuses["SurveyAgent"] in {"completed", "skipped"}
     trace_agents = {
         trace.agent_name
         for trace in TraceService(db_session).list_for_task(
@@ -478,6 +482,7 @@ def test_main_flow_runs_planner_collector_qa_analyst_and_report(db_session, monk
         "EvidenceContentFetcher",
         "EvidenceAnalystAgent",
         "ReportAgent",
+        "SurveyAgent",
         "WorkflowEngine",
     }
 
@@ -523,6 +528,7 @@ def test_manual_evidence_selection_continues_same_run_without_evidence_gate(db_s
     assert "evidence_analyst" in summary["node_sequence"]
     assert "analyst_qa" in summary["node_sequence"]
     assert "report_agent" in summary["node_sequence"]
+    assert "survey_agent" in summary["node_sequence"]
     assert "analyst" not in summary["node_sequence"]
     assert "report_writer" not in summary["node_sequence"]
 
