@@ -81,7 +81,23 @@ class WorkflowState(TypedDict, total=False):
     survey_agent_output: SurveyAgentOutput | None
     survey: dict[str, Any] | None
     survey_error: str | None
+    collector_error: str | None
+    current_collector_diagnostics: dict[str, Any]
     qa_output: QaOutput | None
+    initial_qa_output: QaOutput | None
+    initial_qa_result: QaResult | None
+    evidence_qa_output: QaOutput | None
+    evidence_qa_result: QaResult | None
+    analyst_qa_output: QaOutput | None
+    analyst_qa_result: QaResult | None
+    evidence_rework_count: int
+    analyst_rework_count: int
+    incremental_output: PlannerIncrementalOutput | None
+    incremental_collector_output: CollectorOutput | None
+    pending_incremental_attempt: dict[str, Any] | None
+    pending_analyst_incremental_attempt: dict[str, Any] | None
+    incremental_attempts: list[dict[str, Any]]
+    analyst_incremental_attempts: list[dict[str, Any]]
     evidence_content_fetch_output: dict[str, Any]
     evidence_content_fetch_target_ids: list[str]
     entity_resolution: dict[str, Any]
@@ -127,3 +143,7 @@ class WorkflowState(TypedDict, total=False):
     workflow_summary: dict[str, Any]
     workflow_result: dict[str, Any]
     debug_stage: str | None
+    run_isolation_strategy: str
+    run_cleanup_summary: dict[str, Any]
+    manual_evidence_selection_used: bool
+    manual_selected_evidence_ids: list[str]

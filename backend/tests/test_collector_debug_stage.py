@@ -429,7 +429,7 @@ def test_main_flow_runs_planner_collector_qa_analyst_and_report(db_session, monk
     )
 
     assert result["workflow_summary"]["debug_stage"] == "main_flow"
-    assert result["workflow_summary"]["workflow_orchestration"] == "langgraph_stategraph"
+    assert result["workflow_summary"]["workflow_orchestration"] == "langgraph_stategraph_conditional_edges"
     assert result["workflow_summary"]["checkpoint_provider"] == "in_memory"
     node_sequence = result["workflow_summary"]["node_sequence"]
     assert node_sequence[:3] == ["planner", "collector", "qa"]
@@ -443,6 +443,11 @@ def test_main_flow_runs_planner_collector_qa_analyst_and_report(db_session, monk
     assert result["qa_result"].metadata["coverage_gap"]["summary"]["target_count"] == 0
     assert result["workflow_summary"]["initial_qa_result"]["status"] == "failed"
     assert result["workflow_summary"]["initial_qa_result"]["metadata"]["coverage_gap"]["summary"]["target_count"] > 0
+    assert any(
+        route["from_node"] == "evidence_qa"
+        and route["to_node"] == "planner_incremental"
+        for route in result["workflow_summary"]["conditional_routes_taken"]
+    )
     assert result["workflow_summary"]["incremental_collection_plan"]["mode"] == "incremental_collection_plan"
     assert result["workflow_summary"]["incremental_collector_output"]["diagnostics"]["collector_collection_mode"] == "incremental"
     attempts = PlannerAttemptService(db_session).list_for_run(result["run_id"])
