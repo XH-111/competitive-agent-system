@@ -36,17 +36,20 @@ type DagViewProps = {
   running?: boolean;
   debugStage?: "planner_only" | "collector_only";
   progress?: WorkflowProgress;
+  totalElapsedTimeMs?: number;
 };
 
 function traceAgentName(trace: TraceRecord) {
   return trace.agent_name;
 }
 
-function agentTraceCount(traces: TraceRecord[], agent: string) {
-  return traces.filter((trace) => traceAgentName(trace) === agent).length;
-}
-
-export function DagView({ dag, traces, running = false, progress: runProgress }: DagViewProps) {
+export function DagView({
+  dag,
+  traces,
+  running = false,
+  progress: runProgress,
+  totalElapsedTimeMs,
+}: DagViewProps) {
   const nodes = flowAgents.map((agent) => dag?.nodes.find((node) => node.id === agent) ?? {
     id: agent,
     label: agentDescriptions[agent],
@@ -56,7 +59,12 @@ export function DagView({ dag, traces, running = false, progress: runProgress }:
     && Boolean(runProgress.current_agent)
     && flowAgents.includes(runProgress.current_agent as string);
   const currentAgent = running && hasLiveProgress ? runProgress?.current_agent : undefined;
-  const completedCount = flowAgents.filter((agent) => agentTraceCount(traces, agent) > 0).length;
+  const nodeStatusByAgent = Object.fromEntries(
+    nodes.map((node) => [node.id, runProgress?.node_statuses?.[node.id] ?? node.status ?? "pending"]),
+  );
+  const completedCount = flowAgents.filter((agent) =>
+    ["completed", "skipped"].includes(nodeStatusByAgent[agent] ?? "pending"),
+  ).length;
   const progressPercent = running
     ? Math.max(4, Math.round((completedCount / flowAgents.length) * 100))
     : Math.round((completedCount / flowAgents.length) * 100);
@@ -67,6 +75,20 @@ export function DagView({ dag, traces, running = false, progress: runProgress }:
     : completedCount >= flowAgents.length
       ? "当前主流程已完成"
       : `已完成 ${completedCount} / ${flowAgents.length} 个节点`;
+  const llmAgents = new Set(["PlannerAgent", "EvidenceAnalystAgent", "ReportAgent"]);
+  const tokenStages = flowAgents.map((agent) => {
+    const stageTraces = traces.filter((trace) => traceAgentName(trace) === agent);
+    const knownUsage = llmAgents.has(agent)
+      ? stageTraces.some((trace) => typeof trace.token_usage === "number")
+      : true;
+    return {
+      agent,
+      tokens: stageTraces.reduce((sum, trace) => sum + (trace.token_usage ?? 0), 0),
+      knownUsage,
+    };
+  });
+  const totalTokens = tokenStages.reduce((sum, stage) => sum + stage.tokens, 0);
+  const hasAnyTokenUsage = tokenStages.some((stage) => stage.knownUsage);
 
   return (
     <section className="bg-white p-4">
@@ -100,17 +122,8 @@ export function DagView({ dag, traces, running = false, progress: runProgress }:
           const agentTraces = traces.filter((trace) => traceAgentName(trace) === node.id);
           const elapsed = agentTraces.reduce((sum, trace) => sum + trace.elapsed_time_ms, 0);
           const schemas = schemaByAgent[node.id] ?? { input: "-", output: "-" };
-          const failed = agentTraces.some((trace) => trace.schema_validation_result === "failed");
           const isCurrent = currentAgent === node.id;
-          const inferredStatus = failed
-            ? "failed"
-            : isCurrent
-              ? "running"
-              : agentTraces.length
-                ? "completed"
-                : running
-                  ? "pending"
-                  : node.status;
+          const nodeStatus = isCurrent ? "running" : nodeStatusByAgent[node.id] ?? "pending";
           const nodeProgressPercent = runProgress?.total
             ? Math.min(100, Math.max(0, Math.round(((runProgress.current ?? 0) / runProgress.total) * 100)))
             : 0;
@@ -129,12 +142,12 @@ export function DagView({ dag, traces, running = false, progress: runProgress }:
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-semibold">{node.id}</div>
                 {isCurrent && <LoaderCircle className="animate-spin text-accent" size={15} />}
-                {!isCurrent && inferredStatus === "completed" && <CheckCircle2 className="text-emerald-600" size={15} />}
+                {!isCurrent && nodeStatus === "completed" && <CheckCircle2 className="text-emerald-600" size={15} />}
               </div>
               <p className="mt-1 min-h-8 text-xs text-slate-600">
                 {agentDescriptions[node.id] ?? node.label}
               </p>
-              <div className="mt-2"><Pill value={inferredStatus} /></div>
+              <div className="mt-2"><Pill value={nodeStatus} /></div>
               <div className="mt-3 space-y-1 text-xs text-slate-600">
                 <div>输入: {schemas.input}</div>
                 <div>输出: {schemas.output}</div>
@@ -157,6 +170,36 @@ export function DagView({ dag, traces, running = false, progress: runProgress }:
           );
         })}
       </div>
+      {!running && traces.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-3 text-xs text-slate-600">
+          <span className="font-semibold text-ink">运行统计</span>
+          <span>总用时：{formatElapsed(totalElapsedTimeMs ?? traces.reduce((sum, trace) => sum + trace.elapsed_time_ms, 0))}</span>
+          <span>总 Token：{hasAnyTokenUsage ? totalTokens.toLocaleString() : "模型未提供 usage"}</span>
+          {tokenStages.map((stage) => (
+            <span key={stage.agent}>
+              {stageLabel(stage.agent)}：{stage.knownUsage ? stage.tokens.toLocaleString() : "-"}
+            </span>
+          ))}
+        </div>
+      )}
     </section>
   );
+}
+
+function stageLabel(agent: string): string {
+  if (agent === "PlannerAgent") return "Planner";
+  if (agent === "CollectorAgent") return "Collector";
+  if (agent === "QaAgent") return "QA";
+  if (agent === "EvidenceContentFetcher") return "正文抓取";
+  if (agent === "EvidenceAnalystAgent") return "EvidenceAnalyst";
+  if (agent === "ReportAgent") return "Report";
+  return agent;
+}
+
+function formatElapsed(milliseconds: number): string {
+  if (milliseconds < 1000) return `${milliseconds}ms`;
+  const seconds = milliseconds / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${(seconds % 60).toFixed(1)}s`;
 }

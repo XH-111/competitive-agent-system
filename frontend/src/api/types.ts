@@ -482,6 +482,7 @@ export type WorkflowProgress = {
   detail?: string | null;
   status?: string;
   metadata?: Record<string, unknown>;
+  node_statuses?: Record<string, string>;
   updated_at?: string;
 };
 

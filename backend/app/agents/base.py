@@ -45,6 +45,17 @@ def _diagnostic_summary(payload: dict | None, default: str) -> str:
     return default
 
 
+def _trace_llm_metadata(payload: dict | None) -> tuple[str, int | None]:
+    if not isinstance(payload, dict):
+        return "mock-runner-v0", None
+    diagnostics = payload.get("diagnostics", payload)
+    if not isinstance(diagnostics, dict):
+        return "mock-runner-v0", None
+    model = str(diagnostics.get("llm_model") or diagnostics.get("model_name") or "mock-runner-v0")
+    total_tokens = diagnostics.get("llm_total_tokens")
+    return model, int(total_tokens) if isinstance(total_tokens, int) else None
+
+
 def run_with_trace(
     *,
     trace_service: TraceService,
@@ -72,6 +83,7 @@ def run_with_trace(
             schema_name=schema_name,
             payload=payload,
         )
+        model_name, token_usage = _trace_llm_metadata(payload)
         trace = TraceRecord(
             trace_id=trace_id,
             task_id=task_id,
@@ -80,6 +92,8 @@ def run_with_trace(
             input_summary=input_summary,
             output_summary=_diagnostic_summary(payload, f"已生成 {schema_name}"),
             schema_validation_result="passed",
+            model_name=model_name,
+            token_usage=token_usage,
             elapsed_time_ms=int((perf_counter() - start) * 1000),
             retry_count=retry_count,
         )
@@ -87,6 +101,7 @@ def run_with_trace(
         return output
     except (ValidationError, ValueError, RuntimeError) as exc:
         error_output = getattr(exc, "output", None)
+        model_name, token_usage = _trace_llm_metadata(error_output)
         trace = TraceRecord(
             trace_id=trace_id,
             task_id=task_id,
@@ -95,6 +110,8 @@ def run_with_trace(
             input_summary=input_summary,
             output_summary=_diagnostic_summary(error_output, "Agent 输出未通过校验"),
             schema_validation_result="failed",
+            model_name=model_name,
+            token_usage=token_usage,
             elapsed_time_ms=int((perf_counter() - start) * 1000),
             retry_count=retry_count,
             error_message=str(exc),

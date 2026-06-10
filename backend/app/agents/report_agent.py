@@ -59,6 +59,9 @@ class ReportAgent:
                 "llm_elapsed_time_ms": response.elapsed_time_ms,
                 "llm_model": self.llm_client.model,
                 "llm_provider": self.llm_client.provider,
+                "llm_prompt_tokens": response.prompt_tokens,
+                "llm_completion_tokens": response.completion_tokens,
+                "llm_total_tokens": response.total_tokens,
             }
         )
         if not response.available or not response.success:
@@ -99,7 +102,7 @@ class ReportAgent:
                 "sections": [
                     {
                         "section_id": "string, use dimension_id",
-                        "section_no": "string, like 2.1",
+                        "section_no": "string, like 1.1",
                         "title": "string",
                         "summary": "string",
                         "competitor_analyses": [
@@ -237,7 +240,7 @@ class ReportAgent:
         return [
             {
                 "dimension_id": dimension_id,
-                "section_no": f"2.{index}",
+                "section_no": f"1.{index}",
                 "dimension_label": labels.get(dimension_id, dimension_id),
                 "question_results": items,
             }
@@ -276,7 +279,7 @@ class ReportAgent:
         if missing:
             fallback_sections = {section.section_id: section for section in self._fallback_sections(input_data)}
             sections.extend(fallback_sections[dimension_id] for dimension_id in missing if dimension_id in fallback_sections)
-        return sections
+        return self._renumber_sections(sections)
 
     def _fallback_sections(self, input_data: ReportAgentInput) -> list[ReportSection]:
         labels = self._dimension_labels(input_data)
@@ -311,7 +314,7 @@ class ReportAgent:
             sections.append(
                 ReportSection(
                     section_id=dimension_id,
-                    section_no=f"2.{index}",
+                    section_no=f"1.{index}",
                     title=labels.get(dimension_id, dimension_id),
                     summary=self._section_summary(results),
                     competitor_analyses=competitor_analyses,
@@ -322,6 +325,13 @@ class ReportAgent:
                 )
             )
         return sections
+
+    @staticmethod
+    def _renumber_sections(sections: list[ReportSection]) -> list[ReportSection]:
+        return [
+            section.model_copy(update={"section_no": f"1.{index}"})
+            for index, section in enumerate(sections, start=1)
+        ]
 
     @staticmethod
     def _competitor_analysis_text(result: Any) -> str:

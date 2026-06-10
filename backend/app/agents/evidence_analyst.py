@@ -84,6 +84,10 @@ class EvidenceAnalystAgent:
             "llm_call_success_count": 0,
             "llm_call_failed_count": 0,
             "llm_elapsed_time_ms": 0,
+            "llm_prompt_tokens": 0,
+            "llm_completion_tokens": 0,
+            "llm_total_tokens": 0,
+            "llm_usage_available": False,
             "schema_validation_errors": [],
         }
 
@@ -124,6 +128,7 @@ class EvidenceAnalystAgent:
             diagnostics["completed_group_count"] += 1
             diagnostics["llm_call_attempted"] = diagnostics["llm_call_attempted"] or item_diagnostics["llm_call_attempted"]
             diagnostics["llm_elapsed_time_ms"] += item_diagnostics["llm_elapsed_time_ms"]
+            self._accumulate_token_usage(diagnostics, item_diagnostics)
             if item_diagnostics["status"] == "llm":
                 diagnostics["llm_call_success_count"] += 1
             else:
@@ -165,6 +170,10 @@ class EvidenceAnalystAgent:
             "llm_call_success_count": 0,
             "llm_call_failed_count": 0,
             "llm_elapsed_time_ms": 0,
+            "llm_prompt_tokens": 0,
+            "llm_completion_tokens": 0,
+            "llm_total_tokens": 0,
+            "llm_usage_available": False,
             "schema_validation_errors": [],
         }
         merged_results = [item.model_copy(deep=True) for item in input_data.previous_output.question_results]
@@ -199,6 +208,7 @@ class EvidenceAnalystAgent:
             diagnostics["incremental_completed_target_count"] += len(targets)
             diagnostics["llm_call_attempted"] = diagnostics["llm_call_attempted"] or item_diagnostics["llm_call_attempted"]
             diagnostics["llm_elapsed_time_ms"] += item_diagnostics["llm_elapsed_time_ms"]
+            self._accumulate_token_usage(diagnostics, item_diagnostics)
             if item_diagnostics["status"] == "llm":
                 diagnostics["llm_call_success_count"] += 1
             else:
@@ -233,6 +243,10 @@ class EvidenceAnalystAgent:
             "status": "fallback",
             "llm_call_attempted": False,
             "llm_elapsed_time_ms": 0,
+            "llm_prompt_tokens": 0,
+            "llm_completion_tokens": 0,
+            "llm_total_tokens": 0,
+            "llm_usage_available": False,
             "errors": [],
         }
         if not self.llm_client.is_available:
@@ -244,6 +258,10 @@ class EvidenceAnalystAgent:
             {
                 "llm_call_attempted": response.attempted,
                 "llm_elapsed_time_ms": response.elapsed_time_ms,
+                "llm_prompt_tokens": response.prompt_tokens or 0,
+                "llm_completion_tokens": response.completion_tokens or 0,
+                "llm_total_tokens": response.total_tokens or 0,
+                "llm_usage_available": response.total_tokens is not None,
             }
         )
         if not response.available or not response.success:
@@ -259,6 +277,16 @@ class EvidenceAnalystAgent:
 
         diagnostics["status"] = "llm"
         return result, diagnostics
+
+    @staticmethod
+    def _accumulate_token_usage(diagnostics: dict[str, Any], item_diagnostics: dict[str, Any]) -> None:
+        diagnostics["llm_prompt_tokens"] += int(item_diagnostics.get("llm_prompt_tokens") or 0)
+        diagnostics["llm_completion_tokens"] += int(item_diagnostics.get("llm_completion_tokens") or 0)
+        diagnostics["llm_total_tokens"] += int(item_diagnostics.get("llm_total_tokens") or 0)
+        diagnostics["llm_usage_available"] = bool(
+            diagnostics.get("llm_usage_available")
+            or item_diagnostics.get("llm_usage_available")
+        )
 
     def _validate_payload(
         self,

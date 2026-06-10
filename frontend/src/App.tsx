@@ -97,16 +97,18 @@ export default function App() {
     setRuns(nextRuns);
     const activeRunId = runId ?? nextRuns[0]?.run_id;
     setSelectedRunId(activeRunId);
-    const [nextDag, nextEvidence, nextTraces, nextPlannerAttempts] = await Promise.all([
+    const [nextDag, nextEvidence, nextTraces, nextPlannerAttempts, nextProgress] = await Promise.all([
       api.dag(taskId),
       activeRunId ? api.runEvidence(taskId, activeRunId) : api.evidence(taskId),
       activeRunId ? api.runTraces(taskId, activeRunId) : api.traces(taskId),
       activeRunId ? api.runPlannerAttempts(taskId, activeRunId).catch(() => []) : Promise.resolve([]),
+      activeRunId ? api.runProgress(taskId, activeRunId).catch(() => undefined) : Promise.resolve(undefined),
     ]);
     setDag(nextDag);
     setEvidence(nextEvidence);
     setTraces(nextTraces);
     setPlannerAttempts(nextPlannerAttempts);
+    setWorkflowProgress(nextProgress);
     const recoveredSummary = recoverWorkflowSummary(nextTraces);
     if (recoveredSummary) {
       setWorkflowSummary(recoveredSummary);
@@ -209,6 +211,8 @@ export default function App() {
     setQa(undefined);
     setPlannerAttempts([]);
     setWorkflowProgress(undefined);
+    setManualEvidenceSelectionEnabled(false);
+    setManualSelectedEvidenceIds([]);
     setManualEvidenceSelectionError(undefined);
     const progressPolling = pollRunProgress(
       task.task_id,
@@ -303,7 +307,16 @@ export default function App() {
     }
     setBusy(true);
     setManualEvidenceSelectionError(undefined);
+    setWorkflowProgress(undefined);
     setQa(undefined);
+    let stopProgressPolling = false;
+    const progressPolling = pollRunProgress(
+      task.task_id,
+      new Set(runs.map((item) => item.run_id)),
+      () => stopProgressPolling,
+      false,
+      selectedRunId,
+    );
     try {
       const result = await api.runTask(
         task.task_id,
@@ -317,11 +330,14 @@ export default function App() {
         runOverrides,
       ) as PlannerRunResult;
       setWorkflowSummary(result.workflow_summary);
+      setDag(result.dag ?? result.workflow_summary?.dag);
       const runId = result.workflow_summary?.run_id ?? result.run_id ?? selectedRunId;
       await refresh(task.task_id, runId);
     } catch (error) {
       setManualEvidenceSelectionError(error instanceof Error ? error.message : String(error));
     } finally {
+      stopProgressPolling = true;
+      await progressPolling;
       setBusy(false);
     }
   }
@@ -331,8 +347,9 @@ export default function App() {
     knownRunIds: Set<string>,
     shouldStop: () => boolean,
     plannerOnly = false,
+    preferredRunId?: string,
   ) {
-    let activeRunId: string | undefined;
+    let activeRunId: string | undefined = preferredRunId;
     while (!shouldStop()) {
       try {
         const nextRuns = await api.runs(taskId);
@@ -357,6 +374,9 @@ export default function App() {
         // The workflow POST may briefly hold backend resources; retry on the next interval.
       }
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    if (activeRunId) {
+      await api.runProgress(taskId, activeRunId).then(setWorkflowProgress).catch(() => undefined);
     }
   }
 
@@ -399,6 +419,9 @@ export default function App() {
         : searchTestResult && !searchTestResult.success
           ? "测试失败"
           : "已配置";
+  const canManualSelectEvidence = Boolean(
+    selectedRunId && evidence.length > 0 && workflowSummary?.debug_stage === "collector_only",
+  );
 
   return (
     <main className="min-h-screen">
@@ -628,10 +651,20 @@ export default function App() {
           <span className="text-sm text-slate-600">执行当前主流程，并生成 Evidence、问题回答、结构化报告、QA 和 Trace。</span>
         </div>
 
+          {busy && (
+            <button
+              type="button"
+              onClick={cancelCurrentRun}
+              disabled={!task || !selectedRunId || cancelling}
+              className="inline-flex items-center gap-2 rounded border border-red-300 bg-red-50 px-4 py-2 font-semibold text-danger disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <X size={16} /> {cancelling ? "取消中..." : "取消运行"}
+            </button>
+          )}
         {!workflowSummary?.debug_stage && <KnowledgeHitsPanel workflowSummary={workflowSummary} />}
 
         <div className="space-y-4">
-          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? runStage} progress={workflowProgress} />
+          <DagView dag={dag} traces={traces} qaRouteTo={qa?.route_to} running={busy} debugStage={workflowSummary?.debug_stage ?? runStage} progress={workflowProgress} totalElapsedTimeMs={workflowSummary?.elapsed_time_ms} />
           <PlannerSummaryCard workflowSummary={workflowSummary} plannerAttempts={plannerAttempts} />
           {workflowSummary?.debug_stage === "collector_only" && (
             <>
@@ -659,6 +692,69 @@ export default function App() {
                 )}
                 </div>
               </details>
+              {canManualSelectEvidence && (
+                <section className="rounded border border-blue-200 bg-blue-50 p-4 text-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold text-blue-900">人工选择 Evidence</h2>
+                      <p className="mt-1 text-xs text-blue-800">
+                        选择后会直接抓取所选 Evidence 正文，跳过 EvidenceQA，再进入 EvidenceAnalyst 和 AnalystQA。
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {!manualEvidenceSelectionEnabled ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          className="rounded bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                          onClick={() => {
+                            const available = new Set(evidence.map((item) => item.evidence_id));
+                            setManualSelectedEvidenceIds((current) => {
+                              const existing = current.filter((id) => available.has(id));
+                              return existing.length ? existing : selectedEvidenceIds.filter((id) => available.has(id));
+                            });
+                            setManualEvidenceSelectionEnabled(true);
+                            setManualEvidenceSelectionError(undefined);
+                          }}
+                        >
+                          开启人工选择
+                        </button>
+                      ) : (
+                        <>
+                          <span className="text-xs font-semibold text-blue-900">
+                            已选择 {manualSelectedEvidenceIds.length} 条
+                          </span>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                            onClick={() => {
+                              setManualEvidenceSelectionEnabled(false);
+                              setManualSelectedEvidenceIds([]);
+                              setManualEvidenceSelectionError(undefined);
+                            }}
+                          >
+                            取消选择
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || manualSelectedEvidenceIds.length === 0}
+                            className="rounded bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                            onClick={continueWithSelectedEvidence}
+                          >
+                            使用所选 Evidence 继续生成报告
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {manualEvidenceSelectionError && (
+                    <div className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-danger">
+                      {manualEvidenceSelectionError}
+                    </div>
+                  )}
+                </section>
+              )}
               <EvidencePanel
                 evidence={evidence}
                 evidenceIds={selectedEvidenceIds}
@@ -750,7 +846,74 @@ function editablePlanFromCollectionPlan(
 }
 
 function emptyEditablePlan(task: Task): EditableCollectionPlan {
-  return Object.fromEntries(task.competitors.map((competitor) => [competitor, {}]));
+  const defaults = collectorDefaultsForTask(task);
+  return Object.fromEntries(
+    task.competitors.map((competitor) => [
+      competitor,
+      {
+        feature_capabilities: defaultManualPlanItem({
+          competitor,
+          task,
+          defaults,
+          dimensionId: "feature_capabilities",
+          label: "功能能力",
+          queries: [
+            `${competitor} ${task.industry} 功能 特性 官网`,
+            `${competitor} 产品功能 解决方案`,
+          ],
+          researchGoals: [
+            `${competitor} 的核心功能和主要使用场景是什么？`,
+            `${competitor} 相比同类产品有哪些差异化能力？`,
+          ],
+        }),
+        pricing_packaging: defaultManualPlanItem({
+          competitor,
+          task,
+          defaults,
+          dimensionId: "pricing_packaging",
+          label: "价格方案",
+          queries: [
+            `${competitor} 定价 价格 套餐 官网`,
+            `${competitor} pricing plans`,
+          ],
+          researchGoals: [
+            `${competitor} 的定价模式、套餐层级和计费方式是什么？`,
+            `${competitor} 是否提供免费试用、免费版或企业版？`,
+          ],
+        }),
+      },
+    ]),
+  );
+}
+
+function defaultManualPlanItem({
+  dimensionId,
+  label,
+  queries,
+  researchGoals,
+  defaults,
+}: {
+  competitor: string;
+  task: Task;
+  dimensionId: string;
+  label: string;
+  queries: string[];
+  researchGoals: string[];
+  defaults: EditableCollectorDefaults;
+}): EditableCollectionPlanItem {
+  return {
+    enabled: true,
+    dimension_id: dimensionId,
+    label,
+    queries,
+    research_goals: researchGoals,
+    source: "manual_override",
+    max_results_per_query: defaults.max_results_per_query,
+    max_evidence_per_dimension: defaults.max_evidence_per_dimension,
+    min_valid_evidence_required: defaults.min_valid_evidence_required,
+    include_domains: "",
+    exclude_domains: "",
+  };
 }
 
 function buildRunOverrides(editablePlan: EditableCollectionPlan | undefined, task: Task): RunTaskOverrides {

@@ -144,7 +144,7 @@ function AgentRunSummary({ trace }: { trace: TraceRecord }) {
           ))}
         </div>
       ) : (
-        <div className="text-sm text-slate-500">暂无可摘要字段。</div>
+        <div className="text-sm text-slate-500">暂无可摘要字段，可展开下方 Trace 详情查看完整输入输出。</div>
       )}
     </div>
   );
@@ -185,10 +185,14 @@ function TraceDetails({ trace }: { trace: TraceRecord }) {
   return (
     <div className="grid gap-3">
       {analystOutput && <AnalystLlmPreview output={analystOutput} />}
-      <div>
+      <div className="grid gap-3 md:grid-cols-2">
         <div>
           <div className="mb-1 font-semibold">input_summary</div>
           <pre className="whitespace-pre-wrap rounded border border-line bg-white p-3">{trace.input_summary}</pre>
+        </div>
+        <div>
+          <div className="mb-1 font-semibold">output_summary</div>
+          <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded border border-line bg-white p-3">{trace.output_summary}</pre>
         </div>
       </div>
     </div>
@@ -205,6 +209,8 @@ function AnalystLlmPreview({ output }: { output: Record<string, unknown> }) {
   const batchCount = numberValue(output.llm_batch_count);
   const batchSuccessCount = numberValue(output.llm_batch_success_count);
   const batchFailureCount = numberValue(output.llm_batch_failure_count);
+  const rawPreview = stringValue(output.llm_response_text_preview) ?? stringValue(output.llm_response_preview);
+  const responseLength = typeof output.llm_response_text_length === "number" ? output.llm_response_text_length : undefined;
   const errors = Array.isArray(output.llm_schema_validation_errors) ? output.llm_schema_validation_errors.map(String) : [];
   const batchValidationLabel = schemaSuccess === true
     ? `全部通过（${batchSuccessCount ?? batchCount ?? 0}/${batchCount ?? batchSuccessCount ?? 0}）`
@@ -226,6 +232,18 @@ function AnalystLlmPreview({ output }: { output: Record<string, unknown> }) {
           <div className="font-semibold">部分 LLM 批次未通过，已对失败批次使用 Evidence 规则降级</div>
           {errors.slice(0, 3).map((item) => <div key={item}>{item}</div>)}
         </div>
+      )}
+      {rawPreview ? (
+        <details className="mt-2 text-xs">
+          <summary className="cursor-pointer font-semibold">
+            查看 LLM 原始结构化输出预览{responseLength ? `（原始长度 ${responseLength} 字符）` : ""}
+          </summary>
+          <pre className="mt-2 max-h-[520px] overflow-auto whitespace-pre-wrap rounded border border-line bg-white p-3">
+            {rawPreview}
+          </pre>
+        </details>
+      ) : (
+        <div className="mt-2 text-xs text-slate-600">本次没有记录 LLM 原始输出预览。</div>
       )}
     </section>
   );

@@ -32,7 +32,7 @@ from app.schemas import (
 )
 from app.services.planner_attempt_service import PlannerAttemptService
 from app.services.evidence_content_fetcher import EvidenceContentFetcher
-from app.services.llm_client import LlmResponse
+from app.services.llm_client import LlmClient, LlmResponse
 from app.services.task_service import TaskService
 from app.services.trace_service import TraceService
 
@@ -524,8 +524,11 @@ def test_manual_evidence_selection_continues_same_run_without_evidence_gate(db_s
     assert "evidence_content_fetcher" in summary["node_sequence"]
     assert "collector" not in summary["node_sequence"]
     assert "evidence_gate" not in summary["node_sequence"]
-    assert "analyst" in summary["node_sequence"]
-    assert "report_writer" in summary["node_sequence"]
+    assert "evidence_analyst" in summary["node_sequence"]
+    assert "analyst_qa" in summary["node_sequence"]
+    assert "report_agent" in summary["node_sequence"]
+    assert "analyst" not in summary["node_sequence"]
+    assert "report_writer" not in summary["node_sequence"]
 
 
 def test_task_collection_strategy_sets_collector_and_content_fetch_defaults(db_session):
@@ -652,6 +655,34 @@ def test_evidence_content_fetcher_preserves_already_fetched_content():
     assert enriched[0].content_excerpt == "existing full text"
 
 
+def test_llm_client_reads_standard_token_usage(monkeypatch):
+    class StubResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": '{"ok":true}'}}],
+                "usage": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 10,
+                    "total_tokens": 50,
+                },
+            }
+
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "app.services.llm_client.httpx.post",
+        lambda *args, **kwargs: StubResponse(),
+    )
+
+    response = LlmClient().chat_json([{"role": "user", "content": "test"}])
+
+    assert response.prompt_tokens == 40
+    assert response.completion_tokens == 10
+    assert response.total_tokens == 50
+
+
 def test_evidence_analyst_answers_planner_questions_with_evidence_ids(db_session):
     class StubLlmClient:
         is_available = True
@@ -673,6 +704,9 @@ def test_evidence_analyst_answers_planner_questions_with_evidence_ids(db_session
                     '"warnings":[]}'
                 ),
                 elapsed_time_ms=12,
+                prompt_tokens=120,
+                completion_tokens=30,
+                total_tokens=150,
             )
 
     now = datetime.utcnow()
@@ -729,6 +763,12 @@ def test_evidence_analyst_answers_planner_questions_with_evidence_ids(db_session
     assert result.question_answers[0].answer_status == "answered"
     assert output.diagnostics["total_evidence"] == 1
     assert output.diagnostics["question_answer_count"] == 1
+    assert output.diagnostics["llm_prompt_tokens"] == 120
+    assert output.diagnostics["llm_completion_tokens"] == 30
+    assert output.diagnostics["llm_total_tokens"] == 150
+    trace = TraceService(db_session).list_for_task(task.task_id)[0]
+    assert trace.model_name == "test-model"
+    assert trace.token_usage == 150
 
 
 def test_evidence_analyst_incremental_only_reanswers_not_found_targets(db_session):
@@ -931,6 +971,78 @@ def test_report_agent_fallback_generates_markdown_from_evidence_analyst_output(d
     assert "Pro starts at $19 per user per month." in output.report.markdown
     assert output.report.json_report["report_agent"]["sections"][0]["section_id"] == "pricing"
     assert output.report.json_report["report_agent"]["evidence_refs"]["ev_001"]["source_domain"] is None
-    assert output.sections[0].section_no == "2.1"
+    assert output.sections[0].section_no == "1.1"
     assert output.sections[0].competitor_analyses
     assert output.diagnostics["fallback_used"] is True
+
+
+def test_report_agent_renumbers_llm_sections_from_one_one(db_session):
+    class StubLlm:
+        is_available = True
+        provider = "test"
+        model = "test-model"
+
+        def chat_json(self, messages, timeout=None):
+            return LlmResponse(
+                available=True,
+                content=(
+                    '{"report_title":"Test Report","sections":[{'
+                    '"section_id":"pricing",'
+                    '"section_no":"2.1",'
+                    '"title":"Pricing",'
+                    '"summary":"Pricing is covered.",'
+                    '"competitor_analyses":[{"competitor":"AcmeAI","analysis":"Pro starts at $19.","strengths":["Clear pricing"],"weaknesses":[],"evidence_ids":["ev_001"]}],'
+                    '"comparison":"Only one competitor is covered.",'
+                    '"limitations":[],'
+                    '"evidence_ids":["ev_001"],'
+                    '"confidence":"high"'
+                    '}]}'
+                ),
+                model="test-model",
+                attempted=True,
+                success=True,
+                elapsed_time_ms=1,
+            )
+
+    now = datetime.utcnow()
+    task = Task(
+        task_id="task_report_agent_renumber",
+        product_name="Test Product",
+        competitors=["AcmeAI"],
+        region="US",
+        industry="AI",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    evidence_analyst_output = EvidenceAnalystOutput(
+        question_results=[
+            EvidenceDimensionAnswerResult(
+                competitor="AcmeAI",
+                dimension_id="pricing",
+                dimension_goal="pricing",
+                research_questions=["What is AcmeAI Pro pricing?"],
+                question_answers=[
+                    EvidenceQuestionAnswer(
+                        question_id="q1",
+                        question="What is AcmeAI Pro pricing?",
+                        answer="Pro starts at $19.",
+                        evidence_ids=["ev_001"],
+                        answer_status="answered",
+                    )
+                ],
+                dimension_summary="Pricing is answered.",
+            )
+        ]
+    )
+
+    output = ReportAgent(TraceService(db_session), llm_client=StubLlm()).run(
+        ReportAgentInput(
+            task=task,
+            run_id="run_report_agent_renumber",
+            evidence_analyst_output=evidence_analyst_output,
+        )
+    )
+
+    assert output.sections[0].section_no == "1.1"
+    assert output.report.json_report["report_agent"]["sections"][0]["section_no"] == "1.1"

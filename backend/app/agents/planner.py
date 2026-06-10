@@ -162,6 +162,9 @@ class PlannerAgent:
                 "llm_error_type": response.error_type,
                 "llm_error_message": response.error_message,
                 "llm_response_preview": response.response_preview,
+                "llm_prompt_tokens": response.prompt_tokens,
+                "llm_completion_tokens": response.completion_tokens,
+                "llm_total_tokens": response.total_tokens,
             }
         )
         if response.available:
@@ -224,6 +227,9 @@ class PlannerAgent:
                 "llm_error_type": response.error_type,
                 "llm_error_message": response.error_message,
                 "llm_response_preview": response.response_preview,
+                "llm_prompt_tokens": response.prompt_tokens,
+                "llm_completion_tokens": response.completion_tokens,
+                "llm_total_tokens": response.total_tokens,
             }
         )
 

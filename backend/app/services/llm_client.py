@@ -26,6 +26,9 @@ class LlmResponse:
     error_type: str | None = None
     error_message: str | None = None
     response_preview: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 class LlmClient:
@@ -95,6 +98,12 @@ class LlmClient:
             response.raise_for_status()
             payload: dict[str, Any] = response.json()
             content = payload["choices"][0]["message"]["content"]
+            usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+            prompt_tokens = self._usage_int(usage, "prompt_tokens", "input_tokens")
+            completion_tokens = self._usage_int(usage, "completion_tokens", "output_tokens")
+            total_tokens = self._usage_int(usage, "total_tokens")
+            if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+                total_tokens = prompt_tokens + completion_tokens
             elapsed = int((perf_counter() - start) * 1000)
             return LlmResponse(
                 available=True,
@@ -105,6 +114,9 @@ class LlmClient:
                 success=True,
                 elapsed_time_ms=elapsed,
                 response_preview=content[:300],
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
             )
         except Exception as exc:  # noqa: BLE001 - workflow must not crash on provider errors.
             elapsed = int((perf_counter() - start) * 1000)
@@ -140,6 +152,14 @@ class LlmClient:
         except ValueError:
             return default
         return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _usage_int(usage: dict[str, Any], *keys: str) -> int | None:
+        for key in keys:
+            value = usage.get(key)
+            if isinstance(value, int) and value >= 0:
+                return value
+        return None
 
     def _suggested_action(self, status: str, error: str | None) -> str:
         if not self.api_key:

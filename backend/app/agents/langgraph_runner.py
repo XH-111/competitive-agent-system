@@ -450,26 +450,238 @@ class LangGraphWorkflowRunner:
             "manual_evidence_selection_used": True,
             "manual_selected_evidence_ids": selected_ids,
         }
+        set_workflow_progress(
+            task_run.run_id,
+            current_agent="EvidenceContentFetcher",
+            current_stage="manual_selection_content_fetch",
+            message="正在抓取人工选择 Evidence 的正文...",
+            node_statuses={
+                "PlannerAgent": "skipped",
+                "CollectorAgent": "skipped",
+            },
+        )
         state = self.evidence_content_fetcher_node(initial_state)
         state = self.evidence_analyst_node(state)
-        state = self.analyst_node(state)
-        state = self.report_writer_node(state)
-        state = self.qa_node(state)
-        state = self.final_report_node(state)
+        set_workflow_progress(
+            task_run.run_id,
+            current_agent="QaAgent",
+            current_stage="analyst_qa",
+            message="正在检查人工选择 Evidence 的问题回答覆盖状态...",
+        )
+        self._qa_visual_delay(state.get("collector_mode") == "web")
+        analyst_qa_output = self.qa.run(
+            QaInput(
+                task=self._current_task(state),
+                run_id=task_run.run_id,
+                qa_stage="analyst",
+                evidence=state.get("evidence", []),
+                evidence_analyst_output=state.get("evidence_analyst_output"),
+                selected_dimensions=state.get("selected_dimensions", []),
+                analysis_dimension_plan=state.get("analysis_dimension_plan"),
+                collection_plan=state.get("collection_plan"),
+                collector_config=state.get("collector_config"),
+                retry_count=0,
+            )
+        )
+        analyst_qa_result = self.report_service.save_qa(analyst_qa_output.qa_result, run_id=task_run.run_id)
+        analyst_incremental_attempts: list[dict] = []
+        analyst_attempt_no = 0
+        while analyst_attempt_no < MAX_REWORK:
+            self._check_cancelled(task_run.run_id)
+            coverage_gap_payload = analyst_qa_result.metadata.get("coverage_gap") if analyst_qa_result.metadata else None
+            if not (
+                analyst_qa_result.status == "failed"
+                and isinstance(coverage_gap_payload, dict)
+                and coverage_gap_payload.get("targets")
+            ):
+                break
+            analyst_attempt_no += 1
+            coverage_gap = EvidenceCoverageGap.model_validate(coverage_gap_payload)
+            attempts = self.planner_attempt_service.list_for_run(task_run.run_id)
+            base_attempt_no = attempts[-1].attempt_no if attempts else None
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="PlannerAgent",
+                current_stage="manual_selection_analyst_rework_planning",
+                message=f"正在规划第 {analyst_attempt_no} / {MAX_REWORK} 轮人工选择后的问题补采查询词...",
+                current=analyst_attempt_no,
+                total=MAX_REWORK,
+                unit="attempt",
+            )
+            incremental_output = self.planner.plan_incremental_collection(
+                PlannerIncrementalInput(
+                    task=self._current_task(state),
+                    run_id=task_run.run_id,
+                    retry_count=analyst_attempt_no,
+                    base_planner_output=planner_output,
+                    coverage_gap=coverage_gap,
+                    base_attempt_no=base_attempt_no,
+                )
+            )
+            self.planner_attempt_service.save(
+                run_id=task_run.run_id,
+                status="fallback" if incremental_output.diagnostics.get("fallback_used") else "generated",
+                planner_output=incremental_output.incremental_collection_plan,
+                diagnostics=incremental_output.diagnostics,
+                rework_context={"source": "ManualEvidenceSelectionAnalystQA", "coverage_gap": coverage_gap.model_dump(mode="json")},
+                raw_llm_response=incremental_output._raw_llm_response,
+            )
+            set_workflow_progress(
+                task_run.run_id,
+                current_agent="CollectorAgent",
+                current_stage="manual_selection_analyst_rework_collect",
+                message=f"正在执行第 {analyst_attempt_no} / {MAX_REWORK} 轮人工选择后的问题补采...",
+                current=analyst_attempt_no,
+                total=MAX_REWORK,
+                unit="attempt",
+            )
+            incremental_collector_output = self.collector.run(
+                CollectorInput(
+                    task=self._current_task(state),
+                    run_id=task_run.run_id,
+                    retry_count=analyst_attempt_no,
+                    collector_mode=state["collector_mode"],
+                    collection_plan=state.get("collection_plan"),
+                    incremental_collection_plan=incremental_output.incremental_collection_plan,
+                    collector_config=state.get("collector_config"),
+                    partial_collection_plan_allowed=state.get("manual_collection_plan_override_used", False),
+                    selected_dimensions=state.get("selected_dimensions", []),
+                    analysis_dimension_plan=state.get("analysis_dimension_plan"),
+                    rework_context=state.get("rework_context"),
+                    competitor_aliases=state.get("competitor_aliases", {}),
+                )
+            )
+            incremental_evidence = self.evidence_service.save_many(
+                self._current_task(state).task_id,
+                incremental_collector_output.evidence,
+                run_id=task_run.run_id,
+            )
+            new_evidence_ids_by_target: dict[tuple[str, str], list[str]] = {}
+            for item in incremental_evidence:
+                dimension_id = (item.entity_match_signals or {}).get("collector_dimension")
+                if item.competitor and dimension_id:
+                    new_evidence_ids_by_target.setdefault((item.competitor, str(dimension_id)), []).append(item.evidence_id)
+            evidence_analyst_rework_context = EvidenceAnalystReworkContext(
+                targets=[
+                    EvidenceAnalystReworkTarget(
+                        competitor=target.competitor,
+                        dimension_id=target.dimension_id,
+                        question_id=target.question_id or "",
+                        question=target.question or target.reason,
+                        new_evidence_ids=new_evidence_ids_by_target.get((target.competitor, target.dimension_id), []),
+                    )
+                    for target in coverage_gap.targets
+                    if target.question_id and target.question
+                ]
+            )
+            state = {
+                **state,
+                "evidence": [*state.get("evidence", []), *incremental_evidence],
+                "evidence_content_fetch_target_ids": [item.evidence_id for item in incremental_evidence],
+                "collector_output": incremental_collector_output,
+                "evidence_analyst_rework_context": evidence_analyst_rework_context,
+                "node_sequence": [*state["node_sequence"], "collector_incremental_analystqa"],
+            }
+            state = self.evidence_content_fetcher_node(state)
+            self._check_cancelled(task_run.run_id)
+            state = self.evidence_analyst_node(state)
+            self._check_cancelled(task_run.run_id)
+            analyst_qa_output = self.qa.run(
+                QaInput(
+                    task=self._current_task(state),
+                    run_id=task_run.run_id,
+                    qa_stage="analyst",
+                    evidence=state.get("evidence", []),
+                    evidence_analyst_output=state.get("evidence_analyst_output"),
+                    selected_dimensions=state.get("selected_dimensions", []),
+                    analysis_dimension_plan=state.get("analysis_dimension_plan"),
+                    collection_plan=state.get("collection_plan"),
+                    collector_config=state.get("collector_config"),
+                    retry_count=analyst_attempt_no,
+                )
+            )
+            analyst_qa_result = self.report_service.save_qa(analyst_qa_output.qa_result, run_id=task_run.run_id)
+            analyst_incremental_attempts.append(
+                {
+                    "attempt_no": analyst_attempt_no,
+                    "incremental_collection_plan": incremental_output.incremental_collection_plan.model_dump(mode="json"),
+                    "collector_output": incremental_collector_output.model_dump(mode="json"),
+                    "qa_result": analyst_qa_result.model_dump(mode="json"),
+                }
+            )
+        state = {
+            **state,
+            "qa_output": analyst_qa_output,
+            "qa_result": analyst_qa_result,
+            "rework_count": analyst_attempt_no,
+            "final_status": f"analyst_qa_{analyst_qa_result.status}",
+            "conditional_routes_taken": [
+                *state.get("conditional_routes_taken", []),
+                *(
+                    [
+                        {
+                            "from_node": "analyst_qa",
+                            "to_node": "planner_incremental_analystqa",
+                            "reason": "analyst_question_not_found",
+                            "rework_count": len(analyst_incremental_attempts),
+                        }
+                    ]
+                    if analyst_incremental_attempts
+                    else []
+                ),
+            ],
+            "node_sequence": [*state["node_sequence"], "analyst_qa"],
+        }
+        if state.get("evidence_analyst_output") is not None:
+            state = self.report_agent_node(state)
         elapsed = int((time.perf_counter() - started) * 1000)
         summary = self._workflow_summary(state, elapsed)
+        saved_report = state.get("report")
+        manual_selection_dag = {
+            "nodes": [
+                {"id": "PlannerAgent", "label": "复用来源 run 的规划结果", "status": "skipped"},
+                {"id": "CollectorAgent", "label": "人工选择 Evidence，不重新采集", "status": "skipped"},
+                {"id": "QaAgent", "label": "AnalystQA 问题回答覆盖检查", "status": "completed"},
+                {"id": "EvidenceContentFetcher", "label": "抓取人工选择 Evidence 正文", "status": "completed"},
+                {"id": "EvidenceAnalystAgent", "label": "基于所选 Evidence 回答规划问题", "status": "completed"},
+                {"id": "ReportAgent", "label": "基于 EvidenceAnalystOutput 生成报告", "status": "completed" if saved_report else "skipped"},
+            ],
+            "edges": [
+                {"source": "EvidenceContentFetcher", "target": "EvidenceAnalystAgent", "label": "正文内容"},
+                {"source": "EvidenceAnalystAgent", "target": "QaAgent", "label": "AnalystQA"},
+                {"source": "QaAgent", "target": "ReportAgent", "label": "通过后生成报告"},
+            ],
+        }
         summary.update(
             {
+                "debug_stage": "collector_only",
+                "dag": manual_selection_dag,
                 "manual_evidence_selection_used": True,
                 "manual_selected_evidence_ids": selected_ids,
                 "manual_selected_evidence_count": len(selected_evidence),
                 "source_run_id": source_run_id,
+                "analyst_qa_output": analyst_qa_output.model_dump(mode="json"),
+                "analyst_qa_result": analyst_qa_result.model_dump(mode="json"),
+                "analyst_incremental_attempts": analyst_incremental_attempts,
             }
         )
         self._save_workflow_trace(task_id, source_run_id, summary, elapsed)
+        final_failed = analyst_qa_result.status == "failed"
+        set_workflow_progress(
+            task_run.run_id,
+            current_agent="WorkflowEngine",
+            current_stage="completed" if not final_failed else "qa_failed",
+            message="人工选择 Evidence 后续流程已完成。" if not final_failed else "AnalystQA 未通过，流程已结束。",
+            status="completed" if not final_failed else "qa_failed",
+            node_statuses={
+                "QaAgent": "failed" if final_failed else "completed",
+                "ReportAgent": "completed" if state.get("report") is not None else "skipped",
+            },
+        )
+        self.task_service.update_status(task_id, "qa_failed" if final_failed else "completed", rework_count=analyst_attempt_no)
         finished_run = self.task_run_service.finish_run(
             source_run_id,
-            status=self._run_status_from_summary(summary),
+            status="qa_failed" if final_failed else "completed",
             final_status=summary.get("final_status"),
             elapsed_time_ms=elapsed,
             error_message=summary.get("error_message"),
@@ -1045,6 +1257,17 @@ class LangGraphWorkflowRunner:
         final_failed = qa_result.status == "failed" or analyst_qa_result.status == "failed"
         task_status = "qa_failed" if final_failed else "completed"
         run_status = "qa_failed" if final_failed else "completed"
+        set_workflow_progress(
+            task_run.run_id,
+            current_agent="WorkflowEngine",
+            current_stage=run_status,
+            message="主流程已完成。" if not final_failed else "QA 未通过，流程已结束。",
+            status=run_status,
+            node_statuses={
+                "QaAgent": "failed" if final_failed else "completed",
+                "ReportAgent": "completed" if saved_report else "skipped",
+            },
+        )
         self.task_service.update_status(initial_state["task_id"], task_status, rework_count=attempt_no + analyst_attempt_no)
         finished_run = self.task_run_service.finish_run(
             task_run.run_id,
@@ -1121,6 +1344,7 @@ class LangGraphWorkflowRunner:
         return graph.compile()
 
     def planner_node(self, state: WorkflowState) -> WorkflowState:
+        self._check_cancelled(state.get("run_id"))
         task = state["task"]
         run_id = state.get("run_id")
         manual_plan = state.get("collection_plan_override")
