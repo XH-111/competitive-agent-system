@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.runner_factory import create_workflow_runner
 from app.database import get_db
-from app.schemas import CollectorConfig, CreateTaskRequest, PlannerCollectionPlan
+from app.schemas import CollectorConfig, CreateTaskRequest, PlannerCollectionPlan, UpdateTaskHighlightRequest
 from app.services.evidence_service import EvidenceService
 from app.services.llm_client import LlmClient
 from app.services.planner_attempt_service import PlannerAttemptService
@@ -98,6 +98,14 @@ def list_tasks(db: Session = Depends(get_db)):
 def get_task(task_id: str, db: Session = Depends(get_db)):
     try:
         return TaskService(db).get_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+
+
+@router.patch("/tasks/{task_id}/highlight")
+def update_task_highlight(task_id: str, request: UpdateTaskHighlightRequest, db: Session = Depends(get_db)):
+    try:
+        return TaskService(db).update_highlight(task_id, request.is_highlighted)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
 

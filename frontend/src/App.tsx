@@ -167,6 +167,12 @@ export default function App() {
     await refresh(nextTask.task_id);
   }
 
+  async function toggleTaskHighlight(targetTask: Task) {
+    const updated = await api.updateTaskHighlight(targetTask.task_id, !targetTask.is_highlighted);
+    setTasks((current) => current.map((item) => item.task_id === updated.task_id ? updated : item));
+    setTask((current) => current?.task_id === updated.task_id ? updated : current);
+  }
+
   async function handleCreated(created: Task) {
     setTask(created);
     setDag(undefined);
@@ -576,7 +582,12 @@ export default function App() {
         )}
 
         <div className="mb-4">
-          <TaskList tasks={tasks} currentTaskId={task?.task_id} onSelect={selectTask} />
+          <TaskList
+            tasks={tasks}
+            currentTaskId={task?.task_id}
+            onSelect={selectTask}
+            onToggleHighlight={toggleTaskHighlight}
+          />
         </div>
 
         {task && (

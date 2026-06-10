@@ -17,6 +17,7 @@ def _to_schema(row: TaskRecord) -> Task:
         region=row.region,
         industry=row.industry,
         collection_strategy_mode=normalize_collection_strategy_mode(getattr(row, "collection_strategy_mode", None)),
+        is_highlighted=bool(getattr(row, "is_highlighted", False)),
         status=row.status,
         rework_count=row.rework_count,
         created_at=row.created_at,
@@ -60,6 +61,16 @@ class TaskService:
         row.status = status
         if rework_count is not None:
             row.rework_count = rework_count
+        row.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(row)
+        return _to_schema(row)
+
+    def update_highlight(self, task_id: str, is_highlighted: bool) -> Task:
+        row = self.db.get(TaskRecord, task_id)
+        if row is None:
+            raise KeyError(task_id)
+        row.is_highlighted = is_highlighted
         row.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(row)

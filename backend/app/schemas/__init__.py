@@ -56,6 +56,7 @@ from app.schemas.models import (
     Task,
     TaskRun,
     TraceRecord,
+    UpdateTaskHighlightRequest,
     UserPersona,
 )
 from app.schemas.agent_io import (
@@ -133,6 +134,7 @@ __all__ = [
     "Task",
     "TaskRun",
     "TraceRecord",
+    "UpdateTaskHighlightRequest",
     "UserPersona",
     "EvidenceAnalystInput",
     "EvidenceAnalystOutput",

@@ -5,6 +5,7 @@ export type Task = {
   region: string;
   industry: string;
   collection_strategy_mode: "simple" | "balanced" | "expert";
+  is_highlighted?: boolean;
   status: string;
   rework_count: number;
   created_at: string;

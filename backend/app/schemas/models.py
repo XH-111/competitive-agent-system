@@ -49,10 +49,15 @@ class Task(BaseModel):
     region: str
     industry: str
     collection_strategy_mode: Literal["simple", "balanced", "expert"] = "balanced"
+    is_highlighted: bool = False
     status: TaskStatus
     rework_count: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class UpdateTaskHighlightRequest(BaseModel):
+    is_highlighted: bool
 
 
 class TaskRun(BaseModel):

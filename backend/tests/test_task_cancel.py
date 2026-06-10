@@ -39,3 +39,31 @@ def test_task_run_can_request_cancel():
         assert run_service.is_cancel_requested(run.run_id) is True
     finally:
         db.close()
+
+
+def test_task_can_toggle_highlight():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        service = TaskService(db)
+        task = service.create_task(
+            CreateTaskRequest(
+                product_name="Highlight Demo",
+                competitors=["AlphaCI"],
+                region="China",
+                industry="B2B SaaS",
+            )
+        )
+
+        highlighted = service.update_highlight(task.task_id, True)
+        listed = service.list_tasks()[0]
+
+        assert highlighted.is_highlighted is True
+        assert listed.is_highlighted is True
+
+        unhighlighted = service.update_highlight(task.task_id, False)
+
+        assert unhighlighted.is_highlighted is False
+    finally:
+        db.close()

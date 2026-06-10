@@ -1,4 +1,6 @@
 backend/.venv/
+.venv/
+backend-start*.log
 backend/cis_demo.db
 cis_demo.db
 backend/.pytest_cache/
